@@ -2,67 +2,79 @@
 
 ## Status
 
-Proposal / scaffold. Branch `wt/poe-acp-relay`. Greenfield; does not reuse the
-MCP-centric bridge in `wt/poe-integration` (`external/poe`), though it lifts a
-few primitives (SSE writer, access-control pairing, optional tsnet Funnel).
+Active build. Branch `wt/poe-acp-relay`. Lives as a standalone Go module
+at `external/poeacp/` — not linked into the main `fir` binary.
 
 ## Motivation
 
-The existing Poe bridge (`wt/poe-integration`) glues Poe to fir through **MCP**:
-fir is the "host", the bridge is an MCP server process that fir spawns, and the
-bridge injects inbound Poe messages into fir via a `notifications/claude/channel/message`
-notification while fir calls back via a `reply` MCP tool. Fir also owns the
-ACP/REPL session lifecycle — spawning worktree agents, handling slash commands,
-etc. Poe is one of several I/O surfaces wired into a user-driven fir process.
+The existing Poe bridge (`wt/poe-integration`, `external/poe/`) glues Poe
+to fir through **MCP**: fir is the "host", the bridge is an MCP server that
+fir spawns, the bridge injects Poe messages via a custom
+`notifications/claude/channel/message` notification, and fir calls back
+via a `reply` MCP tool. Session lifecycle (spawn-on-demand, catch-all,
+slash commands) lives in **fir + a skill**, coordinated through a ws relay.
 
-This works, but it inverts the natural ownership for a **pure server-side bot**:
+This works but inverts the natural ownership for a **headless server bot**:
 
-- Poe calls the bot; there is no human at a terminal. A long-lived fir process
-  is overkill.
-- Session lifecycle (create, resume, route-by-conv-id, spawn-on-demand) is
-  logic the **relay** should own, not fir. It is the thing that sees every
-  inbound request with a stable `conversation_id`.
-- MCP is the wrong protocol for the relay's actual need: "drive an AI agent
-  and stream its output back." That is exactly what **ACP** is for.
+- Poe calls the bot; no human at a terminal. A long-lived fir is overkill.
+- Session lifecycle (create, resume, route-by-conv-id) is logic the
+  **relay** should own — it is the thing that sees every inbound request
+  with a stable `conversation_id`.
+- MCP is the wrong protocol for "drive an AI agent and stream its output
+  back". That is exactly what **ACP** is for.
 
-So: build a Poe bot where the **relay is an ACP client** that spawns or
-connects to ACP-compliant agents (starting with `fir --mode acp`) and
-manages a 1:1 map of Poe `conversation_id` → ACP session. No MCP server. No
-`reply` tool. The relay drives sessions directly.
+So: the relay is a pure **ACP client** that drives ACP-compliant agents
+(default: `fir --mode acp`) and maintains a 1:1 map of Poe
+`conversation_id` → ACP `session_id`. No MCP server. No `reply` tool.
 
 ## Goals
 
-1. **Pure ACP client.** The relay uses `acp-go-sdk`'s `ClientSideConnection`
-   to speak to any conforming ACP agent. No MCP dependency on the hot path.
-2. **Per-conversation ACP sessions.** Each Poe `conversation_id` maps to
-   exactly one ACP `SessionId`. Inbound Poe `query` → `session/prompt`.
-   ACP `session/update` chunks → SSE `text` / `replace_response` events.
-3. **Agent-agnostic.** Default agent is `fir --mode acp`, but the transport
-   is a plain stdio ACP connection, so any ACP agent (Zed's, claude-code-acp,
-   gemini-acp, …) could be wired in via a config flag.
-4. **Zero fir-side changes (initial milestone).** Everything new lives under
-   `cmd/poe-acp-relay/` + `internal/poeacp/`. Fir is consumed as a library
-   only for the `acp` SDK dependency.
-5. **Stable public HTTPS.** Optional `tsnet` Funnel mode so the relay can be
-   dropped on any tailnet host and get a public cert without a reverse proxy.
+1. **Pure ACP client.** Relay uses `acp-go-sdk`'s `ClientSideConnection`.
+   Any conforming ACP agent can be plugged in via `--agent-cmd`.
+2. **Per-conv ACP sessions** in a shared fir process. One fir, N sessions,
+   driven through one ACP stdio connection.
+3. **Per-conv cwd** so fir's session history, `.fir/settings.json`, and any
+   `.fir/mcp.json` are naturally isolated between Poe convs.
+4. **Zero fir-side changes.** Consumed via `--mode acp` over stdio.
+5. **Own Go module** (`external/poeacp`). Not linked into the fir binary.
 
 ## Non-goals (v1)
 
-- **No multi-host relay** (single process owns Poe + agents). The
-  `wt/poe-integration` ws-based relay→agent fanout is explicitly *out*; the
-  ACP relay owns its agent processes directly. That distinction can come
-  later as "remote ACP over ws" if desired.
-- **No MCP server surface.** The relay does not advertise itself as an MCP
-  server. If an ACP session wants tools, the agent loads them itself via its
-  own config (fir reads MCP from `.fir/mcp.json` in the session cwd).
-- **No inbound tool-call surface** for the Poe user. Sessions are one-way
-  (user text in, assistant text out). `session/request_permission` is
-  auto-approved (or auto-rejected) per a configured policy. Permission
-  round-trips back to the Poe user are a future enhancement.
-- **No attachments round-trip** initially. Poe attachments arrive as URLs;
-  we pass their text representation through as a pre-amble, nothing else.
-- **No multi-user auth** initially. Single Poe `access_key` bearer; optional
-  allowlist of `user_id`s in a config file.
+- **No multi-agent pool.** One fir process multiplexes all sessions. If it
+  crashes, all convs reconnect on the next Poe message. (A pool can be
+  added later if contention becomes visible.)
+- **No MCP server surface.** If a session wants MCP tools, the *agent*
+  loads them from its own config (fir reads `.fir/mcp.json` in the cwd).
+- **No user auth / allowlist.** Any request with the correct
+  `POEACP_ACCESS_KEY` is accepted. Per-user auth and state are tracked as
+  a future item.
+- **No Tailscale Funnel mode.** We deploy to nodes already on tailnet; a
+  fronting reverse proxy or `tailscale funnel` on the host handles TLS.
+  Documented as a future option (see Future section).
+- **No attachments round-trip.** Poe attachments arrive as URLs; we don't
+  fetch them.
+- **No remote ACP transport.** The relay spawns agents locally over stdio.
+- **No permission round-trip to the Poe user.** `session/request_permission`
+  is handled by a local policy (allow-all / read-only / deny-all).
+
+## fir multi-session facts (as of wt/poe-acp-relay base)
+
+- `firAgent.sessions map[string]*firSession` holds concurrent sessions;
+  `Prompt` / `SessionUpdate` are keyed by `SessionId`.
+- **Cwd is per-session** (`NewSessionRequest.Cwd`). Fir derives session
+  history dir from `(agentDir, cwd)` so each conv's cwd gets its own
+  `sessions/` subtree.
+- **`config.NewSettingsManager(cwd, agentDir)`** means `.fir/settings.json`
+  is resolved from the per-session cwd.
+- **`$FIR_AGENT_DIR` is process-wide.** `auth.json`, `models.json`,
+  installed extensions, installed skills are **shared** across all
+  sessions in one fir proc. For most server-bot deployments that's
+  desirable (one provider login serves all convs). Full isolation would
+  require a small fir patch to accept a per-session agent dir; future.
+
+**Conclusion:** give each conv a dedicated cwd
+(`$STATE_DIR/convs/<conv_id>/`) and fir's native per-cwd mechanics do the
+right thing with zero modifications.
 
 ## Architecture
 
@@ -71,227 +83,174 @@ manages a 1:1 map of Poe `conversation_id` → ACP session. No MCP server. No
   │   Poe    │ ────────────────────────▶│  poe-acp-relay (single bin)  │
   │ servers  │ ◀──────── SSE ───────────│                              │
   └──────────┘                          │  ┌────────────────────────┐  │
-                                        │  │  internal/poeacp/http  │  │
-                                        │  │  (Poe protocol, SSE)   │  │
+                                        │  │ internal/httpsrv       │  │
+                                        │  │  + internal/poeproto   │  │
+                                        │  │  (HTTP + SSE)          │  │
                                         │  └──────────┬─────────────┘  │
                                         │             │                │
                                         │  ┌──────────▼─────────────┐  │
-                                        │  │  internal/poeacp/router│  │
+                                        │  │ internal/router        │  │
                                         │  │  conv_id → session     │  │
-                                        │  │  spawn / reuse / GC    │  │
+                                        │  │  per-conv cwd          │  │
+                                        │  │  idle GC               │  │
                                         │  └──────────┬─────────────┘  │
-                                        │             │ ACP (stdio)    │
+                                        │             │                │
                                         │  ┌──────────▼─────────────┐  │
-                                        │  │  internal/poeacp/acp   │  │
+                                        │  │ internal/acpclient     │  │
                                         │  │  ClientSideConnection  │  │
                                         │  │  impl of acp.Client    │  │
                                         │  └──────────┬─────────────┘  │
                                         └─────────────┼────────────────┘
                                                       │ stdio
-                                  ┌───────────────────┼───────────────────┐
-                                  ▼                   ▼                   ▼
-                            ┌──────────┐        ┌──────────┐        ┌──────────┐
-                            │ fir acp  │        │ fir acp  │        │ fir acp  │
-                            │ conv α   │        │ conv β   │        │ conv γ   │
-                            └──────────┘        └──────────┘        └──────────┘
+                                                      ▼
+                                              ┌──────────────┐
+                                              │ fir --mode   │
+                                              │    acp       │
+                                              │ N sessions   │
+                                              └──────────────┘
 ```
 
-### Components
+## Components
 
-#### `internal/poeacp/poeproto` — Poe protocol
+### `internal/poeproto` — Poe protocol
 
-Trimmed copy of `external/poe/internal/poe` from the MCP bridge:
+- `Request` (type, query[], conv_id, user_id, message_id)
+- `SSEWriter` (Meta, Text, Replace, Error, Done)
+- `SettingsResponse`
+- `BearerAuth` middleware
 
-- `SSEWriter` (text / replace_response / error / done events)
-- Request decoder for `query` / `settings` / `report_*`
-- Settings response builder (introduction_message, commands list)
-- Bearer auth middleware
+### `internal/acpclient` — ACP agent wrapper
 
-Zero changes from the existing impl — this layer is agnostic about what's
-behind it.
+- `AgentProc` = exec.Cmd + `acp.ClientSideConnection`; implements
+  `acp.Client` (SessionUpdate fan-out, RequestPermission → policy,
+  ReadTextFile / WriteTextFile, terminal no-ops)
+- `Start` launches child, calls `Initialize`
+- `NewSession(ctx, cwd, sink)` creates ACP session, registers sink
+- `Prompt(ctx, sid, text) → StopReason`
+- `Cancel(ctx, sid)`
 
-#### `internal/poeacp/acpclient` — ACP client wrapper
+### `internal/router` — conv_id router
 
-A small wrapper around `acp.ClientSideConnection`. Key pieces:
+- `sessionState{convID, userID, sessionID, cwd, sink, lastUsed}`
+- Lazy-create session on first query; pick cwd = `$STATE/convs/<conv_id>/`
+- `Prompt(convID, text, sink)`: attach sink, issue ACP prompt, handle
+  stop reason, emit terminal SSE event.
+- Serial per conv: while a prompt is in flight for conv X, new inbound
+  for X waits (mutex on `sessionState`). New Poe queries for **different**
+  convs proceed concurrently.
+- Idle GC: sessions idle > `SESSION_TTL` removed from map. Agent proc
+  itself runs until relay shutdown (no pool).
 
-- **`type AgentProc`** — one stdio child (`fir --mode acp` by default). Owns
-  the `*exec.Cmd`, the `ClientSideConnection`, and a map of live session IDs.
-- **`type Client`** — implements `acp.Client` (server-initiated methods):
-  - `RequestPermission` → policy engine (v1: auto-allow all tool calls; later:
-    prompt the Poe user via a pending-reply side channel).
-  - `SessionUpdate` → fan out to the per-session chunk stream currently
-    attached to an open Poe SSE response.
-  - `ReadTextFile` / `WriteTextFile` → implemented against the agent's cwd
-    (same as the SDK example client).
-  - Terminal methods → no-op stubs (fir agents don't require them).
-- **Initialize once, NewSession per Poe conv**: the relay calls `Initialize`
-  on process start, then `NewSession` (or `LoadSession` when resuming) for
-  each new `conversation_id`.
+### `internal/policy` — permission policy
 
-#### `internal/poeacp/router` — conversation router
+`allow-all` / `read-only` / `deny-all`. Selected via `--permission`.
 
-The brains. Maps `conversation_id → sessionState`.
+### `internal/httpsrv` — HTTP layer
 
-```go
-type sessionState struct {
-    convID    string
-    userID    string
-    sessionID acpsdk.SessionId      // ACP session id
-    agent     *acpclient.AgentProc
-    pending   chan chunk            // live inbound Poe request's SSE stream
-    lastUsed  time.Time
-}
-```
+- `/poe` POST (bearer-gated): dispatches `query` / `settings` / `report_*`
+- `/healthz` (public): `ok sessions=N`
+- `/debug/sessions` (bearer-gated): JSON dump for triage
 
-Policies (v1):
+### `cmd/poe-acp-relay` — entry point
 
-- **One ACP session per Poe conv.** Created lazily on the first query.
-- **One agent process per N sessions** (configurable; default 1). This lets
-  fir's in-memory session registry serve many convs from one fir process,
-  which is cheaper than one process per conv.
-- **Idle GC.** Sessions idle > `SESSION_TTL` (default 2h) are dropped from
-  the map; underlying ACP session is allowed to age out on the agent side.
-  Agents with zero live sessions and zero inflight prompts are `SIGTERM`ed
-  after `AGENT_IDLE_TTL` (default 10m).
-- **Concurrency.** A single Poe conv serialises prompts: while a prompt is
-  inflight, new inbound queries for the same conv either (a) wait (default)
-  or (b) cancel-and-restart (configurable, mirrors `session/cancel`).
-
-#### `internal/poeacp/policy` — permission policy
-
-v1 options:
-
-- `allow-all` (default) — auto-approve every `session/request_permission`.
-  Fine for read-only coding-assist sessions where fir's own tool surface is
-  the limit.
-- `read-only` — approve reads / greps / `ls`; deny writes and bash.
-- `deny-all` — reject every permission request. For demo / exploration.
-
-Controlled by `POEACP_PERMISSION_POLICY`.
-
-#### `cmd/poe-acp-relay/main.go` — entry point
+Flags:
 
 ```
-Usage: poe-acp-relay [flags]
-
-Transport:
-  --http-addr     :8080       Poe HTTP listen address
-  --funnel                    Use tsnet Funnel (public HTTPS :443)
-  --funnel-name   poe-relay   Funnel hostname under tailnet
-
-Agent:
-  --agent-cmd     "fir --mode acp"   ACP agent command (stdio)
-  --agent-cwd     $HOME              Working dir for spawned agent(s)
-  --sessions-per-agent  8            Sessions multiplexed per agent proc
-
-Access:
-  --access-key-env  POEACP_ACCESS_KEY  Poe bearer secret
-  --allow-user-ids  u-abc,u-def         Optional allowlist
-  --permission      allow-all           allow-all|read-only|deny-all
-
-State:
-  --state-dir     $XDG_STATE_HOME/poe-acp-relay
+--http-addr            :8080
+--agent-cmd            "fir --mode acp"
+--agent-dir            $FIR_AGENT_DIR   (env override for the spawned fir)
+--state-dir            $XDG_STATE_HOME/poe-acp-relay
+--permission           allow-all|read-only|deny-all
+--access-key-env       POEACP_ACCESS_KEY
+--session-ttl          2h
+--heartbeat-interval   10s
 ```
 
 ## Request flow
 
-### Inbound `query`
+### `query`
 
 ```
-1. POST /poe arrives; bearer checked.
-2. Parse request; extract conv_id, message_id, user_id, latest user msg.
-3. Allowlist check (user_id).
-4. SSE writer opens: emit `meta` event immediately (5s rule).
-5. Router.Handle(conv_id, user_id, msg, sse):
-     a. Look up session; if none, AgentProc.NewSession(cwd) → session_id.
-     b. Register sse as current chunk sink for session_id.
-     c. Call acp.Prompt(session_id, TextBlock(msg)) asynchronously.
-6. acp.Client.SessionUpdate callbacks fire:
-     - AgentMessageChunk   → sse.WriteText(chunk)
-     - AgentThoughtChunk   → optional: suppressed or forwarded as dim text
-     - ToolCall / Update   → collapsed into a compact status line (opt-in)
-     - Plan                → rendered as a short markdown block (opt-in)
-7. acp.Prompt returns (StopReason):
-     - end_turn   → sse.WriteEvent("done", {})
-     - max_tokens → append "(truncated)" + done
-     - refusal    → emit SSE `error` + done
-     - cancelled  → emit `replace_response` + done
+1. POST /poe; bearer checked by middleware.
+2. Decode Request → conv_id, user_id, latest user text.
+3. Open SSEWriter → emit `meta` event.
+4. Start heartbeat goroutine: every Nsec, if no chunks yet, emit a
+   no-op "\u200b" (zero-width space) text event. Cancel on first real
+   chunk or Done.
+5. Router.Prompt(conv_id, text, sseSink):
+     a. Look up/create sessionState for conv_id. Fresh session ⇒
+        mkdir -p $STATE/convs/<conv_id>/; agent.NewSession(cwd).
+     b. Lock sessionState.mu for the duration of the turn.
+     c. Attach sseSink. Stop heartbeat on first OnUpdate.
+     d. agent.Prompt(sid, text) → StopReason.
+     e. Translate stop reason to terminal SSE event:
+        - end_turn    → Done
+        - max_tokens  → Text("\n\n_(truncated)_") + Done
+        - refusal     → Error + Done
+        - cancelled   → Replace("_(cancelled)_") + Done
+6. Request ctx cancellation (Poe client disconnect) → Router.Cancel(conv)
+   → ACP session/cancel to the agent.
 ```
 
-### Inbound `settings`
+### `settings`
 
-Return static JSON: bot description, optional `introduction_message`,
-`commands[]` derived from fir's built-in slash list (reused from
-`resources.BuiltinSlashCommands`, same as the MCP bridge).
+Static JSON. Introduction message set via `--introduction`. Optional
+commands[] populated from a small hand-written list (no fir coupling; the
+relay doesn't forward slash commands to fir v1).
 
-### Agent side
+### `report_*`
 
-`fir --mode acp` is launched once per `sessions-per-agent` budget. On boot
-the relay calls `Initialize` with full client capabilities:
+Accept and drop.
 
-```go
-acp.ClientCapabilities{
-    Fs:       acp.FileSystemCapability{ReadTextFile: true, WriteTextFile: true},
-    Terminal: false,
-}
-```
+## Test strategy
 
-then reuses the connection for every `NewSession` / `Prompt`. The `firSession`
-registry inside `pkg/modes/acp/acp.go` already supports multiple concurrent
-sessions per process — no fir-side changes needed.
+HTTP is trivial to test: a `curl | head` pointed at `http://localhost:8080/poe`
+with a crafted JSON body and a bearer header streams SSE to stdout. We'll
+script a `test/smoke.sh` that sends a minimal `query` request and asserts
+the response contains `event: text` and `event: done`.
 
-## Comparison to the MCP bridge (`wt/poe-integration`)
+Unit tests use the `acp-go-sdk`'s in-memory pair: spin up a fake agent in
+the same process that emits scripted `SessionUpdate` chunks; drive
+`router.Prompt` against it; assert the `ChunkSink` captured the expected
+text and stop-reason translation.
 
-| Aspect                       | MCP bridge                              | ACP relay                               |
-|------------------------------|-----------------------------------------|-----------------------------------------|
-| Fir relationship             | Fir spawns bridge as its MCP server      | Relay spawns fir as its ACP agent        |
-| Conv → session mapping       | Fir owns; bridge just injects messages   | Relay owns; drives `session/prompt`      |
-| Assistant output path        | Fir calls `reply` MCP tool → SSE         | ACP `session/update` chunks → SSE        |
-| Multi-conv fanout            | ws relay + catch-all agent + spawn skill | Router in-process, spawns ACP agents     |
-| Tool permission              | Fir's own UX (interactive prompt)        | Policy engine (v1: allow-all)            |
-| Slash commands               | MCP `claude/commands` notification       | Poe settings reuses `BuiltinSlashCommands` |
-| Required in fir              | `claude/channel` MCP notifications       | Nothing — just `--mode acp`              |
-| Complexity                   | High (fir + bridge + relay + ws + skill) | Medium (relay + stdio ACP children)      |
+## Deployment
 
-The MCP bridge's strength is that a human can also be driving the same fir
-session interactively while Poe messages are interleaved. The ACP relay is
-deliberately **headless** — no human at the fir end — which is the right fit
-for a server bot.
+Single binary on a tailnet node, fronted by either:
+- an existing reverse proxy (Caddy / nginx) terminating TLS, OR
+- `tailscale funnel` on the host for zero-config HTTPS.
 
-## Open questions
+The Poe bot dashboard URL points at `https://<node>.<tailnet>.ts.net/poe`.
+Bearer secret lives in the host environment.
 
-1. **Session persistence across relay restarts.** Fir's ACP mode supports
-   `LoadSession` with a `session_id`. Can we persist `conv_id → session_id`
-   to disk and rehydrate on restart? The session store should already handle
-   this, but needs end-to-end testing.
-2. **Long prompts.** Poe's 5-second "must emit something" rule: the relay
-   emits `meta` immediately, then a `text` space, but if fir takes > 25s to
-   produce the first chunk Poe may close. Solution: emit an ACP
-   `session/update` heartbeat in fir, or insert a relay-side "thinking…"
-   dot-stream on a 10s timer.
-3. **Pairing / access control.** The MCP bridge has an elaborate pairing
-   flow (slash-command in the terminal to approve). The relay is headless;
-   closest analogue is env-var allowlist + a "pending" SSE reply that says
-   "your user_id `u-xxx` is not authorised — ask the operator to add it."
-4. **Per-conv cwd.** Do we want each Poe conv to get a scratch dir
-   (`$state/convs/<conv_id>/`) so fir has a sandbox with `.fir/` config? v1
-   says yes — isolates sessions and makes MCP config scoping trivial.
-5. **Remote agents.** The MCP bridge supports distributing agents across
-   the tailnet. For ACP we'd need an "ACP over ws" transport. Punted to v2.
+## Future
+
+- **Per-user auth/state config.** Map Poe `user_id` to a scoped config
+  blob (which provider, which agent dir, which default cwd). Replaces
+  the simple allowlist gate.
+- **Per-session fir agent dir.** Small fir patch to accept an
+  `agent_dir` on `NewSessionRequest` so auth/models/extensions can be
+  isolated per conv, not just per cwd. Needed for multi-tenant hosting.
+- **Embedded Tailscale Funnel mode.** `tsnet.Server` + `ListenFunnel`
+  to get public HTTPS from the binary itself, no reverse proxy. Not
+  needed for our deployment (we sit behind a node already on tailnet).
+- **Multi-agent pool.** Shard conv_ids across N fir processes for
+  resilience and isolation. Only if one process becomes a bottleneck.
+- **Remote ACP transport.** "ACP over ws" so agents can live on a
+  different host than the relay.
+- **Permission round-trip to the Poe user.** Turn
+  `session/request_permission` into an interstitial Poe message with
+  an inline allow/deny; requires a pending-continuation mechanism.
+- **Attachments.** Download Poe attachment URLs and inject as
+  `EmbeddedResource` content blocks in the ACP prompt.
+- **Slash commands.** Forward a command list (from fir's
+  `BuiltinSlashCommands` + extensions) into Poe settings. First version
+  can be a static hand-written list.
 
 ## Milestones
 
-- **M0 (this branch):** design doc + skeleton that compiles. No Poe I/O yet.
-  `poe-acp-relay --version` prints and exits.
-- **M1:** stdio ACP client working end-to-end against `fir --mode acp`.
-  A CLI test harness (`poe-acp-relay test-prompt "hello"`) spins up fir and
-  streams a response to stdout.
-- **M2:** Poe HTTP/SSE front-end, in-memory `conv_id → session` router,
-  `allow-all` permission policy. Deployable as a single binary behind a
-  reverse proxy.
-- **M3:** Tailscale Funnel mode, persistent conv-id state, allowlist,
-  read-only / deny-all policies, idle GC.
-- **M4:** Slash commands in Poe settings, plan / tool-call update rendering,
-  resume / cancel handling.
-- **M5 (stretch):** permission round-trip to the Poe user via an
-  interstitial SSE reply; remote ACP transport over ws.
+- **M0** — scaffold compiles; `--version` works. ✅
+- **M1** — end-to-end over HTTP: real `fir --mode acp` child, Poe-shaped
+  `curl` request in, assistant text streams out on SSE. Heartbeat,
+  cancellation, stop-reason translation, per-conv cwd, idle GC.
+- **M2** — cleanup + docs + smoke test script. Ship.
