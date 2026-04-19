@@ -252,5 +252,26 @@ Bearer secret lives in the host environment.
 - **M0** — scaffold compiles; `--version` works. ✅
 - **M1** — end-to-end over HTTP: real `fir --mode acp` child, Poe-shaped
   `curl` request in, assistant text streams out on SSE. Heartbeat,
-  cancellation, stop-reason translation, per-conv cwd, idle GC.
+  cancellation, stop-reason translation, per-conv cwd, idle GC. ✅
 - **M2** — cleanup + docs + smoke test script. Ship.
+
+## Live test (2026-04-19)
+
+First real end-to-end run: relay spawned `fir --mode acp`, a curl against
+`/poe` produced `meta` → zero-width-space heartbeats during fir boot →
+real assistant text chunk (a rate-limit error surfaced from Anthropic) →
+clean `done`. `/debug/sessions` showed the conv_id mapped to an ACP
+session_id in its per-conv cwd. The 429 was surfaced in-band as agent
+text, not as a relay error, which is the correct behaviour (the agent is
+responsible for describing provider failures to the user).
+
+Notes from the run:
+
+- Fir sends `available_commands_update` on session start. `AgentProc`
+  now snapshots it and `httpsrv.Config.CommandsProvider` exposes the
+  names in the Poe `settings.commands` response.
+- Cold-start cost: ~1s to spawn+Initialize, another ~50–55s for the
+  first prompt (extension boot + first API call). Heartbeats handled it.
+- Earlier confusion about the prompt hanging turned out to be a
+  30-second deadline on a standalone probe — the production HTTP path
+  uses the request context and works fine.

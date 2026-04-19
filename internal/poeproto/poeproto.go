@@ -60,6 +60,9 @@ func Decode(body io.Reader) (*Request, error) {
 }
 
 // SettingsResponse is the JSON returned for a `settings` request.
+//
+// `Commands` is a list of slash-command names surfaced in the Poe UI
+// autocomplete menu.
 type SettingsResponse struct {
 	AllowAttachments    bool     `json:"allow_attachments"`
 	IntroductionMessage string   `json:"introduction_message,omitempty"`

@@ -19,6 +19,10 @@ type Config struct {
 	Router            *router.Router
 	Settings          poeproto.SettingsResponse
 	HeartbeatInterval time.Duration // 0 disables heartbeat
+	// CommandsProvider, if set, is called on each `settings` request to
+	// populate SettingsResponse.Commands with the current agent command
+	// names. If nil, Settings.Commands is used as-is.
+	CommandsProvider func() []string
 }
 
 // Handler serves the /poe endpoint.
@@ -48,8 +52,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Type {
 	case poeproto.TypeSettings:
+		s := h.cfg.Settings
+		if h.cfg.CommandsProvider != nil {
+			s.Commands = h.cfg.CommandsProvider()
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(h.cfg.Settings)
+		_ = json.NewEncoder(w).Encode(s)
 
 	case poeproto.TypeQuery:
 		h.handleQuery(r.Context(), w, req)

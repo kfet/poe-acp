@@ -117,6 +117,14 @@ func main() {
 			IntroductionMessage: *introMsg,
 		},
 		HeartbeatInterval: *heartbeat,
+		CommandsProvider: func() []string {
+			cmds := agent.Commands()
+			names := make([]string, 0, len(cmds))
+			for _, c := range cmds {
+				names = append(names, c.Name)
+			}
+			return names
+		},
 	})
 
 	mux := http.NewServeMux()

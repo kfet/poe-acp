@@ -56,8 +56,9 @@ type AgentProc struct {
 	cmd  *exec.Cmd
 	conn *acp.ClientSideConnection
 
-	mu    sync.Mutex
-	sinks map[acp.SessionId]SessionUpdateSink // active session sinks
+	mu       sync.Mutex
+	sinks    map[acp.SessionId]SessionUpdateSink // active session sinks
+	commands []acp.AvailableCommand              // last-seen commands from any session
 }
 
 // Start launches the agent process, performs Initialize, and returns a
@@ -167,12 +168,29 @@ func (a *AgentProc) sinkFor(sid acp.SessionId) SessionUpdateSink {
 	return a.sinks[sid]
 }
 
-// SessionUpdate fans out to the per-session sink.
+// SessionUpdate fans out to the per-session sink. Also snapshots the
+// available-commands list whenever a session publishes one — the relay
+// uses the latest snapshot to populate Poe's settings.commands.
 func (a *AgentProc) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
+	if cu := params.Update.AvailableCommandsUpdate; cu != nil {
+		a.mu.Lock()
+		a.commands = cu.AvailableCommands
+		a.mu.Unlock()
+	}
 	if s := a.sinkFor(params.SessionId); s != nil {
 		return s.OnUpdate(ctx, params)
 	}
 	return nil
+}
+
+// Commands returns the most recently-seen available-commands list.
+// Empty until the first session publishes one.
+func (a *AgentProc) Commands() []acp.AvailableCommand {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]acp.AvailableCommand, len(a.commands))
+	copy(out, a.commands)
+	return out
 }
 
 // RequestPermission delegates to the configured policy.
