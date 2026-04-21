@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kfet/fir/external/poeacp/internal/acpclient"
-	"github.com/kfet/fir/external/poeacp/internal/httpsrv"
-	"github.com/kfet/fir/external/poeacp/internal/poeproto"
-	"github.com/kfet/fir/external/poeacp/internal/policy"
-	"github.com/kfet/fir/external/poeacp/internal/router"
+	"github.com/kfet/poe-acp-relay/internal/acpclient"
+	"github.com/kfet/poe-acp-relay/internal/httpsrv"
+	"github.com/kfet/poe-acp-relay/internal/poeproto"
+	"github.com/kfet/poe-acp-relay/internal/policy"
+	"github.com/kfet/poe-acp-relay/internal/router"
 )
 
 // version is set via -ldflags at build time.

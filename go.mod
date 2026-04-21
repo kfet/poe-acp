@@ -1,4 +1,4 @@
-module github.com/kfet/fir/external/poeacp
+module github.com/kfet/poe-acp-relay
 
 go 1.24.11
 

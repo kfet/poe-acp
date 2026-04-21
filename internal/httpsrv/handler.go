@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kfet/fir/external/poeacp/internal/poeproto"
-	"github.com/kfet/fir/external/poeacp/internal/router"
+	"github.com/kfet/poe-acp-relay/internal/poeproto"
+	"github.com/kfet/poe-acp-relay/internal/router"
 )
 
 // Config configures a Handler.
