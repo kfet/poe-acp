@@ -95,7 +95,12 @@ func (s *captureSink) FirstChunk() {
 	s.firstCalled = true
 	s.mu.Unlock()
 }
-func (s *captureSink) Text(t string) error { s.mu.Lock(); s.text.WriteString(t); s.mu.Unlock(); return nil }
+func (s *captureSink) Text(t string) error {
+	s.mu.Lock()
+	s.text.WriteString(t)
+	s.mu.Unlock()
+	return nil
+}
 func (s *captureSink) Replace(t string) error {
 	s.mu.Lock()
 	s.replaceText = t
@@ -166,15 +171,15 @@ func TestRouter_ReusesSession(t *testing.T) {
 
 func TestRouter_StopReasons(t *testing.T) {
 	cases := map[string]struct {
-		stop      acp.StopReason
-		wantText  string
-		wantErr   bool
-		wantRepl  bool
+		stop     acp.StopReason
+		wantText string
+		wantErr  bool
+		wantRepl bool
 	}{
-		"end_turn":    {acp.StopReasonEndTurn, "", false, false},
-		"max_tokens":  {acp.StopReasonMaxTokens, "_(response truncated: max tokens)_", false, false},
-		"refusal":     {acp.StopReasonRefusal, "", true, false},
-		"cancelled":   {acp.StopReasonCancelled, "", false, true},
+		"end_turn":   {acp.StopReasonEndTurn, "", false, false},
+		"max_tokens": {acp.StopReasonMaxTokens, "_(response truncated: max tokens)_", false, false},
+		"refusal":    {acp.StopReasonRefusal, "", true, false},
+		"cancelled":  {acp.StopReasonCancelled, "", false, true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
