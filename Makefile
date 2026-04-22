@@ -130,7 +130,10 @@ check-licenses:
 
 RELEASE_TAG := v$(shell cat VERSION 2>/dev/null || echo 0.0.0)
 
-publish: build
+publish: build notices
+	@if ! git diff --quiet -- $(NOTICE_FILE); then \
+		git add $(NOTICE_FILE) && git commit -m "chore: refresh THIRD_PARTY_NOTICES.md for $(RELEASE_TAG)"; \
+	fi
 	@echo "Publishing $(RELEASE_TAG)..."
 	git push origin main $(RELEASE_TAG)
 	@echo "Pushed $(RELEASE_TAG)."
