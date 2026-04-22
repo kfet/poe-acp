@@ -4,11 +4,11 @@ Poe.com server-bot that drives ACP-compliant agents (default: `fir --mode acp`)
 as a pure ACP client. One binary, no MCP server surface. Each Poe
 `conversation_id` maps 1:1 to an ACP session inside a shared agent process.
 
-See [docs/poe-acp-relay/DESIGN.md](docs/poe-acp-relay/DESIGN.md) for the full
+See [docs/poe-acp-relay-design.md](docs/poe-acp-relay-design.md) for the full
 design, scope, and milestones. For the underlying Poe wire protocol see
-[docs/poe-acp-relay/poe-protocol-reference.md](docs/poe-acp-relay/poe-protocol-reference.md).
+[docs/poe-protocol-reference.md](docs/poe-protocol-reference.md).
 
-Module: `github.com/kfet/fir/external/poeacp`. Standalone — not linked into
+Module: `github.com/kfet/poe-acp-relay`. Standalone — not linked into
 the main fir binary.
 
 **Status:** M1 complete. End-to-end Poe `query` → ACP `session/prompt` →
@@ -19,7 +19,6 @@ child. See the "Live test" section below.
 
 ```bash
 # build
-cd external/poeacp
 go build -o ./bin/poe-acp-relay ./cmd/poe-acp-relay
 
 # run (requires fir on $PATH, or override via --agent-cmd)
@@ -204,9 +203,9 @@ context and is fine.
 ## Layout
 
 ```
-external/poeacp/
+poe-acp-relay/
   cmd/poe-acp-relay/       entry point
-  docs/poe-acp-relay/      design doc
+  docs/                    design doc + Poe protocol reference
   internal/acpclient/      acp.Client impl + stdio agent proc wrapper
   internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
   internal/poeproto/       minimal Poe HTTP+SSE

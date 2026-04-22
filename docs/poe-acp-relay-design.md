@@ -2,8 +2,8 @@
 
 ## Status
 
-Active build. Branch `wt/poe-acp-relay`. Lives as a standalone Go module
-at `external/poeacp/` — not linked into the main `fir` binary.
+Active build. Lives as a standalone Go module (`github.com/kfet/poe-acp-relay`) —
+not linked into the main `fir` binary.
 
 ## Motivation
 
@@ -36,7 +36,7 @@ So: the relay is a pure **ACP client** that drives ACP-compliant agents
 3. **Per-conv cwd** so fir's session history, `.fir/settings.json`, and any
    `.fir/mcp.json` are naturally isolated between Poe convs.
 4. **Zero fir-side changes.** Consumed via `--mode acp` over stdio.
-5. **Own Go module** (`external/poeacp`). Not linked into the fir binary.
+5. **Own Go module** (`github.com/kfet/poe-acp-relay`). Not linked into the fir binary.
 
 ## Non-goals (v1)
 
