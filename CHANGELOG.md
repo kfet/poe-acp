@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-22
+
 ### Added
 
 - M0 skeleton: design doc and compiling scaffold for `poe-acp-relay`, an HTTP server that implements Poe's server-bot protocol and relays each conversation to a spawned ACP-speaking agent over stdio.
