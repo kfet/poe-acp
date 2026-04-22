@@ -14,7 +14,7 @@ Deploy `poe-acp-relay` to a remote host fronted by `tailscale funnel`. The relay
 3. **ACP agent command** — default `fir --mode acp`.
 4. **Funnel layout**:
    - **(a) Dedicated** — funnel `127.0.0.1:8080` on `/`. Relay uses default `--poe-path /poe`. Public URL: `https://<host>.<tailnet>.ts.net/poe`.
-   - **(b) Prefix** — funnel `127.0.0.1:<port>` on `/<prefix>`. Funnel strips `/<prefix>` before forwarding, so set `--poe-path /<prefix>` to match.
+   - **(b) Prefix** — funnel `127.0.0.1:<port>` on `/<prefix>`. Funnel strips `/<prefix>` before forwarding, so set `--poe-path /<prefix>` to match. Default loopback port: **8347** (phone-keypad "8FIR": F=3, I=4, R=7). Any free port works; 8347 is our convention when the agent is `fir`.
 5. **Permission policy** — `allow-all` (default), `read-only`, `deny-all`.
 
 ## Steps
@@ -48,7 +48,7 @@ ssh <host> 'tailscale funnel --bg 127.0.0.1:8080'
 
 Prefix:
 ```bash
-ssh <host> 'tailscale funnel --bg --set-path=/poe-acp 127.0.0.1:8081'
+ssh <host> 'tailscale funnel --bg --set-path=/poe-acp 127.0.0.1:8347'
 ```
 
 Verify: `ssh <host> 'tailscale funnel status'`.
@@ -85,7 +85,7 @@ WantedBy=default.target
 For prefix layout, swap the `ExecStart` to match:
 
 ```
-ExecStart=%h/.local/bin/poe-acp-relay -http-addr 127.0.0.1:8081 -poe-path /poe-acp -agent-cmd "fir --mode acp"
+ExecStart=%h/.local/bin/poe-acp-relay -http-addr 127.0.0.1:8347 -poe-path /poe-acp -agent-cmd "fir --mode acp"
 ```
 
 Enable:
@@ -110,7 +110,7 @@ launchd plists can't load an `EnvironmentFile` directly, so wrap the binary in a
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>set -a; . "$HOME/.config/poe-acp-relay/env"; set +a; exec /opt/homebrew/bin/poe-acp-relay -http-addr 127.0.0.1:<port> -poe-path /<prefix> -agent-cmd "fir --mode acp"</string>
+    <string>set -a; . "$HOME/.config/poe-acp-relay/env"; set +a; exec /opt/homebrew/bin/poe-acp-relay -http-addr 127.0.0.1:8347 -poe-path /poe-acp -agent-cmd "fir --mode acp" -introduction "fir over ACP — one Poe conv = one ACP session"</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -126,9 +126,10 @@ launchd plists can't load an `EnvironmentFile` directly, so wrap the binary in a
 ```
 
 Notes:
-- `PATH` must include the directory holding the ACP agent binary (e.g. `fir`). launchd does **not** inherit your shell PATH.
+- `PATH` must include the directory holding the ACP agent binary (e.g. `fir`). launchd does **not** inherit your shell PATH. For Node-based agents (e.g. `claude-code --acp`), also include your nvm/node bin dir.
 - The wrapper `set -a; . env; set +a` exports every `KEY=value` in the env file to the child.
 - Use Apple-Silicon `/opt/homebrew/bin`; on Intel use `/usr/local/bin`.
+- `-introduction "<text>"` sets the greeting shown in Poe on first message. Easy to forget on a fresh deploy — users see the default otherwise.
 
 Load / reload / stop:
 
@@ -185,3 +186,4 @@ Look for per-conversation cwd, ACP `initialize` handshake, and `session/prompt` 
 - [ ] Poe test message round-trips.
 - [ ] Service supervisor enabled: systemd user unit + `loginctl enable-linger` (Linux) **or** launchd user agent with `RunAtLoad` + `KeepAlive` (macOS).
 - [ ] `~/.config/poe-acp-relay/env` is mode `0600`.
+- [ ] `-introduction` flag set to the intended greeting (or intentionally omitted).
