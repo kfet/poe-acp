@@ -3,8 +3,7 @@
 # Output directory for all build artifacts
 BINDIR    := bin
 BINARY    := $(BINDIR)/poe-acp-relay
-NOTICE_DIR := dist
-NOTICE_FILE := $(NOTICE_DIR)/THIRD_PARTY_NOTICES.md
+NOTICE_FILE := THIRD_PARTY_NOTICES.md
 
 # Go binary install path
 GOBIN     := $(shell go env GOPATH)/bin
@@ -104,7 +103,8 @@ vet:
 
 clean:
 	rm -rf $(BINDIR)
-	rm -rf $(NOTICE_DIR)
+	rm -rf dist
+	rm -f $(NOTICE_FILE)
 
 # ---------------------------------------------------------------------------
 # Third-party license notices
@@ -119,7 +119,6 @@ GO_LICENSES := go run github.com/google/go-licenses@v1.6.0
 notices: $(NOTICE_FILE)
 
 $(NOTICE_FILE): go.mod go.sum
-	@mkdir -p $(NOTICE_DIR)
 	$(call RUN,generate notices,$(GO_LICENSES) report ./cmd/poe-acp-relay > $(NOTICE_FILE) 2>/dev/null)
 
 check-licenses:

@@ -30,7 +30,7 @@ checksum:
   algorithm: sha256
   extra_files:
     - glob: LICENSE
-    - glob: dist/THIRD_PARTY_NOTICES.md
+    - glob: THIRD_PARTY_NOTICES.md
 
 release:
   github:
@@ -40,7 +40,7 @@ release:
   name_template: "poe-acp-relay {{.Version}}"
   extra_files:
     - glob: LICENSE
-    - glob: dist/THIRD_PARTY_NOTICES.md
+    - glob: THIRD_PARTY_NOTICES.md
 
 # ---------------------------------------------------------------------------
 # Homebrew tap
