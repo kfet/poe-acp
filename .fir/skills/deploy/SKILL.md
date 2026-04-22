@@ -1,114 +1,69 @@
-References are relative to /Users/kfet/dev/ai/poe-acp-relay/.fir/skills/deploy.
+---
+name: deploy
+description: Deploy poe-acp-relay to a remote host behind Tailscale Funnel, start it as a Poe server bot, and verify end-to-end.
+---
 
 # Deploy Skill
 
-Deploy `poe-acp-relay` to a remote host and expose it as a Poe server bot.
+Deploy `poe-acp-relay` to a remote host fronted by `tailscale funnel`. The relay listens on loopback; funnel terminates TLS and forwards. Per conversation the relay spawns an ACP agent (`fir --mode acp`, `claude-code --acp`, etc.).
 
-The target architecture: host on the user's tailnet with `tailscale funnel` fronting a loopback-bound relay. The relay spawns an ACP agent (e.g. `fir --mode acp`, `claude-code --acp`) per Poe conversation.
+## Confirm with the user before acting
 
-## Inputs the user must provide
-
-Before deploying, confirm with the user:
-
-1. **Host** — ssh-reachable hostname (e.g. `myhost` or `user@myhost`).
-2. **Poe access key** — the server-bot secret from poe.com. Stored in `POEACP_ACCESS_KEY` on the host.
-3. **ACP agent command** — default `fir --mode acp`. Ask if a different agent (e.g. `claude-code --acp`) is wanted.
-4. **Funnel path layout** — pick one:
-   - **(a) Dedicated host** — funnel `127.0.0.1:8080` on `/` → relay serves `/poe`. Public URL: `https://<host>.<tailnet>.ts.net/poe`.
-   - **(b) Shared host with prefix** — funnel `127.0.0.1:<port>` on `/<prefix>` → relay serves `/<prefix>` (because funnel strips the prefix before forwarding). Use `--poe-path /<prefix>`.
-5. **Permission policy** — `allow-all` (default), `read-only`, or `deny-all`.
+1. **Host** — ssh target (`user@host`).
+2. **Poe access key** — server-bot secret from poe.com; lands in `POEACP_ACCESS_KEY` on the host.
+3. **ACP agent command** — default `fir --mode acp`.
+4. **Funnel layout**:
+   - **(a) Dedicated** — funnel `127.0.0.1:8080` on `/`. Relay uses default `--poe-path /poe`. Public URL: `https://<host>.<tailnet>.ts.net/poe`.
+   - **(b) Prefix** — funnel `127.0.0.1:<port>` on `/<prefix>`. Funnel strips `/<prefix>` before forwarding, so set `--poe-path /<prefix>` to match.
+5. **Permission policy** — `allow-all` (default), `read-only`, `deny-all`.
 
 ## Steps
 
 ### 1. Ship the binary
 
-Prefer `make deploy` — it builds all 5 cross-compile targets, detects the remote arch, and scp's the matching binary to `~/.local/bin/poe-acp-relay`:
+`make deploy` cross-builds, detects remote arch, scp's the right binary to `~/.local/bin/poe-acp-relay`, and runs `--version`:
 
 ```bash
 make deploy HOST=<host>
 ```
 
-Alternative (release already published to Homebrew tap):
+Alternatively (released to tap):
 
 ```bash
 ssh <host> 'brew install kfet/fir/poe-acp-relay'
 ```
 
-Verify:
+### 2. Confirm the ACP agent is on the host's PATH
 
 ```bash
-ssh <host> 'poe-acp-relay --version'
+ssh <host> 'command -v fir && fir --version'
 ```
 
-### 2. Ensure the ACP agent is installed on the host
+### 3. Enable Funnel
 
-Whatever `--agent-cmd` resolves to must be on the host's `PATH` for the user that runs the relay. For fir:
-
-```bash
-ssh <host> 'which fir && fir --version'
-```
-
-### 3. Configure Tailscale Funnel
-
-**(a) Dedicated host, default path:**
-
+Dedicated:
 ```bash
 ssh <host> 'tailscale funnel --bg 127.0.0.1:8080'
 ```
 
-**(b) Shared host, prefix-mounted:**
-
+Prefix:
 ```bash
 ssh <host> 'tailscale funnel --bg --set-path=/poe-acp 127.0.0.1:8081'
 ```
 
-Funnel **strips** the prefix before forwarding, so the relay must register its handler at the same prefix (see next step).
+Verify: `ssh <host> 'tailscale funnel status'`.
 
-Confirm funnel is up:
+### 4. Install secret + service
 
-```bash
-ssh <host> 'tailscale funnel status'
-```
-
-### 4. Start the relay
-
-Put the access key in a file or env (never on the CLI). Recommended: a small wrapper that sources secrets from `~/.config/poe-acp-relay/env`.
-
-Example `~/.config/poe-acp-relay/env` on the host:
+Write `~/.config/poe-acp-relay/env` (mode `0600`) on the host:
 
 ```
 POEACP_ACCESS_KEY=<poe-server-bot-secret>
 ```
 
-Then, for layout (a):
-
-```bash
-ssh <host> '
-  set -a; . ~/.config/poe-acp-relay/env; set +a
-  nohup poe-acp-relay \
-    -http-addr 127.0.0.1:8080 \
-    -agent-cmd "fir --mode acp" \
-    >> ~/.local/state/poe-acp-relay.log 2>&1 &
-'
-```
-
-For layout (b) with prefix `/poe-acp` on port `8081`:
-
-```bash
-ssh <host> '
-  set -a; . ~/.config/poe-acp-relay/env; set +a
-  nohup poe-acp-relay \
-    -http-addr 127.0.0.1:8081 \
-    -poe-path /poe-acp \
-    -agent-cmd "fir --mode acp" \
-    >> ~/.local/state/poe-acp-relay.log 2>&1 &
-'
-```
-
-For a more durable setup, prefer a `tmux` window or a user-level `systemd` / `launchd` unit. A systemd template is not yet in-repo (see README "Deployment"), but minimally:
+Prefer a systemd user unit over nohup/tmux. Write `~/.config/systemd/user/poe-acp-relay.service`:
 
 ```ini
-# ~/.config/systemd/user/poe-acp-relay.service
 [Unit]
 Description=poe-acp-relay
 After=network-online.target
@@ -123,62 +78,60 @@ RestartSec=2s
 WantedBy=default.target
 ```
 
-```bash
-ssh <host> 'systemctl --user daemon-reload && systemctl --user enable --now poe-acp-relay'
+For prefix layout, swap the `ExecStart` to match:
+
+```
+ExecStart=%h/.local/bin/poe-acp-relay -http-addr 127.0.0.1:8081 -poe-path /poe-acp -agent-cmd "fir --mode acp"
 ```
 
-### 5. Verify end-to-end
+Enable:
+
+```bash
+ssh <host> 'systemctl --user daemon-reload && systemctl --user enable --now poe-acp-relay && loginctl enable-linger $USER'
+```
+
+(`enable-linger` keeps the user unit running across logouts/reboots.)
+
+### 5. Verify
 
 From your workstation:
 
 ```bash
-# (a) default layout
-curl -i https://<host>.<tailnet>.ts.net/poe -X POST \
-     -H 'Authorization: Bearer <poe-server-bot-secret>' \
-     -H 'Content-Type: application/json' \
-     -d '{"version":"1.0","type":"query","query":[]}'
-
-# (b) prefix layout
-curl -i https://<host>.<tailnet>.ts.net/poe-acp -X POST ...
+curl -i https://<host>.<tailnet>.ts.net/<poe-path> -X POST \
+  -H 'Authorization: Bearer <poe-server-bot-secret>' \
+  -H 'Content-Type: application/json' \
+  -d '{"version":"1.0","type":"query","query":[]}'
 ```
 
-Expect a `200` with an SSE stream (even on malformed query). A `401` means the bearer token didn't match `POEACP_ACCESS_KEY`; a `404` means the path layout is wrong.
+Expect `200` with SSE headers. `401` → key mismatch. `404` → path layout mismatch (see Funnel prefix note).
 
-Then in the Poe bot settings:
+Then set the Poe bot's Server URL to `https://<host>.<tailnet>.ts.net/<poe-path>` and the access key to the same value as `POEACP_ACCESS_KEY`. Send a test message from Poe and confirm a reply.
 
-- **Server URL:** `https://<host>.<tailnet>.ts.net/<poe-path>`
-- **Access Key:** same value as `POEACP_ACCESS_KEY`
-
-Send a test message from Poe and confirm a reply appears.
-
-### 6. Tail logs for the first few conversations
+### 6. Tail logs during first conversations
 
 ```bash
-ssh <host> 'tail -f ~/.local/state/poe-acp-relay.log'
+ssh <host> 'journalctl --user -u poe-acp-relay -f'
 ```
 
-Look for the per-conversation cwd, `initialize` handshake, and `session/prompt` traffic. Cancellation / heartbeat / GC messages confirm the full state machine is exercised.
+Look for per-conversation cwd, ACP `initialize` handshake, and `session/prompt` traffic.
 
-## Upgrading a live deployment
+## Upgrading
 
-Two options:
+- **Brew-managed:** `ssh <host> 'brew upgrade poe-acp-relay' && ssh <host> 'systemctl --user restart poe-acp-relay'`.
+- **Direct hotfix:** `make deploy HOST=<host> && ssh <host> 'systemctl --user restart poe-acp-relay'`.
 
-- **Homebrew-managed:** `ssh <host> 'brew upgrade poe-acp-relay'`, then restart the service/tmux/nohup process.
-- **Direct hotfix:** from the repo, `make deploy HOST=<host>`. This scp's the matching arch binary to `~/.local/bin/poe-acp-relay` and calls `--version`. Restart the process afterward.
+## Pitfalls
 
-## Common pitfalls
+- **Prefix 404** — funnel `--set-path=/X` strips `/X`; `--poe-path` must equal `/X`.
+- **401** — host's `POEACP_ACCESS_KEY` doesn't match what Poe sends.
+- **Agent not found** — `--agent-cmd` resolves against the service user's PATH.
+- **Multiple bots on one host** — one relay process per bot, each on its own loopback port + funnel prefix + access key.
 
-- **Prefix layout 404s.** Funnel `--set-path=/X` strips `/X` before forwarding. The relay must register at `/X`, not at `/poe`. Set `--poe-path /X`.
-- **401 from Poe.** Bearer key on the host doesn't match what Poe is sending. Check `POEACP_ACCESS_KEY` in the service env.
-- **Agent not found.** `--agent-cmd` runs as the relay's user; ensure the agent binary is on that user's `PATH`.
-- **Process dies on reboot.** v1 is manual — use systemd user unit (above) or tmux.
-- **Multiple bots on one host.** Each bot = one relay process on its own loopback port + its own funnel prefix. `POEACP_ACCESS_KEY` is per-bot.
+## Handoff checklist
 
-## Post-deploy handoff checklist
-
-- [ ] `poe-acp-relay --version` matches the intended release on the host.
-- [ ] `tailscale funnel status` shows the expected port/prefix mapping.
+- [ ] `poe-acp-relay --version` on the host matches the intended release.
+- [ ] `tailscale funnel status` shows the expected mapping.
 - [ ] Curl smoke test returns `200` with SSE headers.
 - [ ] Poe test message round-trips.
-- [ ] Process supervisor (systemd unit / tmux window / launchd plist) is in place.
-- [ ] Access key is stored in an env file with mode `0600`, not on the CLI.
+- [ ] Systemd user unit enabled + `loginctl enable-linger` set.
+- [ ] `~/.config/poe-acp-relay/env` is mode `0600`.
