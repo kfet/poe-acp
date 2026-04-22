@@ -3,13 +3,14 @@
 # Output directory for all build artifacts
 BINDIR    := bin
 BINARY    := $(BINDIR)/poe-acp-relay
+NOTICE_DIR := dist
+NOTICE_FILE := $(NOTICE_DIR)/THIRD_PARTY_NOTICES.md
 
 # Go binary install path
 GOBIN     := $(shell go env GOPATH)/bin
 VERSION   := $(shell cat VERSION 2>/dev/null || echo dev)
 
-# Compute a rich version: if HEAD is the exact release tag, use VERSION as-is.
-# Otherwise append -dev+<commit>[.dirty] so non-release builds are obvious.
+# Compute version metadata
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
 GIT_TAG    := $(shell git describe --exact-match --tags HEAD 2>/dev/null)
 GIT_DIRTY  := $(shell git diff --quiet 2>/dev/null || echo .dirty)
@@ -103,22 +104,23 @@ vet:
 
 clean:
 	rm -rf $(BINDIR)
-	rm -f THIRD_PARTY_NOTICES.md
+	rm -rf $(NOTICE_DIR)
 
 # ---------------------------------------------------------------------------
 # Third-party license notices
 #
 # `make notices` generates THIRD_PARTY_NOTICES.md from go.mod / go.sum via
 # go-licenses. `make check-licenses` fails the build if any dependency is
-# under a license we do not allow (GPL, AGPL, etc.).
+# under a disallowed license.
 # ---------------------------------------------------------------------------
 
 GO_LICENSES := go run github.com/google/go-licenses@v1.6.0
 
-notices: THIRD_PARTY_NOTICES.md
+notices: $(NOTICE_FILE)
 
-THIRD_PARTY_NOTICES.md: go.mod go.sum
-	$(call RUN,generate notices,$(GO_LICENSES) report ./cmd/poe-acp-relay > $@ 2>/dev/null)
+$(NOTICE_FILE): go.mod go.sum
+	@mkdir -p $(NOTICE_DIR)
+	$(call RUN,generate notices,$(GO_LICENSES) report ./cmd/poe-acp-relay > $(NOTICE_FILE) 2>/dev/null)
 
 check-licenses:
 	$(call RUN,check licenses,$(GO_LICENSES) check ./cmd/poe-acp-relay --disallowed_types=forbidden,restricted 2>/dev/null)
