@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,16 @@ type fakeAgent struct {
 	// Hook: called with (sid, text) when Prompt is invoked. The hook
 	// should use the registered sink to emit updates before returning.
 	onPrompt func(ctx context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error)
+
+	// Optional overrides for the resume tier.
+	caps          acpclient.Caps
+	listResult    []acpclient.SessionInfo
+	listErr       error
+	resumeErr     error
+	listCalls     int32
+	resumeCalls   int32
+	newSessCalls  int32
+	lastPromptTxt string
 }
 
 func newFakeAgent(onPrompt func(ctx context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error)) *fakeAgent {
@@ -32,7 +43,23 @@ func newFakeAgent(onPrompt func(ctx context.Context, a *fakeAgent, sid acp.Sessi
 	}
 }
 
+func (f *fakeAgent) Caps() acpclient.Caps { return f.caps }
+func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]acpclient.SessionInfo, error) {
+	atomic.AddInt32(&f.listCalls, 1)
+	return f.listResult, f.listErr
+}
+func (f *fakeAgent) ResumeSession(_ context.Context, _ string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error {
+	atomic.AddInt32(&f.resumeCalls, 1)
+	if f.resumeErr != nil {
+		return f.resumeErr
+	}
+	f.mu.Lock()
+	f.sinks[sid] = sink
+	f.mu.Unlock()
+	return nil
+}
 func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink) (acp.SessionId, error) {
+	atomic.AddInt32(&f.newSessCalls, 1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
@@ -43,6 +70,9 @@ func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.Sessi
 
 func (f *fakeAgent) Prompt(ctx context.Context, sid acp.SessionId, text string) (acp.StopReason, error) {
 	atomic.AddInt32(&f.prompts, 1)
+	f.mu.Lock()
+	f.lastPromptTxt = text
+	f.mu.Unlock()
 	return f.onPrompt(ctx, f, sid, text)
 }
 
@@ -129,7 +159,7 @@ func TestRouter_PromptStreamsText(t *testing.T) {
 	}
 
 	sink := &captureSink{}
-	if err := r.Prompt(context.Background(), "conv-a", "user-1", "hi", sink); err != nil {
+	if err := r.Prompt(context.Background(), "conv-a", "user-1", []Turn{{Role: "user", Content: "hi"}}, sink); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
 	if got := sink.text.String(); got != "hello world" {
@@ -157,7 +187,7 @@ func TestRouter_ReusesSession(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if err := r.Prompt(context.Background(), "conv-x", "u", "ping", &captureSink{}); err != nil {
+		if err := r.Prompt(context.Background(), "conv-x", "u", []Turn{{Role: "user", Content: "ping"}}, &captureSink{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -188,7 +218,7 @@ func TestRouter_StopReasons(t *testing.T) {
 			})
 			r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
 			sink := &captureSink{}
-			_ = r.Prompt(context.Background(), "c", "u", "x", sink)
+			_ = r.Prompt(context.Background(), "c", "u", []Turn{{Role: "user", Content: "x"}}, sink)
 			if !sink.done {
 				t.Fatal("done not called")
 			}
@@ -224,7 +254,7 @@ func TestRouter_IdleGC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Prompt(context.Background(), "c1", "u", "hi", &captureSink{}); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, &captureSink{}); err != nil {
 		t.Fatal(err)
 	}
 	if r.Len() != 1 {
@@ -236,5 +266,158 @@ func TestRouter_IdleGC(t *testing.T) {
 	r.gcOnce()
 	if r.Len() != 0 {
 		t.Fatalf("want 0 sessions after GC, got %d", r.Len())
+	}
+}
+
+// --- Resume / cold-start tiering tests ---
+
+func TestRouter_ResumesWhenAgentSupportsListResume(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	agent.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
+	agent.listResult = []acpclient.SessionInfo{{SessionId: "prior-sid"}}
+
+	r, err := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := []Turn{
+		{Role: "user", Content: "hi"},
+		{Role: "bot", Content: "hello"},
+		{Role: "user", Content: "hi again"},
+	}
+	if err := r.Prompt(context.Background(), "c1", "u", query, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&agent.listCalls) != 1 {
+		t.Fatalf("want 1 list call, got %d", agent.listCalls)
+	}
+	if atomic.LoadInt32(&agent.resumeCalls) != 1 {
+		t.Fatalf("want 1 resume call, got %d", agent.resumeCalls)
+	}
+	if atomic.LoadInt32(&agent.newSessCalls) != 0 {
+		t.Fatalf("want 0 new-session calls (should resume), got %d", agent.newSessCalls)
+	}
+	// Resumed: agent already has history; only the latest user turn is sent.
+	if agent.lastPromptTxt != "hi again" {
+		t.Fatalf("prompt text=%q want %q", agent.lastPromptTxt, "hi again")
+	}
+}
+
+func TestRouter_NewSessionWhenListEmpty(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	agent.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
+	// listResult nil → empty, no prior session.
+
+	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	query := []Turn{
+		{Role: "user", Content: "first"},
+		{Role: "bot", Content: "reply"},
+		{Role: "user", Content: "second"},
+	}
+	if err := r.Prompt(context.Background(), "c1", "u", query, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&agent.listCalls) != 1 {
+		t.Fatalf("want 1 list call, got %d", agent.listCalls)
+	}
+	if atomic.LoadInt32(&agent.resumeCalls) != 0 {
+		t.Fatalf("want 0 resume calls, got %d", agent.resumeCalls)
+	}
+	if atomic.LoadInt32(&agent.newSessCalls) != 1 {
+		t.Fatalf("want 1 new-session call, got %d", agent.newSessCalls)
+	}
+	// No resume: seed with full transcript.
+	if !strings.Contains(agent.lastPromptTxt, "User: first") || !strings.Contains(agent.lastPromptTxt, "Assistant: reply") || !strings.Contains(agent.lastPromptTxt, "User: second") {
+		t.Fatalf("seed prompt missing transcript pieces: %q", agent.lastPromptTxt)
+	}
+}
+
+func TestRouter_NewSessionWhenCapsAbsent(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	// No caps at all.
+
+	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	query := []Turn{
+		{Role: "user", Content: "first"},
+		{Role: "bot", Content: "reply"},
+		{Role: "user", Content: "second"},
+	}
+	if err := r.Prompt(context.Background(), "c1", "u", query, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&agent.listCalls) != 0 {
+		t.Fatalf("want 0 list calls (caps absent), got %d", agent.listCalls)
+	}
+	if atomic.LoadInt32(&agent.newSessCalls) != 1 {
+		t.Fatalf("want 1 new-session call, got %d", agent.newSessCalls)
+	}
+	if !strings.Contains(agent.lastPromptTxt, "User: second") {
+		t.Fatalf("expected seeded transcript: %q", agent.lastPromptTxt)
+	}
+}
+
+func TestRouter_HotPathSendsLatestOnly(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+
+	// First call: cold + single user turn → no seed.
+	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "one"}}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	// Second call: hot, even with prior turns the router sends only latest.
+	q := []Turn{
+		{Role: "user", Content: "one"},
+		{Role: "bot", Content: "ok"},
+		{Role: "user", Content: "two"},
+	}
+	if err := r.Prompt(context.Background(), "c1", "u", q, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if agent.lastPromptTxt != "two" {
+		t.Fatalf("hot-path prompt=%q want %q", agent.lastPromptTxt, "two")
+	}
+	if atomic.LoadInt32(&agent.newSessCalls) != 1 {
+		t.Fatalf("want 1 new-session call (reused), got %d", agent.newSessCalls)
+	}
+}
+
+func TestRouter_FallsBackWhenResumeErrors(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	agent.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
+	agent.listResult = []acpclient.SessionInfo{{SessionId: "stale"}}
+	agent.resumeErr = fmt.Errorf("session not found")
+
+	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	query := []Turn{
+		{Role: "user", Content: "hi"},
+		{Role: "bot", Content: "hey"},
+		{Role: "user", Content: "again"},
+	}
+	if err := r.Prompt(context.Background(), "c1", "u", query, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&agent.resumeCalls) != 1 {
+		t.Fatalf("want 1 resume call, got %d", agent.resumeCalls)
+	}
+	if atomic.LoadInt32(&agent.newSessCalls) != 1 {
+		t.Fatalf("want fallback NewSession after resume error, got %d", agent.newSessCalls)
+	}
+	if !strings.Contains(agent.lastPromptTxt, "User: again") {
+		t.Fatalf("expected seed prompt after fallback: %q", agent.lastPromptTxt)
 	}
 }

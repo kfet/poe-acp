@@ -25,6 +25,13 @@ type fakeAgent struct {
 	n     int
 }
 
+func (f *fakeAgent) Caps() acpclient.Caps { return acpclient.Caps{} }
+func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]acpclient.SessionInfo, error) {
+	return nil, nil
+}
+func (f *fakeAgent) ResumeSession(_ context.Context, _ string, _ acp.SessionId, _ acpclient.SessionUpdateSink) error {
+	return nil
+}
 func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink) (acp.SessionId, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
