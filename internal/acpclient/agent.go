@@ -314,13 +314,9 @@ func (a *AgentProc) dispatch(ctx context.Context, method string, params json.Raw
 			return nil, toReqErr(err)
 		}
 		return acp.WriteTextFileResponse{}, nil
-	case acp.ClientMethodTerminalCreate,
-		acp.ClientMethodTerminalKill,
-		acp.ClientMethodTerminalOutput,
-		acp.ClientMethodTerminalRelease,
-		acp.ClientMethodTerminalWaitForExit:
-		return nil, acp.NewMethodNotFound(method)
 	default:
+		// Terminal methods and any unknown call: we never advertised
+		// the capability, so the agent shouldn't be calling these.
 		return nil, acp.NewMethodNotFound(method)
 	}
 }
