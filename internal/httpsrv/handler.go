@@ -94,12 +94,6 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		return
 	}
 
-	if req.LatestUserText() == "" {
-		_ = sse.Error("empty user message", "user_caused_error")
-		_ = sse.Done()
-		return
-	}
-
 	turns := make([]router.Turn, 0, len(req.Query))
 	for _, m := range req.Query {
 		turns = append(turns, router.Turn{Role: m.Role, Content: m.Content})
