@@ -10,6 +10,7 @@
 ### Fixed
 
 - Concurrent cold-path requests for the same conv_id no longer double-seed the winning session's history (race loser now correctly takes the hot path).
+- GC no longer evicts a session while a prompt is in flight; long generations exceeding `--session-ttl` are protected by an in-use guard.
 
 ## [0.2.0] - 2026-04-22
 
