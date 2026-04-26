@@ -174,9 +174,9 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	}()
 
 	promptText := latest
-	if freshSeed && len(query) > 1 {
-		// Cold path with no resume: flatten the full transcript so the
-		// agent has context for the latest user turn.
+	if freshSeed {
+		// Cold path with no resume and prior turns: flatten the full
+		// transcript so the agent has context for the latest user turn.
 		promptText = flattenTranscript(query)
 	}
 
