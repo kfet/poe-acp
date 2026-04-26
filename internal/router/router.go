@@ -79,6 +79,10 @@ type sessionState struct {
 
 	// turnMu serialises prompts for this conv. Held for the whole turn.
 	turnMu sync.Mutex
+	// inUse is non-zero while a prompt is in flight; GC skips such
+	// sessions so a long generation isn't evicted out from under itself.
+	// Protected by Router.mu (read by gcOnce, written by Prompt).
+	inUse int
 
 	// sinkMu guards sink (written by Prompt, read by OnUpdate).
 	sinkMu sync.Mutex
@@ -160,6 +164,16 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 
 	st.turnMu.Lock()
 	defer st.turnMu.Unlock()
+
+	// Mark in-use so GC doesn't evict mid-prompt for long generations.
+	r.mu.Lock()
+	st.inUse++
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		st.inUse--
+		r.mu.Unlock()
+	}()
 
 	st.sinkMu.Lock()
 	st.sink = sink
@@ -351,7 +365,7 @@ func (r *Router) gcOnce() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, st := range r.sessions {
-		if st.lastUsedNs < cutoff {
+		if st.inUse == 0 && st.lastUsedNs < cutoff {
 			delete(r.sessions, id)
 		}
 	}

@@ -475,3 +475,41 @@ func TestRouter_RaceLoserDoesNotSeed(t *testing.T) {
 		t.Fatalf("want 1 session after race, got %d", r.Len())
 	}
 }
+
+func TestRouter_GCDoesNotEvictMidPrompt(t *testing.T) {
+	// Long-running Prompt: GC fires after the TTL would have lapsed
+	// since session creation, but the session is currently in use.
+	// touch() at the start of Prompt must keep it alive.
+	var now int64 = 1_000_000_000_000
+	nowFn := func() time.Time { return time.Unix(0, atomic.LoadInt64(&now)) }
+
+	gcDuring := make(chan struct{})
+	releasePrompt := make(chan struct{})
+
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		close(gcDuring)
+		<-releasePrompt
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+
+	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Minute, Now: nowFn})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, &captureSink{})
+	}()
+
+	<-gcDuring
+	// Jump clock past TTL relative to creation time, then run GC.
+	atomic.StoreInt64(&now, now+int64(2*time.Minute))
+	r.gcOnce()
+	if r.Len() != 1 {
+		close(releasePrompt)
+		t.Fatalf("session evicted mid-prompt; want 1 session, got %d", r.Len())
+	}
+	close(releasePrompt)
+	if err := <-done; err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+}
