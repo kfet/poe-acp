@@ -1,5 +1,6 @@
 // Package router maps Poe conversation_ids to ACP sessions and owns their
-// lifecycle (lazy create, per-conv cwd, serial-per-conv prompting, idle GC).
+// lifecycle (lazy create / resume, per-conv cwd, serial-per-conv prompting,
+// idle GC).
 package router
 
 import (
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,10 +31,20 @@ type ChunkSink interface {
 	FirstChunk()
 }
 
+// Turn is one message in a Poe query, decoupled from the wire type so
+// the router doesn't depend on poeproto.
+type Turn struct {
+	Role    string // "user", "bot", or "system"
+	Content string
+}
+
 // Agent is the subset of acpclient.AgentProc the router needs. Exposed
 // as an interface for testability.
 type Agent interface {
+	Caps() acpclient.Caps
 	NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink) (acp.SessionId, error)
+	ListSessions(ctx context.Context, cwd string) ([]acpclient.SessionInfo, error)
+	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error
 	Prompt(ctx context.Context, sid acp.SessionId, text string) (acp.StopReason, error)
 	Cancel(ctx context.Context, sid acp.SessionId) error
 }
@@ -64,6 +76,11 @@ type sessionState struct {
 	userID    string
 	sessionID acp.SessionId
 	cwd       string
+	// resumed indicates the agent already has the conversation history
+	// (because we ResumeSession'd or because we seeded it on first
+	// NewSession). Once true, subsequent prompts send only the latest
+	// user turn.
+	resumed bool
 
 	// turnMu serialises prompts for this conv. Held for the whole turn.
 	turnMu sync.Mutex
@@ -73,7 +90,7 @@ type sessionState struct {
 	sink   ChunkSink
 	first  bool
 
-	lastUsedNs int64 // atomic-ish via sessionState lock in router
+	lastUsedNs int64 // protected by Router.mu
 }
 
 // New creates a router.
@@ -124,12 +141,22 @@ func (s *sessionState) OnUpdate(_ context.Context, n acp.SessionNotification) er
 	return nil
 }
 
-// Prompt handles one Poe query end-to-end. Serialises per-conv.
-func (r *Router) Prompt(ctx context.Context, convID, userID, text string, sink ChunkSink) error {
+// Prompt handles one Poe query end-to-end. Serialises per-conv. The query
+// slice is the full Poe-supplied conversation (including prior turns); the
+// router uses only the latest user turn on the hot path, but seeds the
+// agent with the full transcript on a cold path that can't resume.
+func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn, sink ChunkSink) error {
 	if convID == "" {
 		convID = "default"
 	}
-	st, err := r.getOrCreate(ctx, convID, userID)
+	latest := latestUserText(query)
+	if latest == "" {
+		_ = sink.Error("empty user message", "user_caused_error")
+		_ = sink.Done()
+		return fmt.Errorf("empty user message")
+	}
+
+	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query)
 	if err != nil {
 		_ = sink.Error(fmt.Sprintf("relay: %v", err), "user_caused_error")
 		_ = sink.Done()
@@ -151,7 +178,14 @@ func (r *Router) Prompt(ctx context.Context, convID, userID, text string, sink C
 		r.touch(convID)
 	}()
 
-	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, text)
+	promptText := latest
+	if freshSeed && len(query) > 1 {
+		// Cold path with no resume: flatten the full transcript so the
+		// agent has context for the latest user turn.
+		promptText = flattenTranscript(query)
+	}
+
+	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, promptText)
 	if err != nil {
 		_ = sink.Error(fmt.Sprintf("acp prompt: %v", err), "user_caused_error")
 		_ = sink.Done()
@@ -173,6 +207,43 @@ func (r *Router) Prompt(ctx context.Context, convID, userID, text string, sink C
 	return sink.Done()
 }
 
+// latestUserText returns the content of the last user message in the query.
+func latestUserText(q []Turn) string {
+	for i := len(q) - 1; i >= 0; i-- {
+		if q[i].Role == "user" {
+			return q[i].Content
+		}
+	}
+	return ""
+}
+
+// flattenTranscript turns a multi-turn Poe query into a single seed prompt
+// for an agent that has no prior context. Format: each turn is prefixed
+// with a role tag; the latest user turn is emitted last.
+func flattenTranscript(q []Turn) string {
+	var b strings.Builder
+	b.WriteString("[Resuming a prior conversation. Transcript so far:]\n\n")
+	for _, t := range q {
+		var label string
+		switch t.Role {
+		case "user":
+			label = "User"
+		case "bot":
+			label = "Assistant"
+		case "system":
+			label = "System"
+		default:
+			label = t.Role
+		}
+		b.WriteString(label)
+		b.WriteString(": ")
+		b.WriteString(t.Content)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("[End of prior transcript. Respond to the latest User message above.]")
+	return b.String()
+}
+
 // Cancel asks the agent to cancel the current prompt for a conv.
 func (r *Router) Cancel(ctx context.Context, convID string) error {
 	r.mu.Lock()
@@ -184,41 +255,67 @@ func (r *Router) Cancel(ctx context.Context, convID string) error {
 	return r.cfg.Agent.Cancel(ctx, st.sessionID)
 }
 
-func (r *Router) getOrCreate(ctx context.Context, convID, userID string) (*sessionState, error) {
+// getOrCreate returns the sessionState for convID, creating or resuming an
+// agent session if necessary. freshSeed is true iff the caller should seed
+// the next prompt with the full transcript (cold path that did not resume,
+// AND has prior turns to seed from).
+func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query []Turn) (st *sessionState, freshSeed bool, err error) {
 	r.mu.Lock()
-	if st, ok := r.sessions[convID]; ok {
+	if existing, ok := r.sessions[convID]; ok {
 		r.mu.Unlock()
-		return st, nil
+		return existing, false, nil
 	}
 	r.mu.Unlock()
 
 	cwd := filepath.Join(r.cfg.StateDir, "convs", convID)
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir conv dir: %w", err)
+		return nil, false, fmt.Errorf("mkdir conv dir: %w", err)
 	}
 
-	st := &sessionState{
+	st = &sessionState{
 		convID:     convID,
 		userID:     userID,
 		cwd:        cwd,
 		lastUsedNs: r.cfg.Now().UnixNano(),
 	}
-	sid, err := r.cfg.Agent.NewSession(ctx, cwd, st)
-	if err != nil {
-		return nil, fmt.Errorf("acp new session: %w", err)
+
+	// Tier 1: try resume if the agent supports list+resume.
+	caps := r.cfg.Agent.Caps()
+	if caps.ListSessions && caps.ResumeSession {
+		sessions, lerr := r.cfg.Agent.ListSessions(ctx, cwd)
+		if lerr == nil && len(sessions) > 0 {
+			sid := acp.SessionId(sessions[0].SessionId)
+			if rerr := r.cfg.Agent.ResumeSession(ctx, cwd, sid, st); rerr == nil {
+				st.sessionID = sid
+				st.resumed = true
+				return r.install(convID, st), false, nil
+			}
+		}
+	}
+
+	// Tier 2: new session. If we have prior turns, the caller will seed.
+	sid, nerr := r.cfg.Agent.NewSession(ctx, cwd, st)
+	if nerr != nil {
+		return nil, false, fmt.Errorf("acp new session: %w", nerr)
 	}
 	st.sessionID = sid
+	freshSeed = len(query) > 1
+	st.resumed = freshSeed // after the seed prompt the agent has history
+	return r.install(convID, st), freshSeed, nil
+}
 
+// install registers st under convID, returning either st or the existing
+// entry if another goroutine raced us.
+func (r *Router) install(convID string, st *sessionState) *sessionState {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if existing, ok := r.sessions[convID]; ok {
-		r.mu.Unlock()
-		// Lost the race; the session we just created leaks on the agent
-		// side but that is cheap.
-		return existing, nil
+		// Lost the race; the session we just created/resumed leaks on the
+		// agent side but that is cheap and rare.
+		return existing
 	}
 	r.sessions[convID] = st
-	r.mu.Unlock()
-	return st, nil
+	return st
 }
 
 func (r *Router) touch(convID string) {
