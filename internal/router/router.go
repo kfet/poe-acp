@@ -76,11 +76,6 @@ type sessionState struct {
 	userID    string
 	sessionID acp.SessionId
 	cwd       string
-	// resumed indicates the agent already has the conversation history
-	// (because we ResumeSession'd or because we seeded it on first
-	// NewSession). Once true, subsequent prompts send only the latest
-	// user turn.
-	resumed bool
 
 	// turnMu serialises prompts for this conv. Held for the whole turn.
 	turnMu sync.Mutex
@@ -287,8 +282,8 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 			sid := acp.SessionId(sessions[0].SessionId)
 			if rerr := r.cfg.Agent.ResumeSession(ctx, cwd, sid, st); rerr == nil {
 				st.sessionID = sid
-				st.resumed = true
-				return r.install(convID, st), false, nil
+				winner, _ := r.install(convID, st)
+				return winner, false, nil
 			}
 		}
 	}
@@ -300,22 +295,28 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	}
 	st.sessionID = sid
 	freshSeed = len(query) > 1
-	st.resumed = freshSeed // after the seed prompt the agent has history
-	return r.install(convID, st), freshSeed, nil
+	winner, won := r.install(convID, st)
+	if !won {
+		// Lost the race: the existing session is already hot and has
+		// (or will have) its own history; do not double-seed it.
+		freshSeed = false
+	}
+	return winner, freshSeed, nil
 }
 
-// install registers st under convID, returning either st or the existing
-// entry if another goroutine raced us.
-func (r *Router) install(convID string, st *sessionState) *sessionState {
+// install registers st under convID, returning the winning entry and
+// whether st itself was the winner (true) or an existing entry beat us
+// (false).
+func (r *Router) install(convID string, st *sessionState) (*sessionState, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing, ok := r.sessions[convID]; ok {
 		// Lost the race; the session we just created/resumed leaks on the
 		// agent side but that is cheap and rare.
-		return existing
+		return existing, false
 	}
 	r.sessions[convID] = st
-	return st
+	return st, true
 }
 
 func (r *Router) touch(convID string) {

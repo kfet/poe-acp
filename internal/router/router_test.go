@@ -421,3 +421,57 @@ func TestRouter_FallsBackWhenResumeErrors(t *testing.T) {
 		t.Fatalf("expected seed prompt after fallback: %q", agent.lastPromptTxt)
 	}
 }
+
+func TestRouter_RaceLoserDoesNotSeed(t *testing.T) {
+	// Two concurrent cold-path requests for the same conv with prior
+	// turns must not BOTH issue a seeded transcript prompt. Whoever
+	// loses the install race must take the hot path (latest user turn
+	// only) on the winner's session.
+	var (
+		seenMu sync.Mutex
+		seen   []string
+	)
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error) {
+		seenMu.Lock()
+		seen = append(seen, text)
+		seenMu.Unlock()
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+
+	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+
+	query := []Turn{
+		{Role: "user", Content: "first"},
+		{Role: "bot", Content: "reply"},
+		{Role: "user", Content: "second"},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			_ = r.Prompt(context.Background(), "race-conv", "u", query, &captureSink{})
+		}()
+	}
+	wg.Wait()
+
+	seenMu.Lock()
+	defer seenMu.Unlock()
+	if len(seen) != 2 {
+		t.Fatalf("want 2 prompts, got %d: %v", len(seen), seen)
+	}
+	seeded := 0
+	for _, p := range seen {
+		if strings.Contains(p, "[Resuming a prior conversation") {
+			seeded++
+		}
+	}
+	if seeded > 1 {
+		t.Fatalf("more than one prompt was seeded; double-seeding hot session: %v", seen)
+	}
+	if r.Len() != 1 {
+		t.Fatalf("want 1 session after race, got %d", r.Len())
+	}
+}
