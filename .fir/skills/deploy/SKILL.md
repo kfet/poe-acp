@@ -166,6 +166,8 @@ Look for per-conversation cwd, ACP `initialize` handshake, and `session/prompt` 
 
 ## Upgrading
 
+See the `update` skill (`.fir/skills/update/SKILL.md`) for the per-host upgrade flow. Quick reference:
+
 - **Brew-managed (macOS local):** `brew upgrade poe-acp-relay && launchctl kickstart -k gui/$UID/dev.<you>.poe-acp-relay`.
 - **Brew-managed (remote):** `ssh <host> 'brew upgrade poe-acp-relay' && ssh <host> 'systemctl --user restart poe-acp-relay'`.
 - **Direct hotfix:** `make deploy HOST=<host> && ssh <host> 'systemctl --user restart poe-acp-relay'`.
