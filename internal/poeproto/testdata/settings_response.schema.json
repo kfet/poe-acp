@@ -1,0 +1,922 @@
+{
+  "$comment": "Generated from fastapi-poe==0.0.70 SettingsResponse. Do not edit by hand. Regenerate with scripts/regen-poe-schema.sh.",
+  "$defs": {
+    "AspectRatio": {
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "const": "aspect_ratio",
+          "default": "aspect_ratio",
+          "title": "Control",
+          "type": "string"
+        },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Value"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/AspectRatioOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "parameter_name": {
+          "title": "Parameter Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "parameter_name",
+        "options"
+      ],
+      "title": "AspectRatio",
+      "type": "object"
+    },
+    "AspectRatioOption": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Height"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Width"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "title": "AspectRatioOption",
+      "type": "object"
+    },
+    "ComparatorCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "comparator": {
+          "enum": [
+            "eq",
+            "ne",
+            "gt",
+            "ge",
+            "lt",
+            "le"
+          ],
+          "title": "Comparator",
+          "type": "string"
+        },
+        "left": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/ParameterValue"
+            }
+          ],
+          "title": "Left"
+        },
+        "right": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/ParameterValue"
+            }
+          ],
+          "title": "Right"
+        }
+      },
+      "required": [
+        "comparator",
+        "left",
+        "right"
+      ],
+      "title": "ComparatorCondition",
+      "type": "object"
+    },
+    "ConditionallyRenderControls": {
+      "additionalProperties": false,
+      "properties": {
+        "condition": {
+          "$ref": "#/$defs/ComparatorCondition"
+        },
+        "control": {
+          "const": "condition",
+          "default": "condition",
+          "title": "Control",
+          "type": "string"
+        },
+        "controls": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Divider"
+              },
+              {
+                "$ref": "#/$defs/TextField"
+              },
+              {
+                "$ref": "#/$defs/TextArea"
+              },
+              {
+                "$ref": "#/$defs/DropDown"
+              },
+              {
+                "$ref": "#/$defs/ToggleSwitch"
+              },
+              {
+                "$ref": "#/$defs/Slider"
+              },
+              {
+                "$ref": "#/$defs/AspectRatio"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        }
+      },
+      "required": [
+        "condition",
+        "controls"
+      ],
+      "title": "ConditionallyRenderControls",
+      "type": "object"
+    },
+    "Divider": {
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "const": "divider",
+          "default": "divider",
+          "title": "Control",
+          "type": "string"
+        }
+      },
+      "title": "Divider",
+      "type": "object"
+    },
+    "DropDown": {
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "const": "drop_down",
+          "default": "drop_down",
+          "title": "Control",
+          "type": "string"
+        },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Value"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/ValueNamePair"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "parameter_name": {
+          "title": "Parameter Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "parameter_name",
+        "options"
+      ],
+      "title": "DropDown",
+      "type": "object"
+    },
+    "LiteralValue": {
+      "additionalProperties": false,
+      "properties": {
+        "literal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "title": "Literal"
+        }
+      },
+      "required": [
+        "literal"
+      ],
+      "title": "LiteralValue",
+      "type": "object"
+    },
+    "ParameterControls": {
+      "additionalProperties": false,
+      "properties": {
+        "api_version": {
+          "const": "2",
+          "default": "2",
+          "title": "Api Version",
+          "type": "string"
+        },
+        "sections": {
+          "items": {
+            "$ref": "#/$defs/Section"
+          },
+          "title": "Sections",
+          "type": "array"
+        }
+      },
+      "required": [
+        "sections"
+      ],
+      "title": "ParameterControls",
+      "type": "object"
+    },
+    "ParameterValue": {
+      "additionalProperties": false,
+      "properties": {
+        "parameter_name": {
+          "title": "Parameter Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "parameter_name"
+      ],
+      "title": "ParameterValue",
+      "type": "object"
+    },
+    "Section": {
+      "additionalProperties": false,
+      "properties": {
+        "collapsed_by_default": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collapsed By Default"
+        },
+        "controls": {
+          "anyOf": [
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Divider"
+                  },
+                  {
+                    "$ref": "#/$defs/TextField"
+                  },
+                  {
+                    "$ref": "#/$defs/TextArea"
+                  },
+                  {
+                    "$ref": "#/$defs/DropDown"
+                  },
+                  {
+                    "$ref": "#/$defs/ToggleSwitch"
+                  },
+                  {
+                    "$ref": "#/$defs/Slider"
+                  },
+                  {
+                    "$ref": "#/$defs/AspectRatio"
+                  },
+                  {
+                    "$ref": "#/$defs/ConditionallyRenderControls"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controls"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "tabs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/Tab"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tabs"
+        }
+      },
+      "title": "Section",
+      "type": "object"
+    },
+    "Slider": {
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "const": "slider",
+          "default": "slider",
+          "title": "Control",
+          "type": "string"
+        },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Value"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "max_value": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Max Value"
+        },
+        "min_value": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Min Value"
+        },
+        "parameter_name": {
+          "title": "Parameter Name",
+          "type": "string"
+        },
+        "step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Step"
+        }
+      },
+      "required": [
+        "label",
+        "parameter_name",
+        "min_value",
+        "max_value",
+        "step"
+      ],
+      "title": "Slider",
+      "type": "object"
+    },
+    "Tab": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Divider"
+              },
+              {
+                "$ref": "#/$defs/TextField"
+              },
+              {
+                "$ref": "#/$defs/TextArea"
+              },
+              {
+                "$ref": "#/$defs/DropDown"
+              },
+              {
+                "$ref": "#/$defs/ToggleSwitch"
+              },
+              {
+                "$ref": "#/$defs/Slider"
+              },
+              {
+                "$ref": "#/$defs/AspectRatio"
+              },
+              {
+                "$ref": "#/$defs/ConditionallyRenderControls"
+              }
+            ]
+          },
+          "title": "Controls",
+          "type": "array"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        }
+      },
+      "required": [
+        "controls"
+      ],
+      "title": "Tab",
+      "type": "object"
+    },
+    "TextArea": {
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "const": "text_area",
+          "default": "text_area",
+          "title": "Control",
+          "type": "string"
+        },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Value"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "parameter_name": {
+          "title": "Parameter Name",
+          "type": "string"
+        },
+        "placeholder": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Placeholder"
+        }
+      },
+      "required": [
+        "label",
+        "parameter_name"
+      ],
+      "title": "TextArea",
+      "type": "object"
+    },
+    "TextField": {
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "const": "text_field",
+          "default": "text_field",
+          "title": "Control",
+          "type": "string"
+        },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Value"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "parameter_name": {
+          "title": "Parameter Name",
+          "type": "string"
+        },
+        "placeholder": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Placeholder"
+        }
+      },
+      "required": [
+        "label",
+        "parameter_name"
+      ],
+      "title": "TextField",
+      "type": "object"
+    },
+    "ToggleSwitch": {
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "const": "toggle_switch",
+          "default": "toggle_switch",
+          "title": "Control",
+          "type": "string"
+        },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Value"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "parameter_name": {
+          "title": "Parameter Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "parameter_name"
+      ],
+      "title": "ToggleSwitch",
+      "type": "object"
+    },
+    "ValueNamePair": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "name"
+      ],
+      "title": "ValueNamePair",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "An object representing your bot's response to a settings object.\n#### Fields:\n- `response_version` (`int = 2`): Different Poe Protocol versions use different default settings\nvalues. When provided, Poe will use the default values for the specified response version.\nIf not provided, Poe will use the default values for response version 0.\n- `server_bot_dependencies` (`dict[str, int] = {}`): Information about other bots that your bot\nuses. This is used to facilitate the Bot Query API.\n- `allow_attachments` (`bool = True`): Whether to allow users to upload attachments to your\nbot.\n- `introduction_message` (`str = \"\"`): The introduction message to display to the users of your\nbot.\n- `expand_text_attachments` (`bool = True`): Whether to request parsed content/descriptions from\ntext attachments with the query request. This content is sent through the new parsed_content\nfield in the attachment dictionary. This change makes enabling file uploads much simpler.\n- `enable_image_comprehension` (`bool = False`): Similar to `expand_text_attachments` but for\nimages.\n- `enforce_author_role_alternation` (`bool = False`): If enabled, Poe will concatenate messages\nso that they follow role alternation, which is a requirement for certain LLM providers like\nAnthropic.\n - `enable_multi_bot_chat_prompting` (`bool = True`): If enabled, Poe will combine previous bot\n messages if there is a multibot context.\n- `parameter_controls` (`Optional[ParameterControls] = None`): Optional JSON object that defines\ninteractive parameter controls. The object must contain an api_version and sections array.",
+  "properties": {
+    "allow_attachments": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Allow Attachments"
+    },
+    "allow_user_context_clear": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Allow User Context Clear"
+    },
+    "context_clear_window_secs": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Context Clear Window Secs"
+    },
+    "cost_label": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Label"
+    },
+    "custom_rate_card": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Custom Rate Card"
+    },
+    "enable_image_comprehension": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Enable Image Comprehension"
+    },
+    "enable_multi_bot_chat_prompting": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Enable Multi Bot Chat Prompting"
+    },
+    "enforce_author_role_alternation": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Enforce Author Role Alternation"
+    },
+    "expand_text_attachments": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expand Text Attachments"
+    },
+    "introduction_message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Introduction Message"
+    },
+    "parameter_controls": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ParameterControls"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rate_card": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rate Card"
+    },
+    "response_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": 2,
+      "title": "Response Version"
+    },
+    "server_bot_dependencies": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Server Bot Dependencies",
+      "type": "object"
+    }
+  },
+  "title": "SettingsResponse",
+  "type": "object"
+}

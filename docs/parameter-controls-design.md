@@ -115,16 +115,20 @@ duplicates work the ACP path already does.
 
 ## Schema (concrete JSON)
 
-Returned in `settings` response under `parameter_controls`:
+Returned in `settings` response under `parameter_controls`. Note the
+required `api_version: "2"` and `control: "drop_down"` (NOT `"dropdown"`)
+— Poe validates with `extra="forbid"` per `fastapi_poe.types` and
+silently drops the entire object on any literal mismatch.
 
 ```json
 {
+  "api_version": "2",
   "sections": [
     {
       "name": "Model",
       "controls": [
         {
-          "control": "dropdown",
+          "control": "drop_down",
           "label": "Model",
           "parameter_name": "model",
           "default_value": "anthropic/claude-sonnet-4-5",
@@ -135,7 +139,7 @@ Returned in `settings` response under `parameter_controls`:
           ]
         },
         {
-          "control": "dropdown",
+          "control": "drop_down",
           "label": "Thinking",
           "parameter_name": "thinking",
           "default_value": "medium",
