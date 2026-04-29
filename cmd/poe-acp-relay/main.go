@@ -17,6 +17,7 @@ import (
 
 	"github.com/kfet/poe-acp-relay/internal/acpclient"
 	"github.com/kfet/poe-acp-relay/internal/httpsrv"
+	"github.com/kfet/poe-acp-relay/internal/paramctl"
 	"github.com/kfet/poe-acp-relay/internal/poeproto"
 	"github.com/kfet/poe-acp-relay/internal/policy"
 	"github.com/kfet/poe-acp-relay/internal/router"
@@ -98,6 +99,19 @@ func main() {
 	defer agent.Close()
 	log.Printf("agent started: %s", *agentCmd)
 
+	// Probe the agent for its available models so we can populate the
+	// model dropdown in the parameter_controls. Best-effort: if the
+	// probe fails (auth missing, slow agent, etc.) we just ship the
+	// settings without a model dropdown.
+	probeCtx, probeCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer probeCancel()
+	if err := agent.ProbeModels(probeCtx); err != nil {
+		log.Printf("probe models failed (continuing without model dropdown): %v", err)
+	} else {
+		models, current := agent.Models()
+		log.Printf("probed %d models (current=%s)", len(models), current)
+	}
+
 	// Router
 	rtr, err := router.New(router.Config{
 		Agent:      agent,
@@ -118,13 +132,9 @@ func main() {
 			IntroductionMessage: *introMsg,
 		},
 		HeartbeatInterval: *heartbeat,
-		CommandsProvider: func() []string {
-			cmds := agent.Commands()
-			names := make([]string, 0, len(cmds))
-			for _, c := range cmds {
-				names = append(names, c.Name)
-			}
-			return names
+		ParameterControlsProvider: func() *poeproto.ParameterControls {
+			models, current := agent.Models()
+			return paramctl.Build(models, current)
 		},
 	})
 

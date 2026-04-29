@@ -22,10 +22,11 @@ const (
 
 // Message is one turn in a Poe query.
 type Message struct {
-	Role        string `json:"role"`
-	Content     string `json:"content"`
-	ContentType string `json:"content_type,omitempty"`
-	MessageID   string `json:"message_id,omitempty"`
+	Role        string         `json:"role"`
+	Content     string         `json:"content"`
+	ContentType string         `json:"content_type,omitempty"`
+	MessageID   string         `json:"message_id,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 // Request is the shape of an inbound Poe POST.
@@ -60,13 +61,53 @@ func Decode(body io.Reader) (*Request, error) {
 }
 
 // SettingsResponse is the JSON returned for a `settings` request.
-//
-// `Commands` is a list of slash-command names surfaced in the Poe UI
-// autocomplete menu.
 type SettingsResponse struct {
-	AllowAttachments    bool     `json:"allow_attachments"`
-	IntroductionMessage string   `json:"introduction_message,omitempty"`
-	Commands            []string `json:"commands,omitempty"`
+	AllowAttachments    bool               `json:"allow_attachments"`
+	IntroductionMessage string             `json:"introduction_message,omitempty"`
+	ParameterControls   *ParameterControls `json:"parameter_controls,omitempty"`
+}
+
+// LatestParameters returns the parameters dict from the most recent
+// user message in the query, or nil if absent.
+func (r *Request) LatestParameters() map[string]any {
+	for i := len(r.Query) - 1; i >= 0; i-- {
+		if r.Query[i].Role == "user" {
+			return r.Query[i].Parameters
+		}
+	}
+	return nil
+}
+
+// ParameterControls is the schema returned in SettingsResponse.parameter_controls.
+// It tells Poe what UI controls to render for the bot.
+type ParameterControls struct {
+	Sections []Section `json:"sections"`
+}
+
+// Section groups a set of controls under a heading. A section must
+// contain controls (we don't use tabs in v1).
+type Section struct {
+	Name               string    `json:"name"`
+	CollapsedByDefault bool      `json:"collapsed_by_default,omitempty"`
+	Controls           []Control `json:"controls"`
+}
+
+// Control is one renderable UI element. It is a tagged union over the
+// `control` field; we only emit `dropdown` and `toggle_switch` in v1.
+type Control struct {
+	Control       string          `json:"control"` // "dropdown" | "toggle_switch"
+	Label         string          `json:"label"`
+	ParameterName string          `json:"parameter_name"`
+	Description   string          `json:"description,omitempty"`
+	DefaultValue  any             `json:"default_value,omitempty"`
+	Options       []ValueNamePair `json:"options,omitempty"` // dropdown only
+}
+
+// ValueNamePair is a dropdown option: `value` is what arrives in
+// `parameters`, `name` is the user-facing label.
+type ValueNamePair struct {
+	Value string `json:"value"`
+	Name  string `json:"name"`
 }
 
 // SSEWriter streams SSE events to an open HTTP response.

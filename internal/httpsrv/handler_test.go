@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,6 +57,12 @@ func (f *fakeAgent) Prompt(_ context.Context, sid acp.SessionId, _ string) (acp.
 	return acp.StopReasonEndTurn, nil
 }
 func (f *fakeAgent) Cancel(_ context.Context, _ acp.SessionId) error { return nil }
+func (f *fakeAgent) SetModel(_ context.Context, _ acp.SessionId, _ string) error {
+	return nil
+}
+func (f *fakeAgent) SetConfigOption(_ context.Context, _ acp.SessionId, _, _ string) error {
+	return nil
+}
 
 func TestHandler_Query(t *testing.T) {
 	rtr, err := router.New(router.Config{
@@ -141,6 +146,181 @@ func TestHandler_BearerAuth(t *testing.T) {
 	}
 }
 
+func TestHandler_Settings_ParameterControls(t *testing.T) {
+	models := []acpclient.ModelInfo{
+		{ID: "anthropic/claude-sonnet-4-5", Name: "Sonnet"},
+		{ID: "openai/gpt-5", Name: "GPT-5"},
+	}
+	h := New(Config{
+		Settings: poeproto.SettingsResponse{IntroductionMessage: "hi"},
+		ParameterControlsProvider: func() *poeproto.ParameterControls {
+			opts := make([]poeproto.ValueNamePair, 0, len(models))
+			for _, m := range models {
+				opts = append(opts, poeproto.ValueNamePair{Value: m.ID, Name: m.Name})
+			}
+			return &poeproto.ParameterControls{
+				Sections: []poeproto.Section{{
+					Name: "Options",
+					Controls: []poeproto.Control{
+						{Control: "dropdown", Label: "Model", ParameterName: "model",
+							DefaultValue: "anthropic/claude-sonnet-4-5", Options: opts},
+						{Control: "dropdown", Label: "Thinking", ParameterName: "thinking",
+							DefaultValue: "medium"},
+						{Control: "toggle_switch", Label: "Hide thinking output",
+							ParameterName: "hide_thinking", DefaultValue: false},
+					},
+				}},
+			}
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/poe",
+		bytes.NewReader(mustJSON(map[string]any{"type": "settings"})))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	raw := rec.Body.Bytes()
+	// Must be valid JSON.
+	var resp map[string]any
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("invalid json: %v\nbody: %s", err, raw)
+	}
+	// parameter_controls present.
+	pc, ok := resp["parameter_controls"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameter_controls absent or wrong type; body=%s", raw)
+	}
+	// Sections present and non-empty.
+	sections, _ := pc["sections"].([]any)
+	if len(sections) == 0 {
+		t.Fatalf("sections empty; body=%s", raw)
+	}
+	sec := sections[0].(map[string]any)
+	controls, _ := sec["controls"].([]any)
+	if len(controls) < 3 {
+		t.Fatalf("expected >=3 controls, got %d; body=%s", len(controls), raw)
+	}
+	// Verify parameter_name fields.
+	names := map[string]bool{}
+	for _, c := range controls {
+		cm := c.(map[string]any)
+		if n, ok := cm["parameter_name"].(string); ok {
+			names[n] = true
+		}
+	}
+	for _, want := range []string{"model", "thinking", "hide_thinking"} {
+		if !names[want] {
+			t.Fatalf("missing control %q; got %v\nbody=%s", want, names, raw)
+		}
+	}
+	// Model dropdown options populated from provider.
+	var modelCtl map[string]any
+	for _, c := range controls {
+		cm := c.(map[string]any)
+		if cm["parameter_name"] == "model" {
+			modelCtl = cm
+		}
+	}
+	if modelCtl == nil {
+		t.Fatal("model control missing")
+	}
+	opts, _ := modelCtl["options"].([]any)
+	if len(opts) != 2 {
+		t.Fatalf("expected 2 model options, got %d", len(opts))
+	}
+}
+
+func TestHandler_Query_ParametersForwardedToAgent(t *testing.T) {
+	// Track what SetModel and SetConfigOption are called with.
+	type call struct{ method, arg string }
+	var (
+		mu    sync.Mutex
+		calls []call
+	)
+
+	fa := &trackingAgent{
+		fakeAgent: &fakeAgent{},
+		onSetModel: func(id string) {
+			mu.Lock()
+			calls = append(calls, call{"set_model", id})
+			mu.Unlock()
+		},
+		onSetConfig: func(cid, val string) {
+			mu.Lock()
+			calls = append(calls, call{cid, val})
+			mu.Unlock()
+		},
+	}
+
+	rtr, err := router.New(router.Config{
+		Agent: fa, StateDir: t.TempDir(), SessionTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr, HeartbeatInterval: 0})
+
+	body := mustJSON(map[string]any{
+		"type": "query", "conversation_id": "cx", "user_id": "u", "message_id": "m",
+		"query": []map[string]any{{
+			"role":    "user",
+			"content": "hello",
+			"parameters": map[string]any{
+				"model":    "anthropic/claude-sonnet-4-5",
+				"thinking": "high",
+			},
+		}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "event: done") {
+		t.Fatalf("response incomplete: %s", rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	wantModel := call{"set_model", "anthropic/claude-sonnet-4-5"}
+	wantThinking := call{"thinking_level", "high"}
+	found := map[call]bool{}
+	for _, c := range calls {
+		found[c] = true
+	}
+	if !found[wantModel] {
+		t.Errorf("set_model not called; calls=%v", calls)
+	}
+	if !found[wantThinking] {
+		t.Errorf("set_config thinking_level not called; calls=%v", calls)
+	}
+}
+
+// trackingAgent wraps fakeAgent and records SetModel/SetConfigOption calls.
+type trackingAgent struct {
+	*fakeAgent
+	onSetModel  func(string)
+	onSetConfig func(string, string)
+}
+
+func (a *trackingAgent) SetModel(_ context.Context, _ acp.SessionId, id string) error {
+	if a.onSetModel != nil {
+		a.onSetModel(id)
+	}
+	return nil
+}
+func (a *trackingAgent) SetConfigOption(_ context.Context, _ acp.SessionId, cid, val string) error {
+	if a.onSetConfig != nil {
+		a.onSetConfig(cid, val)
+	}
+	return nil
+}
+
 func mustJSON(v any) []byte {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -148,6 +328,3 @@ func mustJSON(v any) []byte {
 	}
 	return b
 }
-
-// Ensure io import used (silence unused in some toolchains).
-var _ = io.Discard

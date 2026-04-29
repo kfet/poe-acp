@@ -47,6 +47,16 @@ type Agent interface {
 	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error
 	Prompt(ctx context.Context, sid acp.SessionId, text string) (acp.StopReason, error)
 	Cancel(ctx context.Context, sid acp.SessionId) error
+	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
+	SetConfigOption(ctx context.Context, sid acp.SessionId, configID, value string) error
+}
+
+// Options is the per-prompt set of user-selected parameter values
+// extracted from Poe's `parameters` dict.
+type Options struct {
+	Model        string // "" = leave as-is
+	Thinking     string // "" = leave as-is; one of "off","minimal","low","medium","high"
+	HideThinking bool   // suppress agent_thought_chunk in the SSE stream
 }
 
 // Config configures a Router.
@@ -85,12 +95,31 @@ type sessionState struct {
 	inUse int
 
 	// sinkMu guards sink (written by Prompt, read by OnUpdate).
-	sinkMu sync.Mutex
-	sink   ChunkSink
-	first  bool
+	sinkMu       sync.Mutex
+	sink         ChunkSink
+	first        bool
+	hideThinking bool
+	// chunkMode tracks the kind of stream currently being emitted,
+	// so multi-chunk thoughts render as one continuous block.
+	// Reset to chunkNone at the start of each turn.
+	chunkMode chunkKind
+
+	// applied tracks the last successfully-applied agent options, so
+	// we only call set_model / set_config_option when values change.
+	// Protected by turnMu.
+	applied Options
 
 	lastUsedNs int64 // protected by Router.mu
 }
+
+// chunkKind classifies the most recent stream chunk written to the sink.
+type chunkKind int
+
+const (
+	chunkNone    chunkKind = iota // no chunks yet this turn
+	chunkMessage                  // last chunk was an AgentMessageChunk
+	chunkThought                  // last chunk was an AgentThoughtChunk
+)
 
 // New creates a router.
 func New(cfg Config) (*Router, error) {
@@ -113,38 +142,74 @@ func New(cfg Config) (*Router, error) {
 }
 
 // OnUpdate implements acpclient.SessionUpdateSink; forwards to the current
-// sink (if one is attached).
+// sink (if one is attached). Emits transition markers between thought and
+// message streams so multi-chunk thoughts render as one Markdown block
+// quote.
 func (s *sessionState) OnUpdate(_ context.Context, n acp.SessionNotification) error {
+	u := n.Update
+	var (
+		kind chunkKind
+		text string
+	)
+	switch {
+	case u.AgentMessageChunk != nil && u.AgentMessageChunk.Content.Text != nil:
+		kind, text = chunkMessage, u.AgentMessageChunk.Content.Text.Text
+	case u.AgentThoughtChunk != nil && u.AgentThoughtChunk.Content.Text != nil:
+		kind, text = chunkThought, u.AgentThoughtChunk.Content.Text.Text
+	default:
+		// Tool-calls, plans, available_commands_update etc. are
+		// suppressed in v1.
+		return nil
+	}
+	if text == "" {
+		return nil
+	}
+
 	s.sinkMu.Lock()
 	sink := s.sink
 	firstSent := s.first
-	s.sinkMu.Unlock()
-
+	hideThinking := s.hideThinking
+	prevMode := s.chunkMode
 	if sink == nil {
+		s.sinkMu.Unlock()
 		return nil
 	}
-	u := n.Update
-	switch {
-	case u.AgentMessageChunk != nil:
-		if c := u.AgentMessageChunk.Content; c.Text != nil && c.Text.Text != "" {
-			if !firstSent {
-				sink.FirstChunk()
-				s.sinkMu.Lock()
-				s.first = true
-				s.sinkMu.Unlock()
-			}
-			return sink.Text(c.Text.Text)
-		}
+	if kind == chunkThought && hideThinking {
+		s.sinkMu.Unlock()
+		return nil
 	}
-	// Thoughts, tool-calls, plans are suppressed in v1.
-	return nil
+	// Compute the transition prefix (if any) before unlocking.
+	var prefix string
+	switch {
+	case prevMode == chunkNone && kind == chunkThought:
+		prefix = "> _Thinking…_\n> "
+	case prevMode == chunkMessage && kind == chunkThought:
+		prefix = "\n\n> _Thinking…_\n> "
+	case prevMode == chunkThought && kind == chunkMessage:
+		prefix = "\n\n"
+	}
+	s.chunkMode = kind
+	if !firstSent {
+		s.first = true
+	}
+	s.sinkMu.Unlock()
+
+	if !firstSent {
+		sink.FirstChunk()
+	}
+	if kind == chunkThought {
+		// Continue the blockquote across newlines inside the thought
+		// chunk so Poe's Markdown renderer keeps it as one block.
+		text = strings.ReplaceAll(text, "\n", "\n> ")
+	}
+	return sink.Text(prefix + text)
 }
 
 // Prompt handles one Poe query end-to-end. Serialises per-conv. The query
 // slice is the full Poe-supplied conversation (including prior turns); the
 // router uses only the latest user turn on the hot path, but seeds the
 // agent with the full transcript on a cold path that can't resume.
-func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn, sink ChunkSink) error {
+func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn, opts Options, sink ChunkSink) error {
 	if convID == "" {
 		convID = "default"
 	}
@@ -175,9 +240,20 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 		r.mu.Unlock()
 	}()
 
+	// Apply per-prompt option diffs before issuing the prompt.
+	if err := r.applyOptions(ctx, st, opts); err != nil {
+		// Surface the failure to the user but continue the prompt with
+		// whatever options the agent currently has applied. Call
+		// FirstChunk so the heartbeat stops before the error text.
+		sink.FirstChunk()
+		_ = sink.Text(fmt.Sprintf("_(option not applied: %v)_\n\n", err))
+	}
+
 	st.sinkMu.Lock()
 	st.sink = sink
 	st.first = false
+	st.hideThinking = opts.HideThinking
+	st.chunkMode = chunkNone
 	st.sinkMu.Unlock()
 
 	defer func() {
@@ -214,6 +290,48 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 		_ = sink.Replace("_(cancelled)_")
 	}
 	return sink.Done()
+}
+
+// applyOptions diffs incoming opts vs the session's last-applied options
+// and issues set_model / set_config_option to the agent for each changed
+// agent-facing field. Updates st.applied only on success.
+func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Options) error {
+	if opts.Model != "" && opts.Model != st.applied.Model {
+		if err := r.cfg.Agent.SetModel(ctx, st.sessionID, opts.Model); err != nil {
+			return fmt.Errorf("set_model %s: %w", opts.Model, err)
+		}
+		st.applied.Model = opts.Model
+	}
+	if opts.Thinking != "" && opts.Thinking != st.applied.Thinking {
+		if err := r.cfg.Agent.SetConfigOption(ctx, st.sessionID, "thinking_level", opts.Thinking); err != nil {
+			return fmt.Errorf("set_config thinking_level=%s: %w", opts.Thinking, err)
+		}
+		st.applied.Thinking = opts.Thinking
+	}
+	// HideThinking is applied via st.hideThinking under sinkMu in
+	// Prompt; nothing to apply on the agent side.
+	return nil
+}
+
+// ParseOptions extracts a strongly-typed Options struct from Poe's
+// `parameters` dict. Unknown keys and wrong-type values are silently
+// dropped — Poe documents that other bots calling ours may inject
+// arbitrary parameters, so this is untrusted input.
+func ParseOptions(params map[string]any) Options {
+	var o Options
+	if v, ok := params["model"].(string); ok {
+		o.Model = v
+	}
+	if v, ok := params["thinking"].(string); ok {
+		switch v {
+		case "off", "minimal", "low", "medium", "high":
+			o.Thinking = v
+		}
+	}
+	if v, ok := params["hide_thinking"].(bool); ok {
+		o.HideThinking = v
+	}
+	return o
 }
 
 // latestUserText returns the content of the last user message in the query.
