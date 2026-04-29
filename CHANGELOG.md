@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Poe `parameter_controls`: `model` dropdown (sourced live from the agent's authed-model list, probed once at relay startup), `thinking` dropdown (`off/minimal/low/medium/high`), and `hide_thinking` toggle. User selections arrive on each `query` and are diff-applied to the agent via `session/set_model` and `session/set_config_option` (`thinking_level`) only when changed.
+- Multi-chunk thinking is rendered as one Markdown blockquote (`> _Thinking…_`) with proper transitions to/from message chunks, instead of italicising each chunk independently.
+
+### Removed
+
+- `settings.commands` field. Poe's protocol does not define a `commands` field on the settings response, so it never reached the UI. The agent's `available_commands_update` is now ignored.
+
 ## [0.3.0] - 2026-04-25
 
 ### Added

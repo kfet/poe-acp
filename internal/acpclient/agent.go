@@ -105,9 +105,9 @@ type AgentProc struct {
 	conn *acp.Connection
 	caps Caps
 
-	mu       sync.Mutex
-	sinks    map[acp.SessionId]SessionUpdateSink // active session sinks
-	commands []acp.AvailableCommand              // last-seen commands from any session
+	mu     sync.Mutex
+	sinks  map[acp.SessionId]SessionUpdateSink // active session sinks
+	models *acp.SessionModelState              // cached model list (nil until first NewSession or Probe)
 }
 
 // Start launches the agent process, performs Initialize (capturing caps),
@@ -205,9 +205,95 @@ func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpda
 	}
 	a.mu.Lock()
 	a.sinks[resp.SessionId] = sink
+	if resp.Models != nil {
+		a.models = resp.Models
+	}
 	a.mu.Unlock()
 	return resp.SessionId, nil
 }
+
+// SetModel calls the unstable session/set_model RPC.
+func (a *AgentProc) SetModel(ctx context.Context, sid acp.SessionId, modelID string) error {
+	_, err := acp.SendRequest[acp.SetSessionModelResponse](a.conn, ctx, acp.AgentMethodSessionSetModel, acp.SetSessionModelRequest{
+		SessionId: sid,
+		ModelId:   acp.ModelId(modelID),
+	})
+	return err
+}
+
+// SetConfigOption calls the (fir-specific) session/set_config_option RPC.
+// Used for thinking_level and similar dropdown-style knobs.
+type setSessionConfigOptionRequest struct {
+	SessionId acp.SessionId `json:"sessionId"`
+	ConfigId  string        `json:"configId"`
+	Value     string        `json:"value"`
+}
+
+func (a *AgentProc) SetConfigOption(ctx context.Context, sid acp.SessionId, configID, value string) error {
+	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, "session/set_config_option", setSessionConfigOptionRequest{
+		SessionId: sid,
+		ConfigId:  configID,
+		Value:     value,
+	})
+	return err
+}
+
+// ModelInfo is one entry in the agent's available-models list.
+type ModelInfo struct {
+	ID   string // "provider/modelID"
+	Name string // human-readable label
+}
+
+// Models returns a snapshot of the agent's last-seen available models.
+// Empty until a session has been created (or ProbeModels has run).
+func (a *AgentProc) Models() (models []ModelInfo, currentID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.models == nil {
+		return nil, ""
+	}
+	out := make([]ModelInfo, 0, len(a.models.AvailableModels))
+	for _, m := range a.models.AvailableModels {
+		out = append(out, ModelInfo{ID: string(m.ModelId), Name: string(m.Name)})
+	}
+	return out, string(a.models.CurrentModelId)
+}
+
+// ProbeModels creates a throwaway session in the agent's cwd to read its
+// available-models list, then cancels it. The cached snapshot is returned
+// from Models() afterwards. Idempotent: a no-op if Models() already has
+// a list.
+func (a *AgentProc) ProbeModels(ctx context.Context) error {
+	a.mu.Lock()
+	if a.models != nil {
+		a.mu.Unlock()
+		return nil
+	}
+	a.mu.Unlock()
+
+	probeCwd, err := os.MkdirTemp("", "poeacp-probe-*")
+	if err != nil {
+		return fmt.Errorf("probe: mkdir tmp: %w", err)
+	}
+	defer os.RemoveAll(probeCwd)
+
+	// Use a noop sink — we don't care about updates.
+	sid, err := a.NewSession(ctx, probeCwd, noopSink{})
+	if err != nil {
+		return fmt.Errorf("probe: new session: %w", err)
+	}
+	// Drop the sink; the probe session is never prompted so it stays
+	// idle in the agent for the relay's lifetime (no session/delete RPC
+	// exists). Cost: one map entry in fir's sessions map.
+	a.mu.Lock()
+	delete(a.sinks, sid)
+	a.mu.Unlock()
+	return nil
+}
+
+type noopSink struct{}
+
+func (noopSink) OnUpdate(context.Context, acp.SessionNotification) error { return nil }
 
 // ListSessions calls the unstable session/list. Caller must check Caps().ListSessions first.
 func (a *AgentProc) ListSessions(ctx context.Context, cwd string) ([]SessionInfo, error) {
@@ -331,29 +417,12 @@ func (a *AgentProc) sinkFor(sid acp.SessionId) SessionUpdateSink {
 	return a.sinks[sid]
 }
 
-// sessionUpdate fans out to the per-session sink. Also snapshots the
-// available-commands list whenever a session publishes one — the relay
-// uses the latest snapshot to populate Poe's settings.commands.
+// sessionUpdate fans out to the per-session sink.
 func (a *AgentProc) sessionUpdate(ctx context.Context, params acp.SessionNotification) error {
-	if cu := params.Update.AvailableCommandsUpdate; cu != nil {
-		a.mu.Lock()
-		a.commands = cu.AvailableCommands
-		a.mu.Unlock()
-	}
 	if s := a.sinkFor(params.SessionId); s != nil {
 		return s.OnUpdate(ctx, params)
 	}
 	return nil
-}
-
-// Commands returns the most recently-seen available-commands list.
-// Empty until the first session publishes one.
-func (a *AgentProc) Commands() []acp.AvailableCommand {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := make([]acp.AvailableCommand, len(a.commands))
-	copy(out, a.commands)
-	return out
 }
 
 // readTextFile reads from disk relative to the agent's cwd.

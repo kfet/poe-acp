@@ -17,16 +17,16 @@ import (
 // Config configures a Handler.
 type Config struct {
 	Router *router.Router
-	// Settings is the static response for `settings` requests. Commands
-	// may be overridden per-request by CommandsProvider.
+	// Settings is the static response for `settings` requests. Parameter
+	// controls may be overridden per-request by ParameterControlsProvider.
 	Settings poeproto.SettingsResponse
 	// HeartbeatInterval is the SSE heartbeat tick while waiting for the
 	// first agent chunk. <=0 disables the heartbeat.
 	HeartbeatInterval time.Duration
-	// CommandsProvider, if set, is called on each `settings` request to
-	// populate SettingsResponse.Commands with the current agent command
-	// names. If nil, Settings.Commands is used as-is.
-	CommandsProvider func() []string
+	// ParameterControlsProvider, if set, is called on each `settings`
+	// request to populate SettingsResponse.ParameterControls. If nil,
+	// Settings.ParameterControls is used as-is.
+	ParameterControlsProvider func() *poeproto.ParameterControls
 }
 
 // Handler serves the /poe endpoint.
@@ -55,8 +55,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch req.Type {
 	case poeproto.TypeSettings:
 		s := h.cfg.Settings
-		if h.cfg.CommandsProvider != nil {
-			s.Commands = h.cfg.CommandsProvider()
+		if h.cfg.ParameterControlsProvider != nil {
+			s.ParameterControls = h.cfg.ParameterControlsProvider()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s)
@@ -99,6 +99,8 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		turns = append(turns, router.Turn{Role: m.Role, Content: m.Content})
 	}
 
+	opts := router.ParseOptions(req.LatestParameters())
+
 	// Sink: SSE writer + heartbeat coordination + disconnect → cancel.
 	s := newSink(sse, h.cfg.HeartbeatInterval)
 	defer s.stop()
@@ -116,7 +118,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		}
 	}()
 
-	err = h.cfg.Router.Prompt(ctx, req.ConversationID, req.UserID, turns, s)
+	err = h.cfg.Router.Prompt(ctx, req.ConversationID, req.UserID, turns, opts, s)
 	close(done)
 	if err != nil {
 		log.Printf("router prompt (conv=%s): %v", req.ConversationID, err)

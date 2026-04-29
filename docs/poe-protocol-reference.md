@@ -19,7 +19,7 @@ minimum needed to make a single-user chat bot work. Specifically:
 | Feature                     | Supported by relay | Notes                                               |
 |-----------------------------|--------------------|-----------------------------------------------------|
 | `query` → SSE response      | ✅                 | Streams `meta` + `text*` + `done`.                  |
-| `settings` JSON response    | ✅                 | Static config; `commands[]` from agent updates.     |
+| `settings` JSON response    | ✅                 | Static config + dynamic `parameter_controls`.       |
 | `report_feedback/reaction`  | ✅ (accept+drop)   | Returns 200 OK, no-op.                              |
 | `report_error`              | ✅ (accept+drop)   | Ditto; logged by the relay.                         |
 | Bearer auth                 | ✅                 | `Authorization: Bearer $POEACP_ACCESS_KEY`.         |

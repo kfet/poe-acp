@@ -77,6 +77,12 @@ func (f *fakeAgent) Prompt(ctx context.Context, sid acp.SessionId, text string) 
 }
 
 func (f *fakeAgent) Cancel(_ context.Context, _ acp.SessionId) error { return nil }
+func (f *fakeAgent) SetModel(_ context.Context, _ acp.SessionId, _ string) error {
+	return nil
+}
+func (f *fakeAgent) SetConfigOption(_ context.Context, _ acp.SessionId, _, _ string) error {
+	return nil
+}
 
 func (f *fakeAgent) emit(sid acp.SessionId, chunk string) {
 	f.mu.Lock()
@@ -93,6 +99,17 @@ func (f *fakeAgent) emit(sid acp.SessionId, chunk string) {
 			},
 		},
 	})
+}
+
+// emitUpdate is like emit but sends an arbitrary SessionUpdate.
+func (f *fakeAgent) emitUpdate(sid acp.SessionId, u acp.SessionUpdate) {
+	f.mu.Lock()
+	sink := f.sinks[sid]
+	f.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{SessionId: sid, Update: u})
 }
 
 func itoa(n int) string {
@@ -159,7 +176,7 @@ func TestRouter_PromptStreamsText(t *testing.T) {
 	}
 
 	sink := &captureSink{}
-	if err := r.Prompt(context.Background(), "conv-a", "user-1", []Turn{{Role: "user", Content: "hi"}}, sink); err != nil {
+	if err := r.Prompt(context.Background(), "conv-a", "user-1", []Turn{{Role: "user", Content: "hi"}}, Options{}, sink); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
 	if got := sink.text.String(); got != "hello world" {
@@ -187,7 +204,7 @@ func TestRouter_ReusesSession(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if err := r.Prompt(context.Background(), "conv-x", "u", []Turn{{Role: "user", Content: "ping"}}, &captureSink{}); err != nil {
+		if err := r.Prompt(context.Background(), "conv-x", "u", []Turn{{Role: "user", Content: "ping"}}, Options{}, &captureSink{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -218,7 +235,7 @@ func TestRouter_StopReasons(t *testing.T) {
 			})
 			r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
 			sink := &captureSink{}
-			_ = r.Prompt(context.Background(), "c", "u", []Turn{{Role: "user", Content: "x"}}, sink)
+			_ = r.Prompt(context.Background(), "c", "u", []Turn{{Role: "user", Content: "x"}}, Options{}, sink)
 			if !sink.done {
 				t.Fatal("done not called")
 			}
@@ -254,7 +271,7 @@ func TestRouter_IdleGC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, &captureSink{}); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, Options{}, &captureSink{}); err != nil {
 		t.Fatal(err)
 	}
 	if r.Len() != 1 {
@@ -288,7 +305,7 @@ func TestRouter_ResumesWhenAgentSupportsListResume(t *testing.T) {
 		{Role: "bot", Content: "hello"},
 		{Role: "user", Content: "hi again"},
 	}
-	if err := r.Prompt(context.Background(), "c1", "u", query, &captureSink{}); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", query, Options{}, &captureSink{}); err != nil {
 		t.Fatal(err)
 	}
 	if atomic.LoadInt32(&agent.listCalls) != 1 {
@@ -320,7 +337,7 @@ func TestRouter_NewSessionWhenListEmpty(t *testing.T) {
 		{Role: "bot", Content: "reply"},
 		{Role: "user", Content: "second"},
 	}
-	if err := r.Prompt(context.Background(), "c1", "u", query, &captureSink{}); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", query, Options{}, &captureSink{}); err != nil {
 		t.Fatal(err)
 	}
 	if atomic.LoadInt32(&agent.listCalls) != 1 {
@@ -351,7 +368,7 @@ func TestRouter_NewSessionWhenCapsAbsent(t *testing.T) {
 		{Role: "bot", Content: "reply"},
 		{Role: "user", Content: "second"},
 	}
-	if err := r.Prompt(context.Background(), "c1", "u", query, &captureSink{}); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", query, Options{}, &captureSink{}); err != nil {
 		t.Fatal(err)
 	}
 	if atomic.LoadInt32(&agent.listCalls) != 0 {
@@ -373,7 +390,7 @@ func TestRouter_HotPathSendsLatestOnly(t *testing.T) {
 	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
 
 	// First call: cold + single user turn → no seed.
-	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "one"}}, &captureSink{}); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "one"}}, Options{}, &captureSink{}); err != nil {
 		t.Fatal(err)
 	}
 	// Second call: hot, even with prior turns the router sends only latest.
@@ -382,7 +399,7 @@ func TestRouter_HotPathSendsLatestOnly(t *testing.T) {
 		{Role: "bot", Content: "ok"},
 		{Role: "user", Content: "two"},
 	}
-	if err := r.Prompt(context.Background(), "c1", "u", q, &captureSink{}); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", q, Options{}, &captureSink{}); err != nil {
 		t.Fatal(err)
 	}
 	if agent.lastPromptTxt != "two" {
@@ -408,7 +425,7 @@ func TestRouter_FallsBackWhenResumeErrors(t *testing.T) {
 		{Role: "bot", Content: "hey"},
 		{Role: "user", Content: "again"},
 	}
-	if err := r.Prompt(context.Background(), "c1", "u", query, &captureSink{}); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", query, Options{}, &captureSink{}); err != nil {
 		t.Fatal(err)
 	}
 	if atomic.LoadInt32(&agent.resumeCalls) != 1 {
@@ -452,7 +469,7 @@ func TestRouter_RaceLoserDoesNotSeed(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func() {
 			defer wg.Done()
-			_ = r.Prompt(context.Background(), "race-conv", "u", query, &captureSink{})
+			_ = r.Prompt(context.Background(), "race-conv", "u", query, Options{}, &captureSink{})
 		}()
 	}
 	wg.Wait()
@@ -497,7 +514,7 @@ func TestRouter_GCDoesNotEvictMidPrompt(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, &captureSink{})
+		done <- r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, Options{}, &captureSink{})
 	}()
 
 	<-gcDuring
