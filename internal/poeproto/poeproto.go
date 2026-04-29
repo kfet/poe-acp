@@ -80,9 +80,19 @@ func (r *Request) LatestParameters() map[string]any {
 
 // ParameterControls is the schema returned in SettingsResponse.parameter_controls.
 // It tells Poe what UI controls to render for the bot.
+//
+// APIVersion is required by Poe and must be "2"; older values are rejected
+// silently (the whole parameter_controls object is dropped). See
+// fastapi_poe.types.ParameterControls.
 type ParameterControls struct {
-	Sections []Section `json:"sections"`
+	APIVersion string    `json:"api_version"`
+	Sections   []Section `json:"sections"`
 }
+
+// ParameterControlsAPIVersion is the only api_version Poe currently accepts
+// for parameter_controls. Pinned per fastapi_poe.types.ParameterControls
+// (Literal["2"]).
+const ParameterControlsAPIVersion = "2"
 
 // Section groups a set of controls under a heading. A section must
 // contain controls (we don't use tabs in v1).
@@ -93,14 +103,19 @@ type Section struct {
 }
 
 // Control is one renderable UI element. It is a tagged union over the
-// `control` field; we only emit `dropdown` and `toggle_switch` in v1.
+// `control` field; we only emit `drop_down` and `toggle_switch` in v1.
+//
+// Wire values for Control.Control match fastapi_poe.types literals
+// exactly: "drop_down" (NOT "dropdown") and "toggle_switch". Poe's
+// validator runs Pydantic with extra="forbid" and silently drops the
+// whole parameter_controls object on any mismatch.
 type Control struct {
-	Control       string          `json:"control"` // "dropdown" | "toggle_switch"
+	Control       string          `json:"control"` // "drop_down" | "toggle_switch"
 	Label         string          `json:"label"`
 	ParameterName string          `json:"parameter_name"`
 	Description   string          `json:"description,omitempty"`
 	DefaultValue  any             `json:"default_value,omitempty"`
-	Options       []ValueNamePair `json:"options,omitempty"` // dropdown only
+	Options       []ValueNamePair `json:"options,omitempty"` // drop_down only
 }
 
 // ValueNamePair is a dropdown option: `value` is what arrives in

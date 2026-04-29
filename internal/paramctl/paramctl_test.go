@@ -50,7 +50,7 @@ func TestBuild_WithModels(t *testing.T) {
 			}
 		}
 	}
-	if modelCtl == nil || modelCtl.name != "dropdown" || modelCtl.def != "anthropic/sonnet" {
+	if modelCtl == nil || modelCtl.name != "drop_down" || modelCtl.def != "anthropic/sonnet" {
 		t.Fatalf("model control = %+v", modelCtl)
 	}
 
@@ -63,9 +63,10 @@ func TestBuild_WithModels(t *testing.T) {
 	for _, want := range []string{
 		`"parameter_name":"model"`,
 		`"default_value":"anthropic/sonnet"`,
-		`"control":"dropdown"`,
+		`"control":"drop_down"`,
 		`"control":"toggle_switch"`,
 		`"options":[`,
+		`"api_version":"2"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("json missing %q\nfull: %s", want, s)

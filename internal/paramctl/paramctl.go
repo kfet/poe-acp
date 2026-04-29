@@ -38,7 +38,7 @@ func Build(models []acpclient.ModelInfo, currentModelID string) *poeproto.Parame
 			def = models[0].ID
 		}
 		controls = append(controls, poeproto.Control{
-			Control:       "dropdown",
+			Control:       "drop_down",
 			Label:         "Model",
 			ParameterName: "model",
 			DefaultValue:  def,
@@ -48,7 +48,7 @@ func Build(models []acpclient.ModelInfo, currentModelID string) *poeproto.Parame
 
 	controls = append(controls,
 		poeproto.Control{
-			Control:       "dropdown",
+			Control:       "drop_down",
 			Label:         "Thinking",
 			ParameterName: "thinking",
 			DefaultValue:  DefaultThinking,
@@ -63,6 +63,7 @@ func Build(models []acpclient.ModelInfo, currentModelID string) *poeproto.Parame
 	)
 
 	return &poeproto.ParameterControls{
+		APIVersion: poeproto.ParameterControlsAPIVersion,
 		Sections: []poeproto.Section{{
 			Name:     "Options",
 			Controls: controls,

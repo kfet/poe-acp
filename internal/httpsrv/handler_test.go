@@ -162,9 +162,9 @@ func TestHandler_Settings_ParameterControls(t *testing.T) {
 				Sections: []poeproto.Section{{
 					Name: "Options",
 					Controls: []poeproto.Control{
-						{Control: "dropdown", Label: "Model", ParameterName: "model",
+						{Control: "drop_down", Label: "Model", ParameterName: "model",
 							DefaultValue: "anthropic/claude-sonnet-4-5", Options: opts},
-						{Control: "dropdown", Label: "Thinking", ParameterName: "thinking",
+						{Control: "drop_down", Label: "Thinking", ParameterName: "thinking",
 							DefaultValue: "medium"},
 						{Control: "toggle_switch", Label: "Hide thinking output",
 							ParameterName: "hide_thinking", DefaultValue: false},
