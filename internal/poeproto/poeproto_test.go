@@ -29,12 +29,14 @@ func TestRequest_LatestParameters(t *testing.T) {
 func TestSettingsResponse_ParameterControlsMarshal(t *testing.T) {
 	t.Parallel()
 	r := SettingsResponse{
+		ResponseVersion:  SettingsResponseVersion,
 		AllowAttachments: false,
 		ParameterControls: &ParameterControls{
+			APIVersion: ParameterControlsAPIVersion,
 			Sections: []Section{{
 				Name: "Options",
 				Controls: []Control{
-					{Control: "dropdown", Label: "Model", ParameterName: "model", DefaultValue: "x",
+					{Control: "drop_down", Label: "Model", ParameterName: "model", DefaultValue: "x",
 						Options: []ValueNamePair{{Value: "x", Name: "X"}}},
 					{Control: "toggle_switch", Label: "Hide", ParameterName: "hide_thinking", DefaultValue: false},
 				},
@@ -47,7 +49,9 @@ func TestSettingsResponse_ParameterControlsMarshal(t *testing.T) {
 	}
 	s := string(b)
 	for _, want := range []string{
+		`"response_version":2`,
 		`"parameter_controls":`,
+		`"api_version":"2"`,
 		`"sections":`,
 		`"parameter_name":"model"`,
 		`"options":[{"value":"x","name":"X"}]`,

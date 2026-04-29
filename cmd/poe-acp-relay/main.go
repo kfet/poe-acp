@@ -128,6 +128,7 @@ func main() {
 	h := httpsrv.New(httpsrv.Config{
 		Router: rtr,
 		Settings: poeproto.SettingsResponse{
+			ResponseVersion:     poeproto.SettingsResponseVersion,
 			AllowAttachments:    false,
 			IntroductionMessage: *introMsg,
 		},
