@@ -61,11 +61,21 @@ func Decode(body io.Reader) (*Request, error) {
 }
 
 // SettingsResponse is the JSON returned for a `settings` request.
+//
+// ResponseVersion gates which Poe protocol features are honoured. Per
+// fastapi_poe.types.SettingsResponse: "If not provided, Poe will use
+// the default values for response version 0." Response version 0 does
+// not honour `parameter_controls`. We always emit 2.
 type SettingsResponse struct {
+	ResponseVersion     int                `json:"response_version"`
 	AllowAttachments    bool               `json:"allow_attachments"`
 	IntroductionMessage string             `json:"introduction_message,omitempty"`
 	ParameterControls   *ParameterControls `json:"parameter_controls,omitempty"`
 }
+
+// SettingsResponseVersion is the only response_version this relay
+// emits. Required for `parameter_controls` to be honoured by Poe.
+const SettingsResponseVersion = 2
 
 // LatestParameters returns the parameters dict from the most recent
 // user message in the query, or nil if absent.

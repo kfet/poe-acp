@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-29
+
+### Fixed
+
+- Always emit `response_version: 2` on the settings response. Per `fastapi_poe.types.SettingsResponse`: when omitted, Poe applies *response version 0* defaults, under which `parameter_controls` is not honoured. v0.4.1 fixed the schema literals but the missing `response_version` still made Poe ignore the controls. With this release the Options panel actually renders.
+
 ## [0.4.1] - 2026-04-29
 
 ### Fixed
