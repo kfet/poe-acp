@@ -115,15 +115,29 @@ duplicates work the ACP path already does.
 
 ## Schema (concrete JSON)
 
-Returned in `settings` response under `parameter_controls`. Note the
-required `api_version: "2"` and `control: "drop_down"` (NOT `"dropdown"`)
-— Poe validates with `extra="forbid"` per `fastapi_poe.types` and
-silently drops the entire object on any literal mismatch.
+Returned in `settings` response under `parameter_controls`. **Three
+non-obvious fields are required, all enforced by Pydantic +
+`extra="forbid"` on Poe's side; if any is wrong, Poe silently drops
+`parameter_controls` and the bot UI shows no Options panel** (see
+also `docs/poe-protocol-reference.md` § Settings Response → Gotchas):
+
+1. Top-level `response_version: 2` on `SettingsResponse`. Without it
+   Poe applies *response version 0* defaults under which
+   `parameter_controls` is not honoured.
+2. `parameter_controls.api_version: "2"` on the controls object.
+3. Control literal is `"drop_down"` (NOT `"dropdown"`); also
+   `"toggle_switch"` not `"toggle"`.
+
+Build-time guard: `internal/poeproto/schema_test.go` validates emitted
+JSON against the upstream `fastapi_poe.types` Pydantic models (vendored
+as JSON Schemas; regenerate with `scripts/regen-poe-schema.sh`).
 
 ```json
 {
-  "api_version": "2",
-  "sections": [
+  "response_version": 2,
+  "parameter_controls": {
+    "api_version": "2",
+    "sections": [
     {
       "name": "Model",
       "controls": [
@@ -159,7 +173,8 @@ silently drops the entire object on any literal mismatch.
         }
       ]
     }
-  ]
+    ]
+  }
 }
 ```
 
