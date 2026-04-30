@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-30
+
 ### Added
 
 - JSON config file at `$XDG_CONFIG_HOME/poe-acp-relay/config.json` (override with `--config /path`). Holds the bot's identity (`bot_name`), per-conversation defaults (`defaults.model`, `defaults.thinking`, `defaults.hide_thinking`), and reserved `agent.profile` field. Unknown keys fail loudly at boot (DisallowUnknownFields). See `docs/config.example.json`. Empty/missing file preserves zero-config behavior.
