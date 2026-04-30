@@ -18,7 +18,9 @@ See [docs/poe-acp-relay-design.md](docs/poe-acp-relay-design.md) for the full de
 cmd/poe-acp-relay/       entry point: flags + server wiring
 docs/                    design doc + Poe protocol reference
 internal/acpclient/      acp.Client impl + stdio agent process wrapper
+internal/config/         JSON config loader (DisallowUnknownFields)
 internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
+internal/paramctl/       parameter_controls schema builder + Resolve
 internal/poeproto/       minimal Poe HTTP+SSE
 internal/policy/         allow-all / read-only / deny-all permission gates
 internal/router/         conv_id → ACP session map + GC
@@ -35,6 +37,8 @@ Before implementing a fix or feature inside a specific package, stop and ask: **
 - Agent-process concerns (spawn, stdio, ACP framing) → `acpclient`.
 - Session lifecycle (cwd, GC, heartbeat, cancel) → `router` + `httpsrv`.
 - Policy (tool permission decisions) → `policy`.
+- Operator-facing config (defaults, bot identity) → `config` + `paramctl.Resolve`.
+- Schema building (parameter_controls) → `paramctl.Build`.
 - When fixing a bug, check whether the same bug exists in sibling code paths. Fix it at the root, not per-site.
 
 ## Git

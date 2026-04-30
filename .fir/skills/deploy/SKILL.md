@@ -61,6 +61,22 @@ Write `~/.config/poe-acp-relay/env` (mode `0600`) on the host:
 POEACP_ACCESS_KEY=<poe-server-bot-secret>
 ```
 
+Optionally drop a config file at `~/.config/poe-acp-relay/config.json` (see `docs/config.example.json`):
+
+```json
+{
+  "bot_name": "<poe-bot-slug>",
+  "defaults": {
+    "model": "anthropic/claude-sonnet-4-6",
+    "thinking": "medium",
+    "hide_thinking": false
+  },
+  "agent": {"profile": "fir"}
+}
+```
+
+`bot_name` enables auto-invalidation of Poe's cached settings response when the relay's schema changes between boots (`bot/fetch_settings/<bot>/<key>/1.1`). `defaults.model` decouples the bot's UI default from fir's own current model so it stays stable across restarts. Missing file = built-in defaults; safe to skip on first deploy and add later.
+
 Prefer a supervised service over nohup/tmux. Use **systemd** on Linux or **launchd** on macOS.
 
 #### Linux: systemd user unit
@@ -188,4 +204,5 @@ See the `update` skill (`.fir/skills/update/SKILL.md`) for the per-host upgrade 
 - [ ] Poe test message round-trips.
 - [ ] Service supervisor enabled: systemd user unit + `loginctl enable-linger` (Linux) **or** launchd user agent with `RunAtLoad` + `KeepAlive` (macOS).
 - [ ] `~/.config/poe-acp-relay/env` is mode `0600`.
+- [ ] `~/.config/poe-acp-relay/config.json` exists with `bot_name` matching the Poe slug (or intentionally omitted; auto-refetch will be skipped).
 - [ ] `-introduction` flag set to the intended greeting (or intentionally omitted).
