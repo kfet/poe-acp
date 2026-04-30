@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kfet/poe-acp-relay/internal/authbroker"
 	"github.com/kfet/poe-acp-relay/internal/poeproto"
 	"github.com/kfet/poe-acp-relay/internal/router"
 )
@@ -27,6 +28,10 @@ type Config struct {
 	// request to populate SettingsResponse.ParameterControls. If nil,
 	// Settings.ParameterControls is used as-is.
 	ParameterControlsProvider func() *poeproto.ParameterControls
+	// AuthBroker, if set, intercepts /login commands and pasted redirect
+	// URLs from in-flight logins before they reach the router. Optional;
+	// nil disables interactive auth.
+	AuthBroker *authbroker.Broker
 }
 
 // Handler serves the /poe endpoint.
@@ -97,6 +102,17 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	turns := make([]router.Turn, 0, len(req.Query))
 	for _, m := range req.Query {
 		turns = append(turns, router.Turn{Role: m.Role, Content: m.Content})
+	}
+
+	// Auth broker intercept: /login commands or pasted redirect URLs for
+	// an in-flight login are handled out-of-band, never reaching the
+	// router.
+	if h.cfg.AuthBroker != nil {
+		latest := latestUserTurn(turns)
+		if latest != "" && (h.cfg.AuthBroker.HasPending(req.ConversationID) || authbroker.IsLoginCommand(latest)) {
+			h.handleAuth(ctx, sse, req.ConversationID, latest)
+			return
+		}
 	}
 
 	opts := router.ParseOptions(req.LatestParameters(), h.cfg.Router.Defaults())
@@ -188,3 +204,35 @@ func (s *sink) Text(t string) error      { return s.w.Text(t) }
 func (s *sink) Replace(t string) error   { return s.w.Replace(t) }
 func (s *sink) Error(t, et string) error { return s.w.Error(t, et) }
 func (s *sink) Done() error              { return s.w.Done() }
+
+// handleAuth runs an auth-flow turn end-to-end on the SSE stream. Always
+// emits a single text payload + done, regardless of broker outcome.
+func (h *Handler) handleAuth(ctx context.Context, sse *poeproto.SSEWriter, convID, text string) {
+	out, err := h.cfg.AuthBroker.Handle(ctx, convID, text)
+	if err != nil {
+		log.Printf("authbroker (conv=%s): %v", convID, err)
+		_ = sse.Error(err.Error(), "user_caused_error")
+		_ = sse.Done()
+		return
+	}
+	if out == nil {
+		// Should not happen — broker returned nil for an auth turn.
+		_ = sse.Done()
+		return
+	}
+	if out.Text != "" {
+		_ = sse.Text(out.Text)
+	}
+	_ = sse.Done()
+}
+
+// latestUserTurn returns the content of the most recent user turn, or ""
+// if there isn't one.
+func latestUserTurn(turns []router.Turn) string {
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].Role == "user" {
+			return turns[i].Content
+		}
+	}
+	return ""
+}

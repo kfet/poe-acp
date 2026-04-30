@@ -108,6 +108,8 @@ type AgentProc struct {
 	mu     sync.Mutex
 	sinks  map[acp.SessionId]SessionUpdateSink // active session sinks
 	models *acp.SessionModelState              // cached model list (nil until first NewSession or Probe)
+
+	authMethods []AuthMethod // parsed from initialize response
 }
 
 // Start launches the agent process, performs Initialize (capturing caps),
@@ -167,7 +169,19 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 		return nil, fmt.Errorf("acp initialize: %w", err)
 	}
 	a.caps = parseCaps(raw)
+	a.authMethods = parseAuthMethods(raw)
 	return a, nil
+}
+
+// parseAuthMethods extracts the authMethods array from a raw initialize
+// response. Reads only the fields the relay actually uses; extra _meta
+// is ignored.
+func parseAuthMethods(raw json.RawMessage) []AuthMethod {
+	var env struct {
+		AuthMethods []AuthMethod `json:"authMethods"`
+	}
+	_ = json.Unmarshal(raw, &env)
+	return env.AuthMethods
 }
 
 // parseCaps extracts agentCapabilities.{loadSession,sessionCapabilities.{list,resume}}
@@ -337,6 +351,97 @@ func (a *AgentProc) Prompt(ctx context.Context, sid acp.SessionId, text string) 
 // Cancel requests cancellation of an in-flight prompt for a session.
 func (a *AgentProc) Cancel(ctx context.Context, sid acp.SessionId) error {
 	return a.conn.SendNotification(ctx, acp.AgentMethodSessionCancel, acp.CancelNotification{SessionId: sid})
+}
+
+// AuthMethod describes one authentication method advertised by the agent
+// in the initialize response. Mirrors the RFD auth-methods schema we care
+// about. Extra _meta fields the relay doesn't use are ignored.
+type AuthMethod struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type,omitempty"` // "agent" | "env_var" | "terminal" | ""
+}
+
+// AuthResult is the outcome of an Authenticate call.
+type AuthResult struct {
+	// State is one of "needs_redirect", "ok", "cancelled", or "" if the
+	// agent's response carried no _meta.auth state field (legacy / non-
+	// interactive responses).
+	State string
+	// ID is the opaque pending-login id the agent returns on call 1.
+	// Echo it back on call 2 / cancel so the agent can disambiguate
+	// concurrent pending logins for the same methodID.
+	ID string
+	// URL is the auth URL the user should visit (state="needs_redirect").
+	URL string
+	// Instructions is optional human-readable text alongside URL.
+	Instructions string
+}
+
+// Authenticate invokes the ACP authenticate RPC. Modes:
+//
+//   - id == "" && redirect == "" && !cancel : start an interactive login.
+//     The agent returns a fresh id (and URL) in AuthResult.
+//   - id != "" && redirect != ""            : submit the pasted redirect.
+//   - id != "" && cancel == true            : cancel that pending login.
+//
+// methodID must match the id advertised in the initialize response (e.g.
+// "oauth-anthropic"). Requires an agent that supports the
+// _meta.auth.interactive extension; older agents will run the legacy
+// blocking flow and may return an empty AuthResult.
+func (a *AgentProc) Authenticate(ctx context.Context, methodID, id, redirect string, cancel bool) (AuthResult, error) {
+	authMeta := map[string]any{"interactive": true}
+	if id != "" {
+		authMeta["id"] = id
+	}
+	if redirect != "" {
+		authMeta["redirect"] = redirect
+	}
+	if cancel {
+		authMeta["cancel"] = true
+	}
+	params := map[string]any{
+		"methodId": methodID,
+		"_meta":    map[string]any{"auth": authMeta},
+	}
+	raw, err := acp.SendRequest[json.RawMessage](a.conn, ctx, acp.AgentMethodAuthenticate, params)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	return parseAuthResult(raw), nil
+}
+
+// parseAuthResult extracts state/id/url/instructions from a raw authenticate
+// response. Missing fields → zero values.
+func parseAuthResult(raw json.RawMessage) AuthResult {
+	var env struct {
+		Meta struct {
+			Auth struct {
+				State        string `json:"state"`
+				ID           string `json:"id"`
+				URL          string `json:"url"`
+				Instructions string `json:"instructions"`
+			} `json:"auth"`
+		} `json:"_meta"`
+	}
+	_ = json.Unmarshal(raw, &env)
+	return AuthResult{
+		State:        env.Meta.Auth.State,
+		ID:           env.Meta.Auth.ID,
+		URL:          env.Meta.Auth.URL,
+		Instructions: env.Meta.Auth.Instructions,
+	}
+}
+
+// AuthMethods returns the auth methods the agent advertised at Initialize.
+// Empty if the agent didn't advertise any (or initialize hasn't run yet).
+func (a *AgentProc) AuthMethods() []AuthMethod {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]AuthMethod, len(a.authMethods))
+	copy(out, a.authMethods)
+	return out
 }
 
 // Close terminates the agent process. Returns after the process has
