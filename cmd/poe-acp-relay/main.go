@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/kfet/poe-acp-relay/internal/acpclient"
+	"github.com/kfet/poe-acp-relay/internal/authbroker"
 	"github.com/kfet/poe-acp-relay/internal/config"
 	"github.com/kfet/poe-acp-relay/internal/httpsrv"
 	"github.com/kfet/poe-acp-relay/internal/paramctl"
@@ -158,6 +159,14 @@ func main() {
 	defer stopGC()
 
 	// HTTP
+	broker := authbroker.New(agent)
+	if methods := agent.AuthMethods(); len(methods) > 0 {
+		ids := make([]string, 0, len(methods))
+		for _, m := range methods {
+			ids = append(ids, m.ID)
+		}
+		log.Printf("auth methods: %v", ids)
+	}
 	h := httpsrv.New(httpsrv.Config{
 		Router: rtr,
 		Settings: poeproto.SettingsResponse{
@@ -170,6 +179,7 @@ func main() {
 			m, _ := agent.Models()
 			return paramctl.Build(m, defaults)
 		},
+		AuthBroker: broker,
 	})
 
 	// Auto-invalidate Poe's cached settings response when the schema
