@@ -5,6 +5,7 @@ package paramctl
 import (
 	"github.com/kfet/poe-acp-relay/internal/acpclient"
 	"github.com/kfet/poe-acp-relay/internal/poeproto"
+	"github.com/kfet/poe-acp-relay/internal/router"
 )
 
 // ThinkingLevels is the v1 thinking dropdown options. Wire values match
@@ -68,5 +69,27 @@ func Build(models []acpclient.ModelInfo, currentModelID string) *poeproto.Parame
 			Name:     "Options",
 			Controls: controls,
 		}},
+	}
+}
+
+// Defaults returns the per-conversation option defaults that match what
+// Build() emits as `default_value` on each control. Build() and
+// Defaults() must stay in lockstep; a sync test enforces this.
+//
+// Inputs mirror Build(): same (models, currentModelID) → same defaults.
+// When models is empty (probe failed) the returned Model is "" so the
+// router does not call set_model with a phantom value.
+func Defaults(models []acpclient.ModelInfo, currentModelID string) router.Options {
+	model := ""
+	if len(models) > 0 {
+		model = currentModelID
+		if model == "" {
+			model = models[0].ID
+		}
+	}
+	return router.Options{
+		Model:        model,
+		Thinking:     DefaultThinking,
+		HideThinking: false,
 	}
 }

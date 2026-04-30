@@ -68,6 +68,12 @@ type Config struct {
 	StateDir string
 	// SessionTTL: sessions idle longer than this are dropped from the map.
 	SessionTTL time.Duration
+	// Defaults are the values the Poe UI shows when the user hasn't
+	// touched the Options panel. ParseOptions overlays user-supplied
+	// keys on top of these so the agent always converges to the
+	// UI-promised state, even on the first turn when Poe sends an
+	// empty `parameters` dict.
+	Defaults Options
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
 }
@@ -314,11 +320,18 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 }
 
 // ParseOptions extracts a strongly-typed Options struct from Poe's
-// `parameters` dict. Unknown keys and wrong-type values are silently
-// dropped — Poe documents that other bots calling ours may inject
-// arbitrary parameters, so this is untrusted input.
-func ParseOptions(params map[string]any) Options {
-	var o Options
+// `parameters` dict, overlaying valid keys on top of defaults. Unknown
+// keys and wrong-type values are silently dropped — Poe documents that
+// other bots calling ours may inject arbitrary parameters, so this is
+// untrusted input.
+//
+// Defaults matter because Poe materialises `default_value`s into the
+// UI display only; an empty `parameters` dict on the first turn would
+// otherwise leave the agent on its own internal default while the UI
+// promises something else. Overlaying onto defaults keeps UI and agent
+// in sync from turn 1.
+func ParseOptions(params map[string]any, defaults Options) Options {
+	o := defaults
 	if v, ok := params["model"].(string); ok {
 		o.Model = v
 	}
@@ -333,6 +346,10 @@ func ParseOptions(params map[string]any) Options {
 	}
 	return o
 }
+
+// Defaults returns the per-conversation option defaults configured on
+// this router. The HTTP layer uses this to seed ParseOptions.
+func (r *Router) Defaults() Options { return r.cfg.Defaults }
 
 // latestUserText returns the content of the last user message in the query.
 func latestUserText(q []Turn) string {

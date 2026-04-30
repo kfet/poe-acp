@@ -99,7 +99,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		turns = append(turns, router.Turn{Role: m.Role, Content: m.Content})
 	}
 
-	opts := router.ParseOptions(req.LatestParameters())
+	opts := router.ParseOptions(req.LatestParameters(), h.cfg.Router.Defaults())
 
 	// Sink: SSE writer + heartbeat coordination + disconnect → cancel.
 	s := newSink(sse, h.cfg.HeartbeatInterval)
