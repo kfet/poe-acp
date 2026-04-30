@@ -3,11 +3,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +22,7 @@ import (
 	"time"
 
 	"github.com/kfet/poe-acp-relay/internal/acpclient"
+	"github.com/kfet/poe-acp-relay/internal/config"
 	"github.com/kfet/poe-acp-relay/internal/httpsrv"
 	"github.com/kfet/poe-acp-relay/internal/paramctl"
 	"github.com/kfet/poe-acp-relay/internal/poeproto"
@@ -32,6 +39,7 @@ func main() {
 		agentCmd     = flag.String("agent-cmd", "fir --mode acp", "ACP agent command (stdio)")
 		agentDirFlag = flag.String("agent-dir", "", "FIR_AGENT_DIR passed to the child agent (default: inherit)")
 		stateDirFlag = flag.String("state-dir", "", "Per-conv state dir root (default: $XDG_STATE_HOME/poe-acp-relay)")
+		configFlag   = flag.String("config", "", "Path to JSON config (default: $XDG_CONFIG_HOME/poe-acp-relay/config.json)")
 		permission   = flag.String("permission", "allow-all", "Permission policy: allow-all|read-only|deny-all")
 		accessKeyEnv = flag.String("access-key-env", "POEACP_ACCESS_KEY", "Env var holding the Poe bearer secret")
 		poePath      = flag.String("poe-path", "/poe", "HTTP path for the Poe protocol endpoint")
@@ -60,6 +68,21 @@ func main() {
 	secret := os.Getenv(*accessKeyEnv)
 	if secret == "" {
 		log.Fatalf("missing $%s (Poe bearer secret)", *accessKeyEnv)
+	}
+
+	cfgPath := *configFlag
+	if cfgPath == "" {
+		cfgPath = defaultConfigPath()
+	}
+	cfg, cfgFound, err := config.Load(cfgPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	if cfgFound {
+		log.Printf("config: %s (bot=%q model=%q thinking=%q profile=%q)",
+			cfgPath, cfg.BotName, cfg.Defaults.Model, cfg.Defaults.Thinking, cfg.Agent.Profile)
+	} else {
+		log.Printf("config: %s not found, using built-in defaults", cfgPath)
 	}
 
 	stateDir := *stateDirFlag
@@ -112,13 +135,14 @@ func main() {
 		log.Printf("probed %d models (current=%s)", len(models), current)
 	}
 
-	// Snapshot defaults at boot. The relay applies these on the first
-	// turn of every new conversation so the agent matches the UI even
-	// when Poe sends an empty `parameters` dict (it materialises
-	// `default_value`s into the UI display only). Same (models,
-	// current) feed both Build() and Defaults() — see paramctl.
+	// Resolve operator-facing defaults once: config wins, then probe's
+	// CurrentModelId for backward-compat, then built-in fallbacks. The
+	// same resolved struct seeds Build() (UI default_values) and
+	// Router.Defaults (runtime apply on first turn) so they cannot drift.
 	models, current := agent.Models()
-	defaults := paramctl.Defaults(models, current)
+	defaults := paramctl.Resolve(cfg.Defaults, models, current)
+	log.Printf("resolved defaults: model=%q thinking=%q hide_thinking=%v",
+		defaults.Model, defaults.Thinking, defaults.HideThinking)
 
 	// Router
 	rtr, err := router.New(router.Config{
@@ -143,10 +167,22 @@ func main() {
 		},
 		HeartbeatInterval: *heartbeat,
 		ParameterControlsProvider: func() *poeproto.ParameterControls {
-			models, current := agent.Models()
-			return paramctl.Build(models, current)
+			m, _ := agent.Models()
+			return paramctl.Build(m, defaults)
 		},
 	})
+
+	// Auto-invalidate Poe's cached settings response when the schema
+	// hash changes between boots. Without this, operators must POST
+	// /bot/fetch_settings/<bot>/<key>/1.1 manually after editing the
+	// config or after a fir auth change. Skipped when bot_name is
+	// unset (operator hasn't opted in).
+	if cfg.BotName != "" {
+		go maybeRefetchSettings(ctx, stateDir, cfg.BotName, secret,
+			paramctl.Build(models, defaults))
+	} else {
+		log.Printf("config: bot_name unset; Poe settings cache will not auto-refetch")
+	}
 
 	mux := http.NewServeMux()
 	poeHandler := poeproto.BearerAuth(secret, h)
@@ -180,6 +216,85 @@ func main() {
 	log.Println("bye")
 }
 
+// maybeRefetchSettings hashes the freshly built parameter_controls and
+// compares against the last-pushed hash on disk. On change, it POSTs
+// to Poe's /bot/fetch_settings/<bot>/<key>/1.1 endpoint to invalidate
+// Poe's cache so the UI picks up the new schema. Best-effort: every
+// failure is logged and swallowed.
+func maybeRefetchSettings(ctx context.Context, stateDir, botName, accessKey string, controls *poeproto.ParameterControls) {
+	hashFile := filepath.Join(stateDir, "last_schema_hash")
+	h, err := schemaHash(controls)
+	if err != nil {
+		log.Printf("settings refetch: hash schema: %v", err)
+		return
+	}
+	prev, _ := os.ReadFile(hashFile)
+	if string(prev) == h {
+		log.Printf("settings refetch: schema unchanged (hash=%s), skipping", h[:12])
+		return
+	}
+
+	endpoint := fmt.Sprintf("https://api.poe.com/bot/fetch_settings/%s/%s/1.1",
+		url.PathEscape(botName), url.PathEscape(accessKey))
+	rctx, rcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer rcancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		log.Printf("settings refetch: build request: %v", err)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("settings refetch: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("settings refetch: HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
+		return
+	}
+	// Verify Poe accepted the parameter_controls (it returns null in
+	// the echo body if validation dropped them).
+	var echo struct {
+		ParameterControls json.RawMessage `json:"parameter_controls"`
+	}
+	if err := json.Unmarshal(body, &echo); err == nil {
+		if len(echo.ParameterControls) == 0 || bytes.Equal(echo.ParameterControls, []byte("null")) {
+			log.Printf("settings refetch: WARNING Poe dropped parameter_controls (schema invalid). Body: %s", truncate(string(body), 400))
+			return
+		}
+	}
+	if err := os.WriteFile(hashFile, []byte(h), 0o600); err != nil {
+		log.Printf("settings refetch: write hash file: %v", err)
+		return
+	}
+	log.Printf("settings refetch: ok (hash=%s)", h[:12])
+}
+
+// schemaHash returns a stable SHA-256 hex digest of the parameter
+// controls JSON. JSON marshal output of struct types is deterministic
+// (field order fixed), and we don't reorder option lists, so equal
+// schemas produce equal hashes.
+func schemaHash(pc *poeproto.ParameterControls) (string, error) {
+	if pc == nil {
+		return "nil", nil
+	}
+	b, err := json.Marshal(pc)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
 func defaultStateDir() string {
 	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
 		return filepath.Join(d, "poe-acp-relay")
@@ -188,6 +303,16 @@ func defaultStateDir() string {
 		return filepath.Join(h, ".local", "state", "poe-acp-relay")
 	}
 	return filepath.Join(os.TempDir(), "poe-acp-relay")
+}
+
+func defaultConfigPath() string {
+	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
+		return filepath.Join(d, "poe-acp-relay", "config.json")
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(h, ".config", "poe-acp-relay", "config.json")
+	}
+	return filepath.Join(os.TempDir(), "poe-acp-relay", "config.json")
 }
 
 func appendEnv(env []string, kv string) []string {

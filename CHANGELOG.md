@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- JSON config file at `$XDG_CONFIG_HOME/poe-acp-relay/config.json` (override with `--config /path`). Holds the bot's identity (`bot_name`), per-conversation defaults (`defaults.model`, `defaults.thinking`, `defaults.hide_thinking`), and reserved `agent.profile` field. Unknown keys fail loudly at boot (DisallowUnknownFields). See `docs/config.example.json`. Empty/missing file preserves zero-config behavior.
+- Auto-invalidation of Poe's cached settings response when `parameter_controls` change between boots. Relay hashes the schema, persists to `<state-dir>/last_schema_hash`, and POSTs `https://api.poe.com/bot/fetch_settings/<bot_name>/<key>/1.1` on change. Skipped when `bot_name` is unset.
+
+### Changed
+
+- `paramctl.Build` and the new `paramctl.Resolve` decouple the operator-configured default from the agent's currently-running model. Resolution: `config.json` → probe's `CurrentModelId` (backward-compat) → built-in fallback. The configured `defaults.model` is validated against the probed list; an out-of-list value drops the schema's `default_value` rather than substituting a phantom one. This stops silent UI/agent drift when fir's own model changes between relay restarts.
+
 ## [0.4.3] - 2026-04-30
 
 ### Fixed

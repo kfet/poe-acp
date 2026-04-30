@@ -10,6 +10,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"github.com/kfet/poe-acp-relay/internal/acpclient"
+	"github.com/kfet/poe-acp-relay/internal/config"
 	"github.com/kfet/poe-acp-relay/internal/paramctl"
 	"github.com/kfet/poe-acp-relay/internal/poeproto"
 )
@@ -95,7 +96,8 @@ func TestParameterControls_MatchesPoeSchema(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pc := paramctl.Build(tc.models, tc.cur)
+			defaults := paramctl.Resolve(config.Defaults{}, tc.models, tc.cur)
+			pc := paramctl.Build(tc.models, defaults)
 			validate(t, schema, pc)
 		})
 	}
@@ -108,9 +110,9 @@ func TestSettingsResponse_MatchesPoeSchema(t *testing.T) {
 	t.Parallel()
 	schema := loadSchema(t, "settings_response.schema.json")
 
-	pc := paramctl.Build([]acpclient.ModelInfo{
-		{ID: "anthropic/sonnet", Name: "Sonnet"},
-	}, "anthropic/sonnet")
+	models := []acpclient.ModelInfo{{ID: "anthropic/sonnet", Name: "Sonnet"}}
+	defaults := paramctl.Resolve(config.Defaults{}, models, "anthropic/sonnet")
+	pc := paramctl.Build(models, defaults)
 
 	resp := poeproto.SettingsResponse{
 		AllowAttachments:    false,
