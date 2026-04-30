@@ -1,6 +1,6 @@
 # Parameter Controls — design
 
-Status: draft for review. No code written yet.
+Status: **shipped in v0.5.0.** Original draft retained below for historical context. Operator-facing surface (config file, defaults resolution, schema cache invalidation) extends what was originally drafted — see "v0.5.0 additions" at the end.
 
 ## Goal
 
@@ -298,3 +298,34 @@ Before I start coding, please confirm:
       `none` (cheapest, opt-in)?
 - [ ] Anything from Tier 2/3 of the earlier discussion (steering,
       server_tools, reset, project preset) you want pulled into v1?
+
+## v0.5.0 additions (post-v1)
+
+The original v1 draft assumed a single source of defaults: the agent's
+probed `CurrentModelId`. In practice that coupled the bot's UI default
+to fir's own currently-running model — flipping fir's model for any
+unrelated reason silently changed the bot's UI default and invalidated
+Poe's cached settings response. v0.5.0 separates these dynamics:
+
+- **`internal/config`** — JSON config at
+  `$XDG_CONFIG_HOME/poe-acp-relay/config.json`. Holds `bot_name`,
+  `defaults.{model,thinking,hide_thinking}`, and reserved `agent.profile`.
+  `DisallowUnknownFields` so typos fail at boot.
+- **`paramctl.Resolve(cfg.Defaults, models, probeCurrent) → router.Options`** —
+  resolution order: config → probe's `CurrentModelId` (backward-compat) →
+  built-in fallback. Configured `defaults.model` is validated against
+  the probed model list; on miss the schema's `default_value` is dropped
+  rather than substituting a phantom value (logged warning).
+- **`paramctl.Build(models, defaults router.Options)`** takes the
+  resolved struct, so UI `default_value`s and runtime
+  `Router.Defaults()` come from the same source. A sync test
+  (`TestBuildAndResolveAgree`) pins them together.
+- **Cache invalidation** — relay hashes the emitted `parameter_controls`
+  and persists `<state-dir>/last_schema_hash`. On change between boots,
+  POSTs `https://api.poe.com/bot/fetch_settings/<bot_name>/<key>/1.1`.
+  Skipped when `bot_name` is unset. The reserved `meta.refetch_settings`
+  field from the original draft is now redundant for schema-change
+  invalidation but remains available for in-band refetch triggers.
+
+The original v1 surface (`model`, `thinking`, `hide_thinking` controls;
+boot-time probe; flat layout; no `condition` block) is unchanged.
