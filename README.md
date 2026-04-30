@@ -127,6 +127,7 @@ follow-up; a template will land alongside the first production deploy.
 --agent-cmd            ACP agent command + args (default "fir --mode acp")
 --agent-dir            FIR_AGENT_DIR passed to the child (default inherit)
 --state-dir            Per-conv state root (default $XDG_STATE_HOME/poe-acp-relay)
+--config               JSON config path (default $XDG_CONFIG_HOME/poe-acp-relay/config.json)
 --permission           allow-all|read-only|deny-all (default allow-all)
 --access-key-env       Env var holding the Poe bearer secret (default POEACP_ACCESS_KEY)
 --introduction         Poe introduction message
@@ -135,6 +136,54 @@ follow-up; a template will land alongside the first production deploy.
 --heartbeat-interval   SSE heartbeat tick (default 10s, 0 to disable)
 --version              Print version and exit
 ```
+
+## Configuration
+
+Operator-facing knobs live in a JSON config file (default
+`$XDG_CONFIG_HOME/poe-acp-relay/config.json`, override with `--config`).
+Missing file = empty config = built-in defaults; zero-config installs
+keep working.
+
+```json
+{
+  "bot_name": "your-poe-bot-slug",
+  "defaults": {
+    "model": "anthropic/claude-sonnet-4-6",
+    "thinking": "medium",
+    "hide_thinking": false
+  },
+  "agent": {
+    "profile": "fir"
+  }
+}
+```
+
+- **`bot_name`** — Poe bot slug (the URL-path component on poe.com).
+  When set, the relay auto-invalidates Poe's cached settings response
+  whenever the emitted `parameter_controls` schema changes between
+  boots, by POSTing `https://api.poe.com/bot/fetch_settings/<bot_name>/<key>/1.1`.
+  Without it, operators must run that POST manually after schema-affecting
+  changes (model auth flips, edited defaults, …).
+- **`defaults.model`** — `<provider>/<modelId>` shown as the default in
+  Poe's Options panel and applied on the first turn of every new
+  conversation. Validated against the agent's probed model list at
+  boot; out-of-list values are dropped (logged) and the relay falls
+  through to the agent's own default. Decoupled from the agent's own
+  current model so it stays stable across restarts.
+- **`defaults.thinking`** — one of `off`, `minimal`, `low`, `medium`,
+  `high`. Empty = built-in default (`medium`).
+- **`defaults.hide_thinking`** — relay-side filter for
+  `agent_thought_chunk`.
+- **`agent.profile`** — reserved (today the relay only knows fir's
+  `set_config_option` schema; multi-agent profile selection lands in a
+  follow-up).
+
+Unknown keys fail loudly at boot (DisallowUnknownFields). See
+`docs/config.example.json`.
+
+CLI flags only cover ops concerns (listen address, state dir,
+permission policy). Anything that's "what kind of bot is this" goes in
+the config file.
 
 ## Behaviour notes
 
@@ -207,7 +256,9 @@ poe-acp-relay/
   cmd/poe-acp-relay/       entry point
   docs/                    design doc + Poe protocol reference
   internal/acpclient/      acp.Client impl + stdio agent proc wrapper
+  internal/config/         JSON config loader (DisallowUnknownFields)
   internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
+  internal/paramctl/       parameter_controls schema builder + Resolve
   internal/poeproto/       minimal Poe HTTP+SSE
   internal/policy/         allow-all / read-only / deny-all
   internal/router/         conv_id → ACP session map + GC
