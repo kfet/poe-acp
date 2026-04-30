@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- New conversations now apply schema defaults on the first turn. Poe materialises `default_value`s into the UI display only — empty `parameters` on turn 1 used to leave the agent on its own internal default while the UI promised something else (silent drift). `paramctl.Defaults` is now the single source of truth for UI defaults, fed into `router.Config.Defaults` and overlaid by `ParseOptions(params, defaults)`. A sync test pins `Build()` and `Defaults()` together so they cannot diverge.
+
 ## [0.4.2] - 2026-04-29
 
 ### Fixed

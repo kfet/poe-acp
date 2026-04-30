@@ -73,3 +73,65 @@ func TestBuild_WithModels(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildAndDefaultsAgree pins the schema's `default_value`s to the
+// runtime Defaults() so the relay applies what the UI promises. If
+// either side changes without the other, this fails.
+func TestBuildAndDefaultsAgree(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		models  []acpclient.ModelInfo
+		current string
+	}{
+		{
+			"with models",
+			[]acpclient.ModelInfo{{ID: "anthropic/sonnet", Name: "Sonnet"}},
+			"anthropic/sonnet",
+		},
+		{
+			"probe failed",
+			nil,
+			"",
+		},
+		{
+			"models present, no current → first model",
+			[]acpclient.ModelInfo{{ID: "anthropic/sonnet", Name: "Sonnet"}},
+			"",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := Build(tc.models, tc.current)
+			d := Defaults(tc.models, tc.current)
+			// Walk the schema and pull each default_value out.
+			schemaDefaults := map[string]any{}
+			for _, sec := range pc.Sections {
+				for _, c := range sec.Controls {
+					schemaDefaults[c.ParameterName] = c.DefaultValue
+				}
+			}
+			// thinking
+			if got, want := schemaDefaults["thinking"], d.Thinking; got != want {
+				t.Errorf("thinking: schema=%v defaults=%v", got, want)
+			}
+			// hide_thinking
+			if got, want := schemaDefaults["hide_thinking"], d.HideThinking; got != want {
+				t.Errorf("hide_thinking: schema=%v defaults=%v", got, want)
+			}
+			// model — present iff models non-empty
+			if mv, ok := schemaDefaults["model"]; ok {
+				if d.Model == "" {
+					t.Errorf("schema has model=%v but Defaults().Model is empty", mv)
+				}
+				if mv != d.Model {
+					t.Errorf("model: schema=%v defaults=%v", mv, d.Model)
+				}
+			} else {
+				if d.Model != "" {
+					t.Errorf("schema omits model dropdown but Defaults().Model=%q", d.Model)
+				}
+			}
+		})
+	}
+}

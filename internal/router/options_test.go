@@ -22,46 +22,65 @@ func mustRouter(t *testing.T, agent Agent) *Router {
 func TestParseOptions(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name string
-		in   map[string]any
-		want Options
+		name     string
+		in       map[string]any
+		defaults Options
+		want     Options
 	}{
-		{"nil", nil, Options{}},
-		{"empty", map[string]any{}, Options{}},
+		{"nil/no defaults", nil, Options{}, Options{}},
+		{"empty/no defaults", map[string]any{}, Options{}, Options{}},
 		{
-			"all valid",
+			"empty params overlays nothing — defaults survive",
+			map[string]any{},
+			Options{Model: "anth/sonnet", Thinking: "medium"},
+			Options{Model: "anth/sonnet", Thinking: "medium"},
+		},
+		{
+			"nil params with defaults",
+			nil,
+			Options{Model: "anth/sonnet", Thinking: "medium", HideThinking: false},
+			Options{Model: "anth/sonnet", Thinking: "medium", HideThinking: false},
+		},
+		{
+			"all valid overrides defaults",
 			map[string]any{"model": "anthropic/claude-sonnet-4-5", "thinking": "high", "hide_thinking": true},
+			Options{Model: "anth/sonnet", Thinking: "medium"},
 			Options{Model: "anthropic/claude-sonnet-4-5", Thinking: "high", HideThinking: true},
 		},
 		{
 			"thinking off accepted",
 			map[string]any{"thinking": "off"},
+			Options{},
 			Options{Thinking: "off"},
 		},
 		{
-			"thinking none rejected (fir uses off)",
+			"thinking none rejected — default survives",
 			map[string]any{"thinking": "none"},
-			Options{},
+			Options{Thinking: "medium"},
+			Options{Thinking: "medium"},
 		},
 		{
-			"unknown key dropped",
+			"unknown key dropped, default survives for untouched fields",
 			map[string]any{"model": "x", "permission": "deny-all"},
-			Options{Model: "x"},
+			Options{Thinking: "medium"},
+			Options{Model: "x", Thinking: "medium"},
 		},
 		{
-			"invalid thinking dropped",
+			"invalid thinking dropped — default survives",
 			map[string]any{"thinking": "bogus"},
-			Options{},
+			Options{Thinking: "medium"},
+			Options{Thinking: "medium"},
 		},
 		{
-			"wrong types dropped",
+			"wrong types dropped — defaults survive",
 			map[string]any{"model": 42, "thinking": true, "hide_thinking": "yes"},
-			Options{},
+			Options{Model: "anth/sonnet", Thinking: "medium"},
+			Options{Model: "anth/sonnet", Thinking: "medium"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ParseOptions(tc.in)
+			got := ParseOptions(tc.in, tc.defaults)
 			if got != tc.want {
 				t.Fatalf("got %#v want %#v", got, tc.want)
 			}
@@ -267,3 +286,37 @@ func TestRouter_ApplyOptionsFailureSurfacesText(t *testing.T) {
 type stringErr string
 
 func (e stringErr) Error() string { return string(e) }
+
+// TestRouter_AppliesDefaultsOnEmptyParams pins the bug fix: when Poe
+// sends a query with empty `parameters` (which it does on the first
+// turn — `default_value`s are UI-only), the router must still apply
+// the configured defaults so the agent matches what the UI promised.
+func TestRouter_AppliesDefaultsOnEmptyParams(t *testing.T) {
+	t.Parallel()
+	agent := newOptsAgent()
+	r, err := New(Config{
+		Agent:      agent,
+		StateDir:   t.TempDir(),
+		SessionTTL: time.Hour,
+		Defaults:   Options{Model: "anth/sonnet", Thinking: "medium"},
+	})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+
+	// Caller hands ParseOptions empty params + the router's defaults.
+	opts := ParseOptions(nil, r.Defaults())
+	if err := r.Prompt(context.Background(), "c1", "u",
+		[]Turn{{Role: "user", Content: "hi"}}, opts, &captureSink{}); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	if len(agent.setModelCalls) != 1 || agent.setModelCalls[0] != "anth/sonnet" {
+		t.Fatalf("expected SetModel(anth/sonnet) once; got %v", agent.setModelCalls)
+	}
+	if len(agent.setConfigCalls) != 1 || agent.setConfigCalls[0] != [2]string{"thinking_level", "medium"} {
+		t.Fatalf("expected SetConfigOption(thinking_level=medium) once; got %v", agent.setConfigCalls)
+	}
+}

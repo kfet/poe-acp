@@ -112,11 +112,20 @@ func main() {
 		log.Printf("probed %d models (current=%s)", len(models), current)
 	}
 
+	// Snapshot defaults at boot. The relay applies these on the first
+	// turn of every new conversation so the agent matches the UI even
+	// when Poe sends an empty `parameters` dict (it materialises
+	// `default_value`s into the UI display only). Same (models,
+	// current) feed both Build() and Defaults() — see paramctl.
+	models, current := agent.Models()
+	defaults := paramctl.Defaults(models, current)
+
 	// Router
 	rtr, err := router.New(router.Config{
 		Agent:      agent,
 		StateDir:   stateDir,
 		SessionTTL: *ttl,
+		Defaults:   defaults,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
