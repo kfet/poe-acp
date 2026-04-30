@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-29
+
 ### Added
 
 - Interactive OAuth login over Poe chat. Users send `/login` to list available providers and `/login <provider>` (e.g. `/login anthropic`) to start a flow. Relay surfaces fir's auth URL as a chat message; the user opens it, pastes the redirect URL back into the chat, and the relay completes the flow via fir. Backed by a new `authbroker` package and a new `_meta.auth.interactive` extension on the ACP `authenticate` RPC. Per-conversation isolation: concurrent logins from different conversations carry distinct opaque ids and never cross-contaminate. `/cancel-login` aborts an in-flight login. Requires fir with the matching `_meta.auth.interactive` support.
