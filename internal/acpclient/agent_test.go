@@ -34,6 +34,10 @@ func TestParseCaps(t *testing.T) {
 			raw:  `{"agentInfo":{"name":"x"},"protocolVersion":1}`,
 			want: Caps{},
 		},
+		"embeddedContext": {
+			raw:  `{"agentCapabilities":{"promptCapabilities":{"embeddedContext":true}}}`,
+			want: Caps{EmbeddedContext: true},
+		},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

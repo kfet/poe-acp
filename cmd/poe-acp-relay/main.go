@@ -49,6 +49,7 @@ func main() {
 		gcEvery      = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
 		heartbeat    = flag.Duration("heartbeat-interval", 10*time.Second, "SSE heartbeat interval (0 to disable)")
 		spinner      = flag.Duration("spinner-interval", 1500*time.Millisecond, "Tick interval for the animated 'Thinking…' spinner when hide_thinking is on (<=0 falls back to heartbeat-interval)")
+		allowAtt     = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
 		showVersion  = flag.Bool("version", false, "Print version and exit")
 	)
 	flag.Parse()
@@ -171,9 +172,10 @@ func main() {
 	h := httpsrv.New(httpsrv.Config{
 		Router: rtr,
 		Settings: poeproto.SettingsResponse{
-			ResponseVersion:     poeproto.SettingsResponseVersion,
-			AllowAttachments:    false,
-			IntroductionMessage: *introMsg,
+			ResponseVersion:       poeproto.SettingsResponseVersion,
+			AllowAttachments:      *allowAtt,
+			ExpandTextAttachments: *allowAtt,
+			IntroductionMessage:   *introMsg,
 		},
 		HeartbeatInterval: *heartbeat,
 		SpinnerInterval:   *spinner,

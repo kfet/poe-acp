@@ -34,8 +34,26 @@ type ChunkSink interface {
 // Turn is one message in a Poe query, decoupled from the wire type so
 // the router doesn't depend on poeproto.
 type Turn struct {
-	Role    string // "user", "bot", or "system"
-	Content string
+	Role        string // "user", "bot", or "system"
+	Content     string
+	Attachments []Attachment
+}
+
+// Attachment is a file attached to a Poe message. The router forwards
+// these to the agent as ACP content blocks alongside the text prompt.
+// Poe URLs are public-signed so no fetch happens on the relay side.
+//
+// When ParsedContent is non-empty AND the agent advertises
+// promptCapabilities.embeddedContext, the relay emits a
+// ContentBlock::Resource (TextResourceContents) so the agent has the
+// text inline without a fetch round-trip. Otherwise the relay falls
+// back to a ResourceLink block (the mandatory ACP baseline that all
+// agents support).
+type Attachment struct {
+	URL           string
+	ContentType   string
+	Name          string
+	ParsedContent string
 }
 
 // Agent is the subset of acpclient.AgentProc the router needs. Exposed
@@ -45,7 +63,7 @@ type Agent interface {
 	NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink) (acp.SessionId, error)
 	ListSessions(ctx context.Context, cwd string) ([]acpclient.SessionInfo, error)
 	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error
-	Prompt(ctx context.Context, sid acp.SessionId, text string) (acp.StopReason, error)
+	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
 	Cancel(ctx context.Context, sid acp.SessionId) error
 	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
 	SetConfigOption(ctx context.Context, sid acp.SessionId, configID, value string) error
@@ -276,7 +294,18 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 		promptText = flattenTranscript(query)
 	}
 
-	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, promptText)
+	blocks := []acp.ContentBlock{acp.TextBlock(promptText)}
+	embedded := r.cfg.Agent.Caps().EmbeddedContext
+	for _, a := range latestUserAttachments(query) {
+		if a.URL == "" {
+			// Defensive: an empty URL would produce a ResourceLink that
+			// most agents reject. Skip silently.
+			continue
+		}
+		blocks = append(blocks, attachmentBlock(a, embedded))
+	}
+
+	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, blocks)
 	if err != nil {
 		_ = sink.Error(fmt.Sprintf("acp prompt: %v", err), "user_caused_error")
 		_ = sink.Done()
@@ -361,9 +390,57 @@ func latestUserText(q []Turn) string {
 	return ""
 }
 
+// attachmentBlock turns one Poe attachment into an ACP content block.
+// Prefers ContentBlock::Resource (TextResourceContents) when the agent
+// advertises embeddedContext AND Poe has computed parsed_content for
+// the file — that path delivers the text inline, avoiding a fetch.
+// Falls back to ResourceLink (the mandatory ACP baseline) otherwise.
+// Sets MimeType on either block when known so the agent can route the
+// file correctly without sniffing.
+func attachmentBlock(a Attachment, embedded bool) acp.ContentBlock {
+	if embedded && a.ParsedContent != "" {
+		trc := acp.TextResourceContents{
+			Uri:  a.URL,
+			Text: a.ParsedContent,
+		}
+		if a.ContentType != "" {
+			ct := a.ContentType
+			trc.MimeType = &ct
+		}
+		return acp.ResourceBlock(acp.EmbeddedResourceResource{TextResourceContents: &trc})
+	}
+	name := a.Name
+	if name == "" {
+		name = a.URL
+	}
+	block := acp.ResourceLinkBlock(name, a.URL)
+	if a.ContentType != "" && block.ResourceLink != nil {
+		ct := a.ContentType
+		block.ResourceLink.MimeType = &ct
+	}
+	return block
+}
+
+// latestUserAttachments returns the attachments on the last user message.
+// Only the latest turn's attachments are forwarded; prior turns' files
+// are already part of the agent's session history.
+func latestUserAttachments(q []Turn) []Attachment {
+	for i := len(q) - 1; i >= 0; i-- {
+		if q[i].Role == "user" {
+			return q[i].Attachments
+		}
+	}
+	return nil
+}
+
 // flattenTranscript turns a multi-turn Poe query into a single seed prompt
 // for an agent that has no prior context. Format: each turn is prefixed
 // with a role tag; the latest user turn is emitted last.
+//
+// Note: prior turns' attachments are intentionally not reconstructed
+// here. Poe attachment URLs are signed and may have expired by the time
+// we cold-resume; only the latest user turn's attachments are forwarded
+// (as ResourceLink/Resource blocks alongside the seed text).
 func flattenTranscript(q []Turn) string {
 	var b strings.Builder
 	b.WriteString("[Resuming a prior conversation. Transcript so far:]\n\n")

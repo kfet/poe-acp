@@ -56,6 +56,12 @@ type Caps struct {
 	// ResumeSession reflects agentCapabilities.sessionCapabilities.resume
 	// (unstable RFD).
 	ResumeSession bool
+	// EmbeddedContext reflects
+	// agentCapabilities.promptCapabilities.embeddedContext: when true,
+	// the relay may emit ContentBlock::Resource (with TextResourceContents)
+	// in prompt requests instead of a bare ResourceLink, avoiding an
+	// agent-side fetch.
+	EmbeddedContext bool
 }
 
 // SessionInfo is one entry from a session/list response.
@@ -194,13 +200,17 @@ func parseCaps(raw json.RawMessage) Caps {
 				List   *json.RawMessage `json:"list"`
 				Resume *json.RawMessage `json:"resume"`
 			} `json:"sessionCapabilities"`
+			PromptCapabilities struct {
+				EmbeddedContext bool `json:"embeddedContext"`
+			} `json:"promptCapabilities"`
 		} `json:"agentCapabilities"`
 	}
 	_ = json.Unmarshal(raw, &env)
 	return Caps{
-		LoadSession:   env.AgentCapabilities.LoadSession,
-		ListSessions:  env.AgentCapabilities.SessionCapabilities.List != nil,
-		ResumeSession: env.AgentCapabilities.SessionCapabilities.Resume != nil,
+		LoadSession:     env.AgentCapabilities.LoadSession,
+		ListSessions:    env.AgentCapabilities.SessionCapabilities.List != nil,
+		ResumeSession:   env.AgentCapabilities.SessionCapabilities.Resume != nil,
+		EmbeddedContext: env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
 	}
 }
 
@@ -337,10 +347,12 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 }
 
 // Prompt sends a user message to the session. Returns the stop reason.
-func (a *AgentProc) Prompt(ctx context.Context, sid acp.SessionId, text string) (acp.StopReason, error) {
+// The prompt is a sequence of ACP content blocks; callers build these
+// from the latest user text plus any attachments.
+func (a *AgentProc) Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error) {
 	resp, err := acp.SendRequest[acp.PromptResponse](a.conn, ctx, acp.AgentMethodSessionPrompt, acp.PromptRequest{
 		SessionId: sid,
-		Prompt:    []acp.ContentBlock{acp.TextBlock(text)},
+		Prompt:    prompt,
 	})
 	if err != nil {
 		return "", err
