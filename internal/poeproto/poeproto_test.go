@@ -61,3 +61,30 @@ func TestSettingsResponse_ParameterControlsMarshal(t *testing.T) {
 		}
 	}
 }
+
+func TestRequest_DecodesAttachments(t *testing.T) {
+	t.Parallel()
+	body := `{
+	  "type":"query",
+	  "query":[
+	    {"role":"user","content":"see attached","attachments":[
+	      {"url":"https://poe.example/x.png","content_type":"image/png","name":"x.png"},
+	      {"url":"https://poe.example/y.pdf","content_type":"application/pdf","name":"y.pdf","parsed_content":"hello"}
+	    ]}
+	  ]
+	}`
+	req, err := Decode(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	atts := req.Query[0].Attachments
+	if len(atts) != 2 {
+		t.Fatalf("len=%d want 2", len(atts))
+	}
+	if atts[0].URL != "https://poe.example/x.png" || atts[0].ContentType != "image/png" || atts[0].Name != "x.png" {
+		t.Fatalf("att[0]=%+v", atts[0])
+	}
+	if atts[1].ParsedContent != "hello" {
+		t.Fatalf("att[1].ParsedContent=%q", atts[1].ParsedContent)
+	}
+}

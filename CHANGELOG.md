@@ -5,6 +5,8 @@
 ### Added
 
 - Animated `> _Thinking._` spinner shown while the agent is in its thinking phase and `hide_thinking=true`, so the user sees liveness instead of a blank reply. Cycles 1→3 dots every 1.5s via `replace_response`, and is cleared the moment the first real message chunk arrives. When `hide_thinking=false` the heartbeat keeps its prior zero-width-space behaviour (thoughts are streamed as a blockquote already).
+- Attachments support. Poe-supplied attachments on the latest user message are forwarded to the agent as ACP content blocks alongside the text prompt. When Poe has computed `parsed_content` (text-ish files) and the agent advertises `promptCapabilities.embeddedContext`, the relay emits `ContentBlock::Resource` with `TextResourceContents` so the agent has the text inline; otherwise the relay falls back to `ResourceLink` (the mandatory ACP baseline). The relay never downloads files itself. Only the latest user turn's attachments are forwarded — prior turns are part of the agent session history. Attachments with empty URLs are dropped. New `--allow-attachments` flag (default true) gates both `allow_attachments` and `expand_text_attachments` in the settings response.
+- `acpclient.Caps.EmbeddedContext` parsed from `agentCapabilities.promptCapabilities.embeddedContext`.
 
 ## [0.6.0] - 2026-04-29
 

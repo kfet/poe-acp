@@ -115,9 +115,10 @@ func TestSettingsResponse_MatchesPoeSchema(t *testing.T) {
 	pc := paramctl.Build(models, defaults)
 
 	resp := poeproto.SettingsResponse{
-		AllowAttachments:    false,
-		IntroductionMessage: "hi",
-		ParameterControls:   pc,
+		AllowAttachments:      true,
+		ExpandTextAttachments: true,
+		IntroductionMessage:   "hi",
+		ParameterControls:     pc,
 	}
 	validate(t, schema, resp)
 }
