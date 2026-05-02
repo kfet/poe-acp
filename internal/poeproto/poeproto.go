@@ -27,6 +27,20 @@ type Message struct {
 	ContentType string         `json:"content_type,omitempty"`
 	MessageID   string         `json:"message_id,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	Attachments []Attachment   `json:"attachments,omitempty"`
+}
+
+// Attachment is a file attached to a Poe message. Poe serves these as
+// signed public URLs; the relay forwards them to the agent as ACP
+// content blocks. Text-ish attachments where Poe has computed
+// `parsed_content` (because we set `expand_text_attachments=true`) are
+// preferred over a bare URL link, because they avoid an agent-side
+// fetch round-trip.
+type Attachment struct {
+	URL           string `json:"url"`
+	ContentType   string `json:"content_type,omitempty"`
+	Name          string `json:"name,omitempty"`
+	ParsedContent string `json:"parsed_content,omitempty"`
 }
 
 // Request is the shape of an inbound Poe POST.
@@ -67,10 +81,11 @@ func Decode(body io.Reader) (*Request, error) {
 // the default values for response version 0." Response version 0 does
 // not honour `parameter_controls`. We always emit 2.
 type SettingsResponse struct {
-	ResponseVersion     int                `json:"response_version"`
-	AllowAttachments    bool               `json:"allow_attachments"`
-	IntroductionMessage string             `json:"introduction_message,omitempty"`
-	ParameterControls   *ParameterControls `json:"parameter_controls,omitempty"`
+	ResponseVersion       int                `json:"response_version"`
+	AllowAttachments      bool               `json:"allow_attachments"`
+	ExpandTextAttachments bool               `json:"expand_text_attachments"`
+	IntroductionMessage   string             `json:"introduction_message,omitempty"`
+	ParameterControls     *ParameterControls `json:"parameter_controls,omitempty"`
 }
 
 // SettingsResponseVersion is the only response_version this relay

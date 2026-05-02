@@ -51,8 +51,6 @@ So: the relay is a pure **ACP client** that drives ACP-compliant agents
 - **No Tailscale Funnel mode.** We deploy to nodes already on tailnet; a
   fronting reverse proxy or `tailscale funnel` on the host handles TLS.
   Documented as a future option (see Future section).
-- **No attachments round-trip.** Poe attachments arrive as URLs; we don't
-  fetch them.
 - **No remote ACP transport.** The relay spawns agents locally over stdio.
 - **No permission round-trip to the Poe user.** `session/request_permission`
   is handled by a local policy (allow-all / read-only / deny-all).
@@ -248,8 +246,11 @@ under `/poe-acp` needs its Poe URL set to `/poe-acp/poe` (not bare
 - **Permission round-trip to the Poe user.** Turn
   `session/request_permission` into an interstitial Poe message with
   an inline allow/deny; requires a pending-continuation mechanism.
-- **Attachments.** Download Poe attachment URLs and inject as
-  `EmbeddedResource` content blocks in the ACP prompt.
+- **Attachments.** Forwarded as ACP `ResourceLink` content blocks
+  alongside the latest user text. The agent fetches if it wants to;
+  the relay does not download or parse files. Only the latest user
+  turn's attachments are forwarded — prior turns are part of the agent
+  session history.
 - **Slash commands.** Forward a command list (from fir's
   `BuiltinSlashCommands` + extensions) into Poe settings. First version
   can be a static hand-written list.

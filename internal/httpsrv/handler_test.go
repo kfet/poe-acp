@@ -19,9 +19,10 @@ import (
 )
 
 type fakeAgent struct {
-	mu    sync.Mutex
-	sinks map[acp.SessionId]acpclient.SessionUpdateSink
-	n     int
+	mu         sync.Mutex
+	sinks      map[acp.SessionId]acpclient.SessionUpdateSink
+	lastPrompt []acp.ContentBlock
+	n          int
 }
 
 func (f *fakeAgent) Caps() acpclient.Caps { return acpclient.Caps{} }
@@ -42,9 +43,10 @@ func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.Sessi
 	f.sinks[id] = sink
 	return id, nil
 }
-func (f *fakeAgent) Prompt(_ context.Context, sid acp.SessionId, _ string) (acp.StopReason, error) {
+func (f *fakeAgent) Prompt(_ context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error) {
 	f.mu.Lock()
 	sink := f.sinks[sid]
+	f.lastPrompt = prompt
 	f.mu.Unlock()
 	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
 		SessionId: sid,
@@ -338,7 +340,7 @@ type slowAgent struct {
 	thought bool
 }
 
-func (a *slowAgent) Prompt(ctx context.Context, sid acp.SessionId, _ string) (acp.StopReason, error) {
+func (a *slowAgent) Prompt(ctx context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
 	select {
 	case <-a.release:
 	case <-ctx.Done():
@@ -438,5 +440,64 @@ func TestHandler_NoSpinnerWhenThinkingVisible(t *testing.T) {
 	// Heartbeat should still tick zero-width-space text events.
 	if !strings.Contains(out, "\u200b") {
 		t.Fatalf("missing zero-width heartbeat: %s", out)
+	}
+}
+
+func TestHandler_StripsAttachmentsWhenDisallowed(t *testing.T) {
+	mkRequest := func() []byte {
+		return mustJSON(map[string]any{
+			"type":            "query",
+			"conversation_id": "c-att",
+			"user_id":         "u",
+			"message_id":      "m",
+			"query": []map[string]any{
+				{"role": "user", "content": "hi", "attachments": []map[string]any{
+					{"url": "https://poe.example/a.png", "name": "a.png", "content_type": "image/png"},
+				}},
+			},
+		})
+	}
+
+	for _, tc := range []struct {
+		name      string
+		allow     bool
+		wantLinks int
+	}{
+		{"allowed", true, 1},
+		{"disallowed", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fa := &fakeAgent{sinks: make(map[acp.SessionId]acpclient.SessionUpdateSink)}
+			rtr, err := router.New(router.Config{
+				Agent:      fa,
+				StateDir:   t.TempDir(),
+				SessionTTL: time.Hour,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := New(Config{
+				Router:            rtr,
+				HeartbeatInterval: 0,
+				Settings:          poeproto.SettingsResponse{AllowAttachments: tc.allow},
+			})
+			req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(mkRequest()))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			fa.mu.Lock()
+			defer fa.mu.Unlock()
+			var links int
+			for _, b := range fa.lastPrompt {
+				if b.ResourceLink != nil || b.Resource != nil {
+					links++
+				}
+			}
+			if links != tc.wantLinks {
+				t.Fatalf("links=%d want %d (allow=%v)", links, tc.wantLinks, tc.allow)
+			}
+		})
 	}
 }

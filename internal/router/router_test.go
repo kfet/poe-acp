@@ -26,14 +26,15 @@ type fakeAgent struct {
 	onPrompt func(ctx context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error)
 
 	// Optional overrides for the resume tier.
-	caps          acpclient.Caps
-	listResult    []acpclient.SessionInfo
-	listErr       error
-	resumeErr     error
-	listCalls     int32
-	resumeCalls   int32
-	newSessCalls  int32
-	lastPromptTxt string
+	caps             acpclient.Caps
+	listResult       []acpclient.SessionInfo
+	listErr          error
+	resumeErr        error
+	listCalls        int32
+	resumeCalls      int32
+	newSessCalls     int32
+	lastPromptTxt    string
+	lastPromptBlocks []acp.ContentBlock
 }
 
 func newFakeAgent(onPrompt func(ctx context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error)) *fakeAgent {
@@ -68,10 +69,15 @@ func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.Sessi
 	return id, nil
 }
 
-func (f *fakeAgent) Prompt(ctx context.Context, sid acp.SessionId, text string) (acp.StopReason, error) {
+func (f *fakeAgent) Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error) {
 	atomic.AddInt32(&f.prompts, 1)
+	var text string
+	if len(prompt) > 0 && prompt[0].Text != nil {
+		text = prompt[0].Text.Text
+	}
 	f.mu.Lock()
 	f.lastPromptTxt = text
+	f.lastPromptBlocks = prompt
 	f.mu.Unlock()
 	return f.onPrompt(ctx, f, sid, text)
 }
@@ -528,5 +534,234 @@ func TestRouter_GCDoesNotEvictMidPrompt(t *testing.T) {
 	close(releasePrompt)
 	if err := <-done; err != nil {
 		t.Fatalf("prompt: %v", err)
+	}
+}
+
+func TestRouter_PromptIncludesAttachmentResourceLinks(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+
+	dir := t.TempDir()
+	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	sink := &captureSink{}
+	turns := []Turn{{
+		Role:    "user",
+		Content: "look at these",
+		Attachments: []Attachment{
+			{URL: "https://poe.example/a.png", ContentType: "image/png", Name: "a.png"},
+			{URL: "https://poe.example/b.pdf", ContentType: "application/pdf", Name: "b.pdf"},
+			{URL: "https://poe.example/c.bin"}, // unnamed → URL used as name
+		},
+	}}
+	if err := r.Prompt(context.Background(), "conv-att", "u1", turns, Options{}, sink); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	agent.mu.Lock()
+	blocks := agent.lastPromptBlocks
+	agent.mu.Unlock()
+
+	if len(blocks) != 4 {
+		t.Fatalf("blocks=%d want 4 (1 text + 3 links)", len(blocks))
+	}
+	if blocks[0].Text == nil || blocks[0].Text.Text != "look at these" {
+		t.Fatalf("block[0]=%+v want text 'look at these'", blocks[0])
+	}
+	wantURIs := []string{"https://poe.example/a.png", "https://poe.example/b.pdf", "https://poe.example/c.bin"}
+	wantNames := []string{"a.png", "b.pdf", "https://poe.example/c.bin"}
+	for i := 1; i < 4; i++ {
+		rl := blocks[i].ResourceLink
+		if rl == nil {
+			t.Fatalf("block[%d] not ResourceLink: %+v", i, blocks[i])
+		}
+		if rl.Uri != wantURIs[i-1] {
+			t.Fatalf("block[%d].Uri=%q want %q", i, rl.Uri, wantURIs[i-1])
+		}
+		if rl.Name != wantNames[i-1] {
+			t.Fatalf("block[%d].Name=%q want %q", i, rl.Name, wantNames[i-1])
+		}
+	}
+}
+
+func TestRouter_OnlyLatestUserAttachmentsAreForwarded(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+
+	dir := t.TempDir()
+	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	turns := []Turn{
+		{Role: "user", Content: "first", Attachments: []Attachment{{URL: "https://poe.example/old.png", Name: "old.png"}}},
+		{Role: "bot", Content: "ack"},
+		{Role: "user", Content: "second", Attachments: []Attachment{{URL: "https://poe.example/new.png", Name: "new.png"}}},
+	}
+	if err := r.Prompt(context.Background(), "conv-latest", "u1", turns, Options{}, &captureSink{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	agent.mu.Lock()
+	blocks := agent.lastPromptBlocks
+	agent.mu.Unlock()
+
+	var seen []string
+	for _, b := range blocks {
+		if b.ResourceLink != nil {
+			seen = append(seen, b.ResourceLink.Uri)
+		}
+	}
+	if len(seen) != 1 || seen[0] != "https://poe.example/new.png" {
+		t.Fatalf("links=%v want only [new.png url]", seen)
+	}
+}
+
+func TestRouter_EmptyAttachmentsSliceProducesSingleTextBlock(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	dir := t.TempDir()
+	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for name, atts := range map[string][]Attachment{
+		"nil":   nil,
+		"empty": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			turns := []Turn{{Role: "user", Content: "x", Attachments: atts}}
+			if err := r.Prompt(context.Background(), "conv-"+name, "u", turns, Options{}, &captureSink{}); err != nil {
+				t.Fatalf("Prompt: %v", err)
+			}
+			agent.mu.Lock()
+			n := len(agent.lastPromptBlocks)
+			agent.mu.Unlock()
+			if n != 1 {
+				t.Fatalf("blocks=%d want 1", n)
+			}
+		})
+	}
+}
+
+func TestRouter_DropsAttachmentsWithEmptyURL(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	dir := t.TempDir()
+	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	turns := []Turn{{
+		Role:    "user",
+		Content: "x",
+		Attachments: []Attachment{
+			{URL: "", Name: "ghost.txt"},
+			{URL: "https://poe.example/real.png", Name: "real.png"},
+		},
+	}}
+	if err := r.Prompt(context.Background(), "conv-empty-url", "u", turns, Options{}, &captureSink{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	if len(agent.lastPromptBlocks) != 2 {
+		t.Fatalf("blocks=%d want 2 (text + 1 link)", len(agent.lastPromptBlocks))
+	}
+	rl := agent.lastPromptBlocks[1].ResourceLink
+	if rl == nil || rl.Uri != "https://poe.example/real.png" {
+		t.Fatalf("block[1]=%+v", agent.lastPromptBlocks[1])
+	}
+}
+
+func TestRouter_ParsedContentEmittedAsResourceWhenCapable(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	agent.caps = acpclient.Caps{EmbeddedContext: true}
+	dir := t.TempDir()
+	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	turns := []Turn{{
+		Role:    "user",
+		Content: "summarise",
+		Attachments: []Attachment{{
+			URL:           "https://poe.example/doc.txt",
+			ContentType:   "text/plain",
+			Name:          "doc.txt",
+			ParsedContent: "hello world",
+		}},
+	}}
+	if err := r.Prompt(context.Background(), "conv-emb", "u", turns, Options{}, &captureSink{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	if len(agent.lastPromptBlocks) != 2 {
+		t.Fatalf("blocks=%d want 2", len(agent.lastPromptBlocks))
+	}
+	res := agent.lastPromptBlocks[1].Resource
+	if res == nil {
+		t.Fatalf("block[1] not Resource: %+v", agent.lastPromptBlocks[1])
+	}
+	trc := res.Resource.TextResourceContents
+	if trc == nil {
+		t.Fatalf("Resource not TextResourceContents: %+v", res.Resource)
+	}
+	if trc.Uri != "https://poe.example/doc.txt" || trc.Text != "hello world" {
+		t.Fatalf("trc=%+v", trc)
+	}
+	if trc.MimeType == nil || *trc.MimeType != "text/plain" {
+		t.Fatalf("mime=%v", trc.MimeType)
+	}
+}
+
+func TestRouter_ParsedContentFallsBackToLinkWhenAgentLacksCap(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	// EmbeddedContext defaults to false.
+	dir := t.TempDir()
+	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	turns := []Turn{{
+		Role:    "user",
+		Content: "summarise",
+		Attachments: []Attachment{{
+			URL:           "https://poe.example/doc.txt",
+			ContentType:   "text/plain",
+			Name:          "doc.txt",
+			ParsedContent: "hello world",
+		}},
+	}}
+	if err := r.Prompt(context.Background(), "conv-noemb", "u", turns, Options{}, &captureSink{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	rl := agent.lastPromptBlocks[1].ResourceLink
+	if rl == nil {
+		t.Fatalf("expected ResourceLink fallback, got %+v", agent.lastPromptBlocks[1])
+	}
+	if rl.MimeType == nil || *rl.MimeType != "text/plain" {
+		t.Fatalf("mime=%v", rl.MimeType)
 	}
 }
