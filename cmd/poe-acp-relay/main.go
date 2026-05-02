@@ -48,6 +48,7 @@ func main() {
 		ttl          = flag.Duration("session-ttl", 2*time.Hour, "Idle TTL before a conv session is evicted")
 		gcEvery      = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
 		heartbeat    = flag.Duration("heartbeat-interval", 10*time.Second, "SSE heartbeat interval (0 to disable)")
+		spinner      = flag.Duration("spinner-interval", 1500*time.Millisecond, "Tick interval for the animated 'Thinking…' spinner when hide_thinking is on (<=0 falls back to heartbeat-interval)")
 		showVersion  = flag.Bool("version", false, "Print version and exit")
 	)
 	flag.Parse()
@@ -175,6 +176,7 @@ func main() {
 			IntroductionMessage: *introMsg,
 		},
 		HeartbeatInterval: *heartbeat,
+		SpinnerInterval:   *spinner,
 		ParameterControlsProvider: func() *poeproto.ParameterControls {
 			m, _ := agent.Models()
 			return paramctl.Build(m, defaults)
