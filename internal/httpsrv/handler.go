@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,11 @@ type Config struct {
 	// HeartbeatInterval is the SSE heartbeat tick while waiting for the
 	// first agent chunk. <=0 disables the heartbeat.
 	HeartbeatInterval time.Duration
+	// SpinnerInterval overrides the tick rate when hide_thinking=true,
+	// so the animated "Thinking…" spinner cycles at a human-readable
+	// pace regardless of the heartbeat interval. <=0 falls back to
+	// HeartbeatInterval.
+	SpinnerInterval time.Duration
 	// ParameterControlsProvider, if set, is called on each `settings`
 	// request to populate SettingsResponse.ParameterControls. If nil,
 	// Settings.ParameterControls is used as-is.
@@ -118,7 +124,14 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	opts := router.ParseOptions(req.LatestParameters(), h.cfg.Router.Defaults())
 
 	// Sink: SSE writer + heartbeat coordination + disconnect → cancel.
-	s := newSink(sse, h.cfg.HeartbeatInterval)
+	// When hide_thinking is on, swap the tick for SpinnerInterval so the
+	// spinner animates at a human-readable pace regardless of the
+	// configured heartbeat interval.
+	tick := h.cfg.HeartbeatInterval
+	if opts.HideThinking && tick > 0 && h.cfg.SpinnerInterval > 0 {
+		tick = h.cfg.SpinnerInterval
+	}
+	s := newSink(sse, tick, opts.HideThinking)
 	defer s.stop()
 
 	// Cancel propagation: if the HTTP client goes away while a prompt
@@ -142,18 +155,26 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 }
 
 // sink adapts SSEWriter to router.ChunkSink, with a "still working…"
-// heartbeat that stops as soon as the first real chunk arrives.
+// heartbeat that stops as soon as the first real chunk arrives. When
+// hideThinking is set the heartbeat doubles as a visible animated
+// "Thinking…" indicator (rendered via replace_response so each tick
+// overwrites the previous one), since the user has opted out of seeing
+// the agent's actual thought stream and would otherwise stare at a
+// blank reply for the duration of the thinking phase.
 type sink struct {
-	w *poeproto.SSEWriter
+	w            *poeproto.SSEWriter
+	hideThinking bool
 
-	mu      sync.Mutex
-	started bool
-	stopped atomic.Bool
-	hbDone  chan struct{}
+	mu       sync.Mutex
+	started  bool
+	spinTick int  // number of spinner frames emitted so far
+	cleared  bool // spinner has been replaced with empty body
+	stopped  atomic.Bool
+	hbDone   chan struct{}
 }
 
-func newSink(w *poeproto.SSEWriter, hb time.Duration) *sink {
-	s := &sink{w: w, hbDone: make(chan struct{})}
+func newSink(w *poeproto.SSEWriter, hb time.Duration, hideThinking bool) *sink {
+	s := &sink{w: w, hideThinking: hideThinking, hbDone: make(chan struct{})}
 	if hb > 0 {
 		go s.heartbeat(hb)
 	} else {
@@ -174,21 +195,40 @@ func (s *sink) heartbeat(every time.Duration) {
 			return
 		case <-t.C:
 			s.mu.Lock()
-			started := s.started
-			s.mu.Unlock()
-			if started {
+			if s.started || s.stopped.Load() {
+				s.mu.Unlock()
 				return
 			}
-			// Zero-width space keeps the SSE stream alive without
-			// polluting the final rendered response.
-			_ = s.w.Text("\u200b")
+			if s.hideThinking {
+				s.spinTick++
+				dots := strings.Repeat(".", 1+(s.spinTick-1)%3)
+				// replace_response overwrites the prior frame so the
+				// dots animate in place rather than accumulating.
+				_ = s.w.Replace("> _Thinking" + dots + "_")
+			} else {
+				// Zero-width space keeps the SSE stream alive without
+				// polluting the final rendered response.
+				_ = s.w.Text("\u200b")
+			}
+			s.mu.Unlock()
 		}
 	}
 }
 
+// stop halts the heartbeat goroutine. If a thinking spinner was emitted,
+// it is cleared with an empty replace_response so the upcoming real
+// content (or error/done) starts from a blank slate.
 func (s *sink) stop() {
-	if s.stopped.CompareAndSwap(false, true) {
-		close(s.hbDone)
+	if !s.stopped.CompareAndSwap(false, true) {
+		return
+	}
+	close(s.hbDone)
+	s.mu.Lock()
+	wasSpinning := s.hideThinking && s.spinTick > 0 && !s.cleared
+	s.cleared = true
+	s.mu.Unlock()
+	if wasSpinning {
+		_ = s.w.Replace("")
 	}
 }
 
@@ -202,8 +242,8 @@ func (s *sink) FirstChunk() {
 
 func (s *sink) Text(t string) error      { return s.w.Text(t) }
 func (s *sink) Replace(t string) error   { return s.w.Replace(t) }
-func (s *sink) Error(t, et string) error { return s.w.Error(t, et) }
-func (s *sink) Done() error              { return s.w.Done() }
+func (s *sink) Error(t, et string) error { s.stop(); return s.w.Error(t, et) }
+func (s *sink) Done() error              { s.stop(); return s.w.Done() }
 
 // handleAuth runs an auth-flow turn end-to-end on the SSE stream. Always
 // emits a single text payload + done, regardless of broker outcome.
