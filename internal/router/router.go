@@ -16,6 +16,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/kfet/poe-acp-relay/internal/acpclient"
+	"github.com/kfet/poe-acp-relay/internal/debuglog"
 )
 
 // ChunkSink is the interface the HTTP/SSE layer implements to receive
@@ -331,13 +332,18 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 // and issues set_model / set_config_option to the agent for each changed
 // agent-facing field. Updates st.applied only on success.
 func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Options) error {
+	debuglog.Logf("applyOptions conv=%s sid=%s incoming={model=%q thinking=%q hide=%v} applied={model=%q thinking=%q}",
+		st.convID, string(st.sessionID), opts.Model, opts.Thinking, opts.HideThinking,
+		st.applied.Model, st.applied.Thinking)
 	if opts.Model != "" && opts.Model != st.applied.Model {
+		debuglog.Logf("  -> set_model %q (was %q)", opts.Model, st.applied.Model)
 		if err := r.cfg.Agent.SetModel(ctx, st.sessionID, opts.Model); err != nil {
 			return fmt.Errorf("set_model %s: %w", opts.Model, err)
 		}
 		st.applied.Model = opts.Model
 	}
 	if opts.Thinking != "" && opts.Thinking != st.applied.Thinking {
+		debuglog.Logf("  -> set_config thinking_level=%q (was %q)", opts.Thinking, st.applied.Thinking)
 		if err := r.cfg.Agent.SetConfigOption(ctx, st.sessionID, "thinking_level", opts.Thinking); err != nil {
 			return fmt.Errorf("set_config thinking_level=%s: %w", opts.Thinking, err)
 		}
@@ -484,9 +490,11 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	r.mu.Lock()
 	if existing, ok := r.sessions[convID]; ok {
 		r.mu.Unlock()
+		debuglog.Logf("getOrCreate conv=%s -> hit (sid=%s)", convID, string(existing.sessionID))
 		return existing, false, nil
 	}
 	r.mu.Unlock()
+	debuglog.Logf("getOrCreate conv=%s user=%s -> miss, query_len=%d", convID, userID, len(query))
 
 	cwd := filepath.Join(r.cfg.StateDir, "convs", convID)
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
@@ -509,8 +517,13 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 			if rerr := r.cfg.Agent.ResumeSession(ctx, cwd, sid, st); rerr == nil {
 				st.sessionID = sid
 				winner, _ := r.install(convID, st)
+				debuglog.Logf("getOrCreate conv=%s -> resumed sid=%s", convID, string(sid))
 				return winner, false, nil
+			} else {
+				debuglog.Logf("getOrCreate conv=%s resume failed: %v", convID, rerr)
 			}
+		} else if lerr != nil {
+			debuglog.Logf("getOrCreate conv=%s list_sessions err: %v", convID, lerr)
 		}
 	}
 
@@ -527,6 +540,8 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		// (or will have) its own history; do not double-seed it.
 		freshSeed = false
 	}
+	debuglog.Logf("getOrCreate conv=%s -> new sid=%s won_race=%v fresh_seed=%v",
+		convID, string(sid), won, freshSeed)
 	return winner, freshSeed, nil
 }
 

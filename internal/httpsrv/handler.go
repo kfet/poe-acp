@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kfet/poe-acp-relay/internal/authbroker"
+	"github.com/kfet/poe-acp-relay/internal/debuglog"
 	"github.com/kfet/poe-acp-relay/internal/poeproto"
 	"github.com/kfet/poe-acp-relay/internal/router"
 )
@@ -136,6 +137,27 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	}
 
 	opts := router.ParseOptions(req.LatestParameters(), h.cfg.Router.Defaults())
+
+	if debuglog.Enabled() {
+		debuglog.Logf("query: conv=%q user=%q msg=%q turns=%d",
+			req.ConversationID, req.UserID, req.MessageID, len(req.Query))
+		for i, m := range req.Query {
+			contentPreview := m.Content
+			if len(contentPreview) > 80 {
+				contentPreview = contentPreview[:80] + "…"
+			}
+			pj, _ := json.Marshal(m.Parameters)
+			debuglog.Logf("  turn[%d] role=%s msg_id=%q att=%d params=%s content=%q",
+				i, m.Role, m.MessageID, len(m.Attachments), string(pj), contentPreview)
+		}
+		latestPJ, _ := json.Marshal(req.LatestParameters())
+		defaults := h.cfg.Router.Defaults()
+		debuglog.Logf("  latest_params=%s", string(latestPJ))
+		debuglog.Logf("  defaults: model=%q thinking=%q hide_thinking=%v",
+			defaults.Model, defaults.Thinking, defaults.HideThinking)
+		debuglog.Logf("  parsed_opts: model=%q thinking=%q hide_thinking=%v",
+			opts.Model, opts.Thinking, opts.HideThinking)
+	}
 
 	// Sink: SSE writer + heartbeat coordination + disconnect → cancel.
 	// When hide_thinking is on, swap the tick for SpinnerInterval so the
