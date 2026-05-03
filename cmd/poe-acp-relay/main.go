@@ -30,6 +30,7 @@ import (
 	"github.com/kfet/poe-acp-relay/internal/poeproto"
 	"github.com/kfet/poe-acp-relay/internal/policy"
 	"github.com/kfet/poe-acp-relay/internal/router"
+	"github.com/kfet/poe-acp-relay/internal/skills"
 )
 
 // version is set via -ldflags at build time.
@@ -157,11 +158,13 @@ func main() {
 		defaults.Model, defaults.Thinking, defaults.HideThinking)
 
 	// Router
+	catalog := buildSkillsCatalog()
 	rtr, err := router.New(router.Config{
-		Agent:      agent,
-		StateDir:   stateDir,
-		SessionTTL: *ttl,
-		Defaults:   defaults,
+		Agent:        agent,
+		StateDir:     stateDir,
+		SessionTTL:   *ttl,
+		Defaults:     defaults,
+		SystemPrompt: catalog,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
@@ -359,4 +362,25 @@ func appendEnv(env []string, kv string) []string {
 		}
 	}
 	return append(out, kv)
+}
+
+// buildSkillsCatalog extracts the embedded skill bundle to a per-version
+// tmp dir and returns a fir-style <available_skills> block ready for
+// injection. Best-effort: extraction failures degrade to no catalog
+// (the relay is still usable without skills).
+func buildSkillsCatalog() string {
+	list, err := skills.Extract()
+	if err != nil {
+		log.Printf("skills: extract failed (continuing without catalog): %v", err)
+		return ""
+	}
+	if len(list) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(list))
+	for _, s := range list {
+		names = append(names, s.Name)
+	}
+	log.Printf("skills: injected %d (%s)", len(list), strings.Join(names, ","))
+	return skills.FormatCatalog(list)
 }
