@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `--debug` CLI flag and `POEACP_DEBUG=1` env var enable verbose debug logging. When on, logs the raw inbound Poe request body (capped 16 KiB), per-turn `parameters` dicts, resolved `opts` vs `Defaults`, and the `getOrCreate`/`applyOptions` paths in the router. Useful for diagnosing options-handling issues on first message and branched conversations.
+
 ## [0.7.0] - 2026-05-02
 
 ### Changed
