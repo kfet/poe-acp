@@ -24,6 +24,7 @@ import (
 	"github.com/kfet/poe-acp-relay/internal/acpclient"
 	"github.com/kfet/poe-acp-relay/internal/authbroker"
 	"github.com/kfet/poe-acp-relay/internal/config"
+	"github.com/kfet/poe-acp-relay/internal/debuglog"
 	"github.com/kfet/poe-acp-relay/internal/httpsrv"
 	"github.com/kfet/poe-acp-relay/internal/paramctl"
 	"github.com/kfet/poe-acp-relay/internal/poeproto"
@@ -51,6 +52,7 @@ func main() {
 		spinner      = flag.Duration("spinner-interval", 1500*time.Millisecond, "Tick interval for the animated 'Thinking…' spinner when hide_thinking is on (<=0 falls back to heartbeat-interval)")
 		allowAtt     = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
 		showVersion  = flag.Bool("version", false, "Print version and exit")
+		debugFlag    = flag.Bool("debug", false, "Enable verbose debug logging (also via POEACP_DEBUG=1)")
 	)
 	flag.Parse()
 
@@ -59,9 +61,16 @@ func main() {
 		return
 	}
 
+	if *debugFlag {
+		debuglog.SetEnabled(true)
+	}
+
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("poe-acp-relay %s starting", version)
+	if debuglog.Enabled() {
+		log.Printf("debug logging: ON")
+	}
 
 	pol, err := policy.Parse(*permission)
 	if err != nil {

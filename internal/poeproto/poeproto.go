@@ -4,11 +4,14 @@
 package poeproto
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
+
+	"github.com/kfet/poe-acp-relay/internal/debuglog"
 )
 
 // RequestType values Poe sends.
@@ -64,12 +67,29 @@ func (r *Request) LatestUserText() string {
 
 // Decode parses a Poe request from the HTTP body.
 func Decode(body io.Reader) (*Request, error) {
-	var req Request
+	var (
+		req Request
+		raw []byte
+	)
+	if debuglog.Enabled() {
+		// Tee the body so we can log the raw JSON exactly as Poe sent
+		// it. Capped at 16 KiB to avoid allocating huge buffers on
+		// requests with large parsed_content attachment payloads.
+		buf, err := io.ReadAll(io.LimitReader(body, 16*1024))
+		if err != nil {
+			return nil, fmt.Errorf("read poe body: %w", err)
+		}
+		raw = buf
+		body = bytes.NewReader(buf)
+	}
 	if err := json.NewDecoder(body).Decode(&req); err != nil {
 		return nil, fmt.Errorf("decode poe request: %w", err)
 	}
 	if req.Type == "" {
 		return nil, fmt.Errorf("poe request missing type")
+	}
+	if debuglog.Enabled() {
+		debuglog.Logf("raw poe body (%d bytes, type=%s): %s", len(raw), req.Type, string(raw))
 	}
 	return &req, nil
 }
