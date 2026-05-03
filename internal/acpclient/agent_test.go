@@ -38,6 +38,14 @@ func TestParseCaps(t *testing.T) {
 			raw:  `{"agentCapabilities":{"promptCapabilities":{"embeddedContext":true}}}`,
 			want: Caps{EmbeddedContext: true},
 		},
+		"systemPrompt cap": {
+			raw:  `{"agentCapabilities":{"_meta":{"session.systemPrompt":{"version":1}}}}`,
+			want: Caps{SystemPrompt: true},
+		},
+		"systemPrompt absent in _meta": {
+			raw:  `{"agentCapabilities":{"_meta":{"other":{}}}}`,
+			want: Caps{},
+		},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

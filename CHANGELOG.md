@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Skill catalog injection. The relay embeds a small bundle of relay-specific Markdown skills (`deploy`, `update`, `release`) and announces them to every ACP session as a fir-style `<available_skills>` catalog. Bodies are extracted to a per-version tmp dir and read on demand by the agent. When the agent advertises the new `_meta["session.systemPrompt"]` capability (RFD: `acp-spec/rfd-system-prompt.md`), the catalog rides on `session/new._meta` as durable system context; otherwise the relay inlines it as a "preserve verbatim" header on the first `session/prompt` (and re-injects on resume). Relay advertises the matching client capability in `initialize`. New `internal/skills` package; new `acpclient.Caps.SystemPrompt`; new `router.Config.SystemPrompt`.
+
 ### Fixed
 
 - Heartbeat keepalive no longer pollutes the rendered response. When `hide_thinking=false` the relay previously sent a zero-width space via Poe's `text` SSE event each tick; those events *append*, so by the time the agent's first chunk arrived the response already began with N invisible characters and Poe's Markdown renderer would silently mis-parse leading headings, lists or fenced code blocks. The keepalive now uses `replace_response` with empty body (matching the `hide_thinking=true` spinner mechanism) so SSE bytes still flow but the rendered response stays empty until the agent emits.

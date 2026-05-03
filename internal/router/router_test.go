@@ -35,6 +35,7 @@ type fakeAgent struct {
 	newSessCalls     int32
 	lastPromptTxt    string
 	lastPromptBlocks []acp.ContentBlock
+	lastSysBlocks    []acp.ContentBlock
 }
 
 func newFakeAgent(onPrompt func(ctx context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error)) *fakeAgent {
@@ -59,13 +60,14 @@ func (f *fakeAgent) ResumeSession(_ context.Context, _ string, sid acp.SessionId
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink) (acp.SessionId, error) {
+func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
 	atomic.AddInt32(&f.newSessCalls, 1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
 	id := acp.SessionId("sess-" + time.Now().Format("150405") + "-" + itoa(f.nextID))
 	f.sinks[id] = sink
+	f.lastSysBlocks = sysBlocks
 	return id, nil
 }
 
