@@ -1,4 +1,5 @@
 ---
+builtin: true
 name: deploy
 description: Deploy poe-acp-relay to a remote host behind Tailscale Funnel, start it as a Poe server bot, and verify end-to-end.
 ---

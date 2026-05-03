@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Skill bundling is now opt-in per-skill via a `builtin: true` frontmatter field, mirroring fir's own `pkg/resources/builtin_skills` loader. Every SKILL.md under `internal/skills/bundle/` is still embedded so `.fir/skills` (a symlink into the bundle) stays git-coherent and fir running in this repo picks them all up as project-local skills, but only those marked builtin are surfaced to ACP agents at runtime. The `release` skill is now project-only — it lives in the bundle tree but is no longer announced to deployed agents.
+
 ## [0.9.0] - 2026-05-03
 
 ### Added

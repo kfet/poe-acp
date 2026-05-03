@@ -55,7 +55,7 @@ Future skills (not in this branch): attachments, rendering quirks, conv-id seman
 3. ✅ `internal/skills/` — embed + extract logic, catalog formatter (XML, fir-style).
 4. ✅ `internal/router/` — capability negotiation; injection at `session/new` (cap path) or first `session/prompt` (fallback); re-inject on resume.
 5. ✅ `internal/acpclient/agent.go` — advertise `clientCapabilities._meta["session.systemPrompt"] = {version:1}` in `initialize`; surface agent's matching cap as `Caps.SystemPrompt`.
-6. ✅ Skill content: relocated `.fir/skills/{deploy,update,release}/SKILL.md` to `internal/skills/bundle/` and `go:embed`-ed from there. `.fir/skills` is now a symlink so fir-local dev still resolves.
+6. ✅ Skill content: relocated `.fir/skills/{deploy,update,release}/SKILL.md` to `internal/skills/bundle/` and `go:embed`-ed from there. `.fir/skills` is now a symlink so fir-local dev still resolves. Only SKILL.md files whose frontmatter declares `builtin: true` are surfaced to ACP agents — others (e.g. `release`) live in the bundle tree for git/symlink coherence but stay out of the catalog. Mirrors fir's own `pkg/resources/builtin_skills` loader.
 7. ✅ Tests: catalog rendering (`internal/skills/skills_test.go`), capability parsing (`internal/acpclient/agent_test.go`), cap-path / fallback / resume injection (`internal/router/system_prompt_test.go`).
 
 ## Open questions deferred
