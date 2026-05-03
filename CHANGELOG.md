@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Heartbeat keepalive no longer pollutes the rendered response. When `hide_thinking=false` the relay previously sent a zero-width space via Poe's `text` SSE event each tick; those events *append*, so by the time the agent's first chunk arrived the response already began with N invisible characters and Poe's Markdown renderer would silently mis-parse leading headings, lists or fenced code blocks. The keepalive now uses `replace_response` with empty body (matching the `hide_thinking=true` spinner mechanism) so SSE bytes still flow but the rendered response stays empty until the agent emits.
+- Debug-log content previews truncate on rune boundaries instead of byte boundaries, so multi-byte UTF-8 sequences are no longer split mid-codepoint in `--debug` output.
+
 ## [0.8.0] - 2026-05-03
 
 ### Added

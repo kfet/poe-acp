@@ -311,11 +311,23 @@ func schemaHash(pc *poeproto.ParameterControls) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// truncate shortens s to at most n runes, appending an ellipsis when
+// truncation occurs. Operates on runes (not bytes) so it never splits
+// a multi-byte UTF-8 sequence in the middle.
 func truncate(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	// Fast path: if byte length is within the budget, no truncation
+	// is possible regardless of rune count.
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
 }
 
 func defaultStateDir() string {
