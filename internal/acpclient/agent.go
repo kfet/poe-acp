@@ -62,6 +62,12 @@ type Caps struct {
 	// in prompt requests instead of a bare ResourceLink, avoiding an
 	// agent-side fetch.
 	EmbeddedContext bool
+	// SystemPrompt reflects agentCapabilities._meta["session.systemPrompt"]
+	// (RFD: acp-spec/rfd-system-prompt.md). When true the relay may
+	// pass a system-prompt block list via session/new._meta and the
+	// agent will treat it as durable across compaction. When false the
+	// relay falls back to inlining the same content on first prompt.
+	SystemPrompt bool
 }
 
 // SessionInfo is one entry from a session/list response.
@@ -167,6 +173,15 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 		ClientCapabilities: acp.ClientCapabilities{
 			Fs:       acp.FileSystemCapability{ReadTextFile: true, WriteTextFile: true},
 			Terminal: false,
+			// Advertise the system-prompt extension (RFD:
+			// acp-spec/rfd-system-prompt.md). Agents that recognise
+			// it MAY echo the same key in agentCapabilities._meta;
+			// if they do, the relay will inject its skill catalog
+			// via session/new._meta instead of inlining on first
+			// prompt.
+			Meta: map[string]any{
+				"session.systemPrompt": map[string]any{"version": 1},
+			},
 		},
 	}
 	raw, err := acp.SendRequest[json.RawMessage](a.conn, ctx, acp.AgentMethodInitialize, initParams)
@@ -203,14 +218,17 @@ func parseCaps(raw json.RawMessage) Caps {
 			PromptCapabilities struct {
 				EmbeddedContext bool `json:"embeddedContext"`
 			} `json:"promptCapabilities"`
+			Meta map[string]json.RawMessage `json:"_meta"`
 		} `json:"agentCapabilities"`
 	}
 	_ = json.Unmarshal(raw, &env)
+	_, sysPrompt := env.AgentCapabilities.Meta["session.systemPrompt"]
 	return Caps{
 		LoadSession:     env.AgentCapabilities.LoadSession,
 		ListSessions:    env.AgentCapabilities.SessionCapabilities.List != nil,
 		ResumeSession:   env.AgentCapabilities.SessionCapabilities.Resume != nil,
 		EmbeddedContext: env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
+		SystemPrompt:    sysPrompt,
 	}
 }
 
@@ -219,11 +237,25 @@ func (a *AgentProc) Caps() Caps { return a.caps }
 
 // NewSession creates a new ACP session and wires the given sink to receive
 // its updates. Returns the ACP session id.
-func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpdateSink) (acp.SessionId, error) {
-	resp, err := acp.SendRequest[acp.NewSessionResponse](a.conn, ctx, acp.AgentMethodSessionNew, acp.NewSessionRequest{
+//
+// systemPromptBlocks, when non-nil, is sent in the request's _meta under
+// "session.systemPrompt".blocks (RFD: acp-spec/rfd-system-prompt.md).
+// Callers should only pass it when Caps().SystemPrompt is true; agents
+// that haven't advertised the cap will simply ignore the unknown _meta
+// key, but skipping it keeps the wire clean.
+func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error) {
+	req := acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
-	})
+	}
+	if systemPromptBlocks != nil {
+		req.Meta = map[string]any{
+			"session.systemPrompt": map[string]any{
+				"blocks": systemPromptBlocks,
+			},
+		}
+	}
+	resp, err := acp.SendRequest[acp.NewSessionResponse](a.conn, ctx, acp.AgentMethodSessionNew, req)
 	if err != nil {
 		return "", err
 	}
@@ -302,7 +334,7 @@ func (a *AgentProc) ProbeModels(ctx context.Context) error {
 	defer os.RemoveAll(probeCwd)
 
 	// Use a noop sink — we don't care about updates.
-	sid, err := a.NewSession(ctx, probeCwd, noopSink{})
+	sid, err := a.NewSession(ctx, probeCwd, noopSink{}, nil)
 	if err != nil {
 		return fmt.Errorf("probe: new session: %w", err)
 	}

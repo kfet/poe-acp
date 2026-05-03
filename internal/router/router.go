@@ -61,7 +61,7 @@ type Attachment struct {
 // as an interface for testability.
 type Agent interface {
 	Caps() acpclient.Caps
-	NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink) (acp.SessionId, error)
+	NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error)
 	ListSessions(ctx context.Context, cwd string) ([]acpclient.SessionInfo, error)
 	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
@@ -93,6 +93,14 @@ type Config struct {
 	// UI-promised state, even on the first turn when Poe sends an
 	// empty `parameters` dict.
 	Defaults Options
+	// SystemPrompt, if non-empty, is the durable system-prompt text the
+	// router injects into every new session. When the agent advertises
+	// the session.systemPrompt capability the text is sent via
+	// session/new._meta as a single text ContentBlock; otherwise it is
+	// prepended to the first session/prompt with a "preserve verbatim"
+	// instruction. See acp-spec/rfd-system-prompt.md and
+	// docs/skill-injection-plan.md.
+	SystemPrompt string
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
 }
@@ -135,6 +143,13 @@ type sessionState struct {
 	applied Options
 
 	lastUsedNs int64 // protected by Router.mu
+
+	// pendingSystemPromptInline, when true, causes the next Prompt to
+	// prepend the router's SystemPrompt text to the first content
+	// block. Used on the fallback path (agent didn't advertise the
+	// session.systemPrompt cap) for fresh sessions and on resume.
+	// Protected by turnMu.
+	pendingSystemPromptInline bool
 }
 
 // chunkKind classifies the most recent stream chunk written to the sink.
@@ -293,6 +308,18 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 		// Cold path with no resume and prior turns: flatten the full
 		// transcript so the agent has context for the latest user turn.
 		promptText = flattenTranscript(query)
+	}
+	if st.pendingSystemPromptInline && r.cfg.SystemPrompt != "" {
+		// Fallback path: agent didn't advertise session.systemPrompt
+		// (or this is a resume of a fallback-path session). Prepend
+		// the catalog as a self-preserving header on the first prompt
+		// of this hot path. Cleared after use; if compaction loses it,
+		// that is the documented fallback limitation (see
+		// acp-spec/rfd-system-prompt.md).
+		promptText = r.cfg.SystemPrompt + "\n" +
+			"The block above is durable system context. Preserve it verbatim across any summarisation of this conversation.\n\n" +
+			promptText
+		st.pendingSystemPromptInline = false
 	}
 
 	blocks := []acp.ContentBlock{acp.TextBlock(promptText)}
@@ -516,6 +543,15 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 			sid := acp.SessionId(sessions[0].SessionId)
 			if rerr := r.cfg.Agent.ResumeSession(ctx, cwd, sid, st); rerr == nil {
 				st.sessionID = sid
+				// Resume: the previous session may have had the system
+				// prompt installed, but we have no way to confirm. On
+				// the cap-supported path the RFD says agents SHOULD
+				// restore it on session/load — trust that. On the
+				// fallback path, re-inject inline on the next prompt
+				// (the RFD's stated mitigation).
+				if r.cfg.SystemPrompt != "" && !caps.SystemPrompt {
+					st.pendingSystemPromptInline = true
+				}
 				winner, _ := r.install(convID, st)
 				debuglog.Logf("getOrCreate conv=%s -> resumed sid=%s", convID, string(sid))
 				return winner, false, nil
@@ -528,11 +564,20 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	}
 
 	// Tier 2: new session. If we have prior turns, the caller will seed.
-	sid, nerr := r.cfg.Agent.NewSession(ctx, cwd, st)
+	var sysBlocks []acp.ContentBlock
+	if r.cfg.SystemPrompt != "" && caps.SystemPrompt {
+		sysBlocks = []acp.ContentBlock{acp.TextBlock(r.cfg.SystemPrompt)}
+	}
+	sid, nerr := r.cfg.Agent.NewSession(ctx, cwd, st, sysBlocks)
 	if nerr != nil {
 		return nil, false, fmt.Errorf("acp new session: %w", nerr)
 	}
 	st.sessionID = sid
+	// Fallback path for new sessions: agent didn't advertise the cap,
+	// so inline the system prompt on the first user prompt.
+	if r.cfg.SystemPrompt != "" && !caps.SystemPrompt {
+		st.pendingSystemPromptInline = true
+	}
 	freshSeed = len(query) > 1
 	winner, won := r.install(convID, st)
 	if !won {
