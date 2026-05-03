@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-03
+
 ### Added
 
 - Skill catalog injection. The relay embeds a small bundle of relay-specific Markdown skills (`deploy`, `update`, `release`) and announces them to every ACP session as a fir-style `<available_skills>` catalog. Bodies are extracted to a per-version tmp dir and read on demand by the agent. When the agent advertises the new `_meta["session.systemPrompt"]` capability (RFD: `acp-spec/rfd-system-prompt.md`), the catalog rides on `session/new._meta` as durable system context; otherwise the relay inlines it as a "preserve verbatim" header on the first `session/prompt` (and re-injects on resume). Relay advertises the matching client capability in `initialize`. New `internal/skills` package; new `acpclient.Caps.SystemPrompt`; new `router.Config.SystemPrompt`.
