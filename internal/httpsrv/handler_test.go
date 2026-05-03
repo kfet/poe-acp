@@ -437,9 +437,14 @@ func TestHandler_NoSpinnerWhenThinkingVisible(t *testing.T) {
 	if strings.Contains(out, "Thinking") {
 		t.Fatalf("unexpected Thinking text when hide_thinking=false: %s", out)
 	}
-	// Heartbeat should still tick zero-width-space text events.
-	if !strings.Contains(out, "\u200b") {
-		t.Fatalf("missing zero-width heartbeat: %s", out)
+	// Heartbeat should still tick — now as empty replace_response
+	// events rather than zero-width-space text appends, so the keep-
+	// alive bytes never accumulate in the rendered response.
+	if !strings.Contains(out, "event: replace_response") || !strings.Contains(out, `"text":""`) {
+		t.Fatalf("missing replace_response heartbeat: %s", out)
+	}
+	if strings.Contains(out, "\u200b") {
+		t.Fatalf("zero-width heartbeat must not appear in rendered output: %s", out)
 	}
 }
 

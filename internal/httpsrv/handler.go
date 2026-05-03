@@ -142,10 +142,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		debuglog.Logf("query: conv=%q user=%q msg=%q turns=%d",
 			req.ConversationID, req.UserID, req.MessageID, len(req.Query))
 		for i, m := range req.Query {
-			contentPreview := m.Content
-			if len(contentPreview) > 80 {
-				contentPreview = contentPreview[:80] + "…"
-			}
+			contentPreview := truncateRunes(m.Content, 80)
 			pj, _ := json.Marshal(m.Parameters)
 			debuglog.Logf("  turn[%d] role=%s msg_id=%q att=%d params=%s content=%q",
 				i, m.Role, m.MessageID, len(m.Attachments), string(pj), contentPreview)
@@ -242,9 +239,14 @@ func (s *sink) heartbeat(every time.Duration) {
 				// dots animate in place rather than accumulating.
 				_ = s.w.Replace("> _Thinking" + dots + "_")
 			} else {
-				// Zero-width space keeps the SSE stream alive without
-				// polluting the final rendered response.
-				_ = s.w.Text("\u200b")
+				// replace_response with empty body keeps the SSE
+				// stream alive without polluting the final rendered
+				// response. Using `text` events here would *append*
+				// each tick's payload (zero-width space or otherwise),
+				// which Poe's Markdown renderer then sees as leading
+				// content and can mis-parse subsequent headings, lists
+				// or fenced blocks emitted by the agent.
+				_ = s.w.Replace("")
 			}
 			s.mu.Unlock()
 		}
@@ -311,4 +313,21 @@ func latestUserTurn(turns []router.Turn) string {
 		}
 	}
 	return ""
+}
+
+// truncateRunes shortens s to at most n runes, appending an ellipsis
+// when truncation occurs. Rune-aware so it never splits a multi-byte
+// UTF-8 sequence (which would corrupt debug-log output).
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
 }
