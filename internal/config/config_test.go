@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 func writeFile(t *testing.T, content string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "config.json")
@@ -53,6 +55,9 @@ func TestLoad_Valid(t *testing.T) {
 	}
 	if cfg.Defaults.Thinking != "medium" {
 		t.Errorf("thinking: %q", cfg.Defaults.Thinking)
+	}
+	if cfg.Defaults.HideThinking == nil || *cfg.Defaults.HideThinking != false {
+		t.Errorf("hide_thinking: %v", cfg.Defaults.HideThinking)
 	}
 	if cfg.Agent.Profile != "fir" {
 		t.Errorf("profile: %q", cfg.Agent.Profile)

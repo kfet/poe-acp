@@ -3,7 +3,7 @@
   "defaults": {
     "model": "anthropic/claude-sonnet-4-6",
     "thinking": "medium",
-    "hide_thinking": false
+    "hide_thinking": true
   },
   "agent": {
     "profile": "fir"

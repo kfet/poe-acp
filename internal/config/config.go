@@ -50,7 +50,8 @@ type Defaults struct {
 	// string means "use built-in default" (currently "medium").
 	Thinking string `json:"thinking,omitempty"`
 	// HideThinking suppresses agent_thought_chunk in the SSE stream.
-	HideThinking bool `json:"hide_thinking,omitempty"`
+	// nil means "use built-in default" (currently true).
+	HideThinking *bool `json:"hide_thinking,omitempty"`
 }
 
 // Agent groups agent-profile knobs. Reserved.

@@ -30,6 +30,10 @@ var ThinkingLevels = []poeproto.ValueNamePair{
 // configured `defaults.thinking` in config.json.
 const DefaultThinking = "medium"
 
+// DefaultHideThinking is the built-in fallback when the operator has not
+// configured `defaults.hide_thinking` in config.json.
+const DefaultHideThinking = true
+
 // Resolve picks the operator-facing defaults.
 //
 // Resolution order per field:
@@ -45,10 +49,13 @@ const DefaultThinking = "medium"
 func Resolve(cfg config.Defaults, models []acpclient.ModelInfo, probeCurrent string) router.Options {
 	o := router.Options{
 		Thinking:     DefaultThinking,
-		HideThinking: cfg.HideThinking,
+		HideThinking: DefaultHideThinking,
 	}
 	if cfg.Thinking != "" {
 		o.Thinking = cfg.Thinking
+	}
+	if cfg.HideThinking != nil {
+		o.HideThinking = *cfg.HideThinking
 	}
 
 	// Model resolution: only meaningful if we have an available list.

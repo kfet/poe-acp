@@ -10,6 +10,8 @@ import (
 	"github.com/kfet/poe-acp-relay/internal/router"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 var twoModels = []acpclient.ModelInfo{
 	{ID: "anthropic/sonnet", Name: "Sonnet"},
 	{ID: "openai/gpt-5", Name: "GPT-5"},
@@ -17,10 +19,28 @@ var twoModels = []acpclient.ModelInfo{
 
 func TestResolve_ConfigWins(t *testing.T) {
 	t.Parallel()
-	d := Resolve(config.Defaults{Model: "openai/gpt-5", Thinking: "high", HideThinking: true},
+	d := Resolve(config.Defaults{Model: "openai/gpt-5", Thinking: "high", HideThinking: boolPtr(true)},
 		twoModels, "anthropic/sonnet")
 	if d.Model != "openai/gpt-5" || d.Thinking != "high" || !d.HideThinking {
 		t.Fatalf("got %+v", d)
+	}
+}
+
+func TestResolve_HideThinkingDefault(t *testing.T) {
+	t.Parallel()
+	// nil (unset) → built-in default = true
+	d := Resolve(config.Defaults{}, twoModels, "")
+	if !d.HideThinking {
+		t.Fatalf("nil HideThinking should default to true, got %v", d.HideThinking)
+	}
+}
+
+func TestResolve_HideThinkingExplicitFalse(t *testing.T) {
+	t.Parallel()
+	// operator explicitly sets false → must override the default
+	d := Resolve(config.Defaults{HideThinking: boolPtr(false)}, twoModels, "")
+	if d.HideThinking {
+		t.Fatalf("explicit HideThinking=false should override default, got %v", d.HideThinking)
 	}
 }
 
