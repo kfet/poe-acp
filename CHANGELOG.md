@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `defaults.hide_thinking` is now `*bool` in config and defaults to `true` when omitted. Operators who want streamed thoughts must set `"hide_thinking": false` explicitly. Previous behaviour: omitted == `false`.
+
 ### Added
 
 - Animated `> _Thinking._` spinner shown while the agent is in its thinking phase and `hide_thinking=true`, so the user sees liveness instead of a blank reply. Cycles 1→3 dots every 1.5s via `replace_response`, and is cleared the moment the first real message chunk arrives. When `hide_thinking=false` the heartbeat keeps its prior zero-width-space behaviour (thoughts are streamed as a blockquote already).

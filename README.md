@@ -150,7 +150,7 @@ keep working.
   "defaults": {
     "model": "anthropic/claude-sonnet-4-6",
     "thinking": "medium",
-    "hide_thinking": false
+    "hide_thinking": true
   },
   "agent": {
     "profile": "fir"
@@ -173,7 +173,8 @@ keep working.
 - **`defaults.thinking`** — one of `off`, `minimal`, `low`, `medium`,
   `high`. Empty = built-in default (`medium`).
 - **`defaults.hide_thinking`** — relay-side filter for
-  `agent_thought_chunk`.
+  `agent_thought_chunk`. Omitted = built-in default (`true`); set
+  explicitly to `false` to stream thoughts as a blockquote.
 - **`agent.profile`** — reserved (today the relay only knows fir's
   `set_config_option` schema; multi-agent profile selection lands in a
   follow-up).
