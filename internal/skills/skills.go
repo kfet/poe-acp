@@ -1,12 +1,18 @@
-// Package skills embeds the relay's curated skill bundle, extracts it to a
-// per-version dir at startup, and formats a fir-style <available_skills>
-// catalog for injection into ACP agents.
+// Package skills embeds the relay's curated skill bundle, extracts the
+// subset marked builtin to a per-version dir at startup, and formats a
+// fir-style <available_skills> catalog for injection into ACP agents.
 //
 // Design (see docs/skill-injection-plan.md):
 //   - Bundle = a small set of Markdown SKILL.md files describing
 //     deploy / update / release flows specific to running an agent under
-//     poe-acp-relay. Embedded via go:embed.
-//   - At startup the relay extracts the bundle to
+//     poe-acp-relay. The whole tree is embedded via go:embed so that
+//     `.fir/skills` (a symlink into bundle/) stays git-coherent and fir
+//     running in this repo sees every skill as a project-local one.
+//   - Only SKILL.md files whose YAML frontmatter declares `builtin: true`
+//     are surfaced to ACP agents at runtime — others are project-only
+//     and stay out of the catalog. This mirrors fir's own
+//     pkg/resources/builtin_skills loader.
+//   - At startup the relay extracts the selected bundle to
 //     $TMPDIR/poe-acp-relay-<hash>/skills/<name>/SKILL.md once. The hash
 //     covers the embedded content so a new binary uses a new dir and
 //     never reads stale skill text.
@@ -40,9 +46,16 @@ type Skill struct {
 	Path string
 }
 
-// Extract writes the embedded bundle into a per-content-hash dir under
-// $TMPDIR and returns the parsed catalog. Idempotent: re-running with
-// the same binary is a no-op (files already exist).
+// Extract walks the embedded bundle, selects skills whose frontmatter
+// declares `builtin: true`, writes them into a per-content-hash dir
+// under $TMPDIR, and returns the parsed catalog. Idempotent: re-running
+// with the same binary is a no-op (files already exist).
+//
+// Skills present in the bundle tree without `builtin: true` are
+// project-only — they exist on disk so fir running in the project repo
+// can pick them up via `.fir/skills` (a symlink into the bundle), but
+// they are NOT shipped in the relay binary. This mirrors the pattern
+// used by fir's own pkg/resources/builtin_skills loader.
 //
 // Returned skills are sorted by name for deterministic catalog output.
 func Extract() ([]Skill, error) {
@@ -64,6 +77,13 @@ func Extract() ([]Skill, error) {
 		if rerr != nil {
 			return rerr
 		}
+		name, desc, builtin := parseFrontmatter(body)
+		if !builtin {
+			// Project-only skill — embedded in the binary so the bundle
+			// stays git-coherent with .fir/skills, but not surfaced to
+			// agents at runtime.
+			return nil
+		}
 		// p is "bundle/<name>/SKILL.md"; strip the bundle/ prefix.
 		rel := strings.TrimPrefix(p, "bundle/")
 		dst := filepath.Join(root, rel)
@@ -77,7 +97,6 @@ func Extract() ([]Skill, error) {
 				return werr
 			}
 		}
-		name, desc := parseFrontmatter(body)
 		if name == "" {
 			// Fall back to the directory name so the catalog isn't broken
 			// by a missing/malformed frontmatter.
@@ -125,17 +144,18 @@ func FormatCatalog(skills []Skill) string {
 	return b.String()
 }
 
-// parseFrontmatter extracts name and description from a minimal YAML
-// frontmatter block (--- ... ---) at the top of a SKILL.md. Only the
-// two scalar fields we care about are read; everything else is ignored.
-func parseFrontmatter(body []byte) (name, desc string) {
+// parseFrontmatter extracts name, description, and the builtin flag
+// from a minimal YAML frontmatter block (--- ... ---) at the top of a
+// SKILL.md. Only the scalar fields we care about are read; everything
+// else is ignored.
+func parseFrontmatter(body []byte) (name, desc string, builtin bool) {
 	s := string(body)
 	if !strings.HasPrefix(s, "---\n") {
-		return "", ""
+		return "", "", false
 	}
 	end := strings.Index(s[4:], "\n---")
 	if end < 0 {
-		return "", ""
+		return "", "", false
 	}
 	for _, line := range strings.Split(s[4:4+end], "\n") {
 		k, v, ok := strings.Cut(line, ":")
@@ -150,9 +170,11 @@ func parseFrontmatter(body []byte) (name, desc string) {
 			name = v
 		case "description":
 			desc = v
+		case "builtin":
+			builtin = v == "true"
 		}
 	}
-	return name, desc
+	return name, desc, builtin
 }
 
 // bundleHash returns a stable hex digest over the embedded bundle's

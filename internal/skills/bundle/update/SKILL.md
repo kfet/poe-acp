@@ -1,4 +1,5 @@
 ---
+builtin: true
 name: update
 description: Update poe-acp-relay on a single host to the latest released version and restart its supervisor (systemd or launchd) so the new binary is live.
 ---
