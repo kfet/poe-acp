@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-02
+
 ### Changed
 
 - `defaults.hide_thinking` is now `*bool` in config and defaults to `true` when omitted. Operators who want streamed thoughts must set `"hide_thinking": false` explicitly. Previous behaviour: omitted == `false`.
