@@ -96,7 +96,7 @@ func TestLoad_EmptyJSON(t *testing.T) {
 
 func TestValidate_AllThinkingLevels(t *testing.T) {
 	t.Parallel()
-	for _, lvl := range []string{"", "off", "minimal", "low", "medium", "high"} {
+	for _, lvl := range []string{"", "off", "minimal", "low", "medium", "high", "xhigh", "max"} {
 		c := Config{Defaults: Defaults{Thinking: lvl}}
 		if err := c.Validate(); err != nil {
 			t.Errorf("thinking=%q: %v", lvl, err)

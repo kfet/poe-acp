@@ -17,13 +17,18 @@ import (
 )
 
 // ThinkingLevels is the v1 thinking dropdown options. Wire values match
-// fir's `ai.ThinkingLevel` constants.
+// fir's `ai.ThinkingLevel` constants. The full set is offered for every
+// model: levels the current model doesn't support are soft-failed by
+// the router (see applyOptions) so the dropdown stays consistent across
+// model switches without nagging the user.
 var ThinkingLevels = []poeproto.ValueNamePair{
 	{Value: "off", Name: "Off"},
 	{Value: "minimal", Name: "Minimal"},
 	{Value: "low", Name: "Low"},
 	{Value: "medium", Name: "Medium"},
 	{Value: "high", Name: "High"},
+	{Value: "xhigh", Name: "Extra-high"},
+	{Value: "max", Name: "Max"},
 }
 
 // DefaultThinking is the built-in fallback when the operator has not
