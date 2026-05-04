@@ -74,7 +74,7 @@ type Agent interface {
 // extracted from Poe's `parameters` dict.
 type Options struct {
 	Model        string // "" = leave as-is
-	Thinking     string // "" = leave as-is; one of "off","minimal","low","medium","high"
+	Thinking     string // "" = leave as-is; one of "off","minimal","low","medium","high","xhigh","max"
 	HideThinking bool   // suppress agent_thought_chunk in the SSE stream
 }
 
@@ -372,9 +372,18 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 	if opts.Thinking != "" && opts.Thinking != st.applied.Thinking {
 		debuglog.Logf("  -> set_config thinking_level=%q (was %q)", opts.Thinking, st.applied.Thinking)
 		if err := r.cfg.Agent.SetConfigOption(ctx, st.sessionID, "thinking_level", opts.Thinking); err != nil {
-			return fmt.Errorf("set_config thinking_level=%s: %w", opts.Thinking, err)
+			// Common case: the current model doesn't support the
+			// requested thinking level (e.g. non-reasoning models
+			// only accept "off"). The Poe dropdown advertises a
+			// fixed set of levels, so this mismatch is expected.
+			// Mark applied anyway to avoid re-attempting (and
+			// re-nagging) on every subsequent prompt of this
+			// session, and don't surface a user-visible notice.
+			debuglog.Logf("  -> set_config thinking_level=%q rejected by agent: %v (suppressed)", opts.Thinking, err)
+			st.applied.Thinking = opts.Thinking
+		} else {
+			st.applied.Thinking = opts.Thinking
 		}
-		st.applied.Thinking = opts.Thinking
 	}
 	// HideThinking is applied via st.hideThinking under sinkMu in
 	// Prompt; nothing to apply on the agent side.
@@ -399,7 +408,7 @@ func ParseOptions(params map[string]any, defaults Options) Options {
 	}
 	if v, ok := params["thinking"].(string); ok {
 		switch v {
-		case "off", "minimal", "low", "medium", "high":
+		case "off", "minimal", "low", "medium", "high", "xhigh", "max":
 			o.Thinking = v
 		}
 	}
