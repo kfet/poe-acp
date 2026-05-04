@@ -2,7 +2,7 @@
 
 # Output directory for all build artifacts
 BINDIR    := bin
-BINARY    := $(BINDIR)/poe-acp-relay
+BINARY    := $(BINDIR)/poe-acp
 NOTICE_FILE := THIRD_PARTY_NOTICES.md
 
 # Go binary install path
@@ -41,7 +41,7 @@ endif
 
 build: tidy
 	@mkdir -p $(BINDIR)
-	$(call RUN,build (native),go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/poe-acp-relay/)
+	$(call RUN,build (native),go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/poe-acp/)
 
 # `make all` runs fmt first, then everything else in parallel via recursive make -j.
 # TIDY_DONE=1 tells sub-targets to skip redundant go-mod-tidy (already ran here).
@@ -54,7 +54,7 @@ fmt:
 	@gofmt -s -w .
 
 install:
-	go install -ldflags="$(LDFLAGS)" ./cmd/poe-acp-relay/
+	go install -ldflags="$(LDFLAGS)" ./cmd/poe-acp/
 
 # Ensure modules are tidy once; other targets depend on this.
 # Skipped when TIDY_DONE=1 (set by `make all` after running tidy upfront).
@@ -70,19 +70,19 @@ CROSS_TARGETS := build-darwin-arm64 build-darwin-amd64 build-linux-armv6 build-l
 build-all: $(CROSS_TARGETS) build
 
 build-darwin-arm64: | $(BINDIR)
-	$(call RUN,build darwin/arm64,GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-darwin-arm64 ./cmd/poe-acp-relay/)
+	$(call RUN,build darwin/arm64,GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-darwin-arm64 ./cmd/poe-acp/)
 
 build-darwin-amd64: | $(BINDIR)
-	$(call RUN,build darwin/amd64,GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-darwin-amd64 ./cmd/poe-acp-relay/)
+	$(call RUN,build darwin/amd64,GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-darwin-amd64 ./cmd/poe-acp/)
 
 build-linux-armv6: | $(BINDIR)
-	$(call RUN,build linux/armv6,GOOS=linux GOARCH=arm GOARM=6 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-armv6 ./cmd/poe-acp-relay/)
+	$(call RUN,build linux/armv6,GOOS=linux GOARCH=arm GOARM=6 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-armv6 ./cmd/poe-acp/)
 
 build-linux-arm64: | $(BINDIR)
-	$(call RUN,build linux/arm64,GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-arm64 ./cmd/poe-acp-relay/)
+	$(call RUN,build linux/arm64,GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-arm64 ./cmd/poe-acp/)
 
 build-linux-amd64: | $(BINDIR)
-	$(call RUN,build linux/amd64,GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-amd64 ./cmd/poe-acp-relay/)
+	$(call RUN,build linux/amd64,GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-amd64 ./cmd/poe-acp/)
 
 $(BINDIR):
 	@mkdir -p $(BINDIR)
@@ -119,10 +119,10 @@ GO_LICENSES := go run github.com/google/go-licenses@v1.6.0
 notices: $(NOTICE_FILE)
 
 $(NOTICE_FILE): go.mod go.sum
-	$(call RUN,generate notices,$(GO_LICENSES) report ./cmd/poe-acp-relay > $(NOTICE_FILE) 2>/dev/null)
+	$(call RUN,generate notices,$(GO_LICENSES) report ./cmd/poe-acp > $(NOTICE_FILE) 2>/dev/null)
 
 check-licenses:
-	$(call RUN,check licenses,$(GO_LICENSES) check ./cmd/poe-acp-relay --disallowed_types=forbidden,restricted 2>/dev/null)
+	$(call RUN,check licenses,$(GO_LICENSES) check ./cmd/poe-acp --disallowed_types=forbidden,restricted 2>/dev/null)
 
 # ---------------------------------------------------------------------------
 # Release publishing & remote deployment
@@ -155,5 +155,5 @@ deploy: build-all
 		*) echo "Unsupported platform: $$OS $$ARCH"; exit 1 ;; \
 	esac; \
 	echo "Deploying to $(HOST) ($$OS/$$ARCH → $$BIN)..."; \
-	scp -q $$BIN $(HOST):~/.local/bin/poe-acp-relay && \
-	ssh $(HOST) "chmod +x ~/.local/bin/poe-acp-relay && ~/.local/bin/poe-acp-relay --version"
+	scp -q $$BIN $(HOST):~/.local/bin/poe-acp && \
+	ssh $(HOST) "chmod +x ~/.local/bin/poe-acp && ~/.local/bin/poe-acp --version"

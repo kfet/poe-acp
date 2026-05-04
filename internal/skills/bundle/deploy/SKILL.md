@@ -1,12 +1,12 @@
 ---
 builtin: true
 name: deploy
-description: Deploy poe-acp-relay to a remote host behind Tailscale Funnel, start it as a Poe server bot, and verify end-to-end.
+description: Deploy poe-acp to a remote host behind Tailscale Funnel, start it as a Poe server bot, and verify end-to-end.
 ---
 
 # Deploy Skill
 
-Deploy `poe-acp-relay` to a remote host fronted by `tailscale funnel`. The relay listens on loopback; funnel terminates TLS and forwards. Per conversation the relay spawns an ACP agent (`fir --mode acp`, `claude-code --acp`, etc.).
+Deploy `poe-acp` to a remote host fronted by `tailscale funnel`. The relay listens on loopback; funnel terminates TLS and forwards. Per conversation the relay spawns an ACP agent (`fir --mode acp`, `claude-code --acp`, etc.).
 
 ## Confirm with the user before acting
 
@@ -22,7 +22,7 @@ Deploy `poe-acp-relay` to a remote host fronted by `tailscale funnel`. The relay
 
 ### 1. Ship the binary
 
-`make deploy` cross-builds, detects remote arch, scp's the right binary to `~/.local/bin/poe-acp-relay`, and runs `--version`:
+`make deploy` cross-builds, detects remote arch, scp's the right binary to `~/.local/bin/poe-acp`, and runs `--version`:
 
 ```bash
 make deploy HOST=<host>
@@ -31,7 +31,7 @@ make deploy HOST=<host>
 Alternatively (released to tap):
 
 ```bash
-ssh <host> 'brew install kfet/fir/poe-acp-relay'
+ssh <host> 'brew install kfet/fir/poe-acp'
 ```
 
 ### 2. Confirm the ACP agent is on the host's PATH
@@ -56,13 +56,13 @@ Verify: `ssh <host> 'tailscale funnel status'`.
 
 ### 4. Install secret + service
 
-Write `~/.config/poe-acp-relay/env` (mode `0600`) on the host:
+Write `~/.config/poe-acp/env` (mode `0600`) on the host:
 
 ```
 POEACP_ACCESS_KEY=<poe-server-bot-secret>
 ```
 
-Optionally drop a config file at `~/.config/poe-acp-relay/config.json` (see `docs/config.example.json`):
+Optionally drop a config file at `~/.config/poe-acp/config.json` (see `docs/config.example.json`):
 
 ```json
 {
@@ -82,16 +82,16 @@ Prefer a supervised service over nohup/tmux. Use **systemd** on Linux or **launc
 
 #### Linux: systemd user unit
 
-Write `~/.config/systemd/user/poe-acp-relay.service`:
+Write `~/.config/systemd/user/poe-acp.service`:
 
 ```ini
 [Unit]
-Description=poe-acp-relay
+Description=poe-acp
 After=network-online.target
 
 [Service]
-EnvironmentFile=%h/.config/poe-acp-relay/env
-ExecStart=%h/.local/bin/poe-acp-relay -http-addr 127.0.0.1:8080 -agent-cmd "fir --mode acp"
+EnvironmentFile=%h/.config/poe-acp/env
+ExecStart=%h/.local/bin/poe-acp -http-addr 127.0.0.1:8080 -agent-cmd "fir --mode acp"
 Restart=on-failure
 RestartSec=2s
 
@@ -102,32 +102,32 @@ WantedBy=default.target
 For prefix layout, swap the `ExecStart` to match:
 
 ```
-ExecStart=%h/.local/bin/poe-acp-relay -http-addr 127.0.0.1:8347 -poe-path /poe-acp -agent-cmd "fir --mode acp"
+ExecStart=%h/.local/bin/poe-acp -http-addr 127.0.0.1:8347 -poe-path /poe-acp -agent-cmd "fir --mode acp"
 ```
 
 Enable:
 
 ```bash
-ssh <host> 'systemctl --user daemon-reload && systemctl --user enable --now poe-acp-relay && loginctl enable-linger $USER'
+ssh <host> 'systemctl --user daemon-reload && systemctl --user enable --now poe-acp && loginctl enable-linger $USER'
 ```
 
 (`enable-linger` keeps the user unit running across logouts/reboots.)
 
 #### macOS: launchd user agent
 
-launchd plists can't load an `EnvironmentFile` directly, so wrap the binary in a `sh -c` that sources the env file. Write `~/Library/LaunchAgents/dev.<you>.poe-acp-relay.plist`:
+launchd plists can't load an `EnvironmentFile` directly, so wrap the binary in a `sh -c` that sources the env file. Write `~/Library/LaunchAgents/dev.<you>.poe-acp.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>dev.<you>.poe-acp-relay</string>
+  <key>Label</key><string>dev.<you>.poe-acp</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>set -a; . "$HOME/.config/poe-acp-relay/env"; set +a; exec /opt/homebrew/bin/poe-acp-relay -http-addr 127.0.0.1:8347 -poe-path /poe-acp -agent-cmd "fir --mode acp" -introduction "fir over ACP — one Poe conv = one ACP session"</string>
+    <string>set -a; . "$HOME/.config/poe-acp/env"; set +a; exec /opt/homebrew/bin/poe-acp -http-addr 127.0.0.1:8347 -poe-path /poe-acp -agent-cmd "fir --mode acp" -introduction "fir over ACP — one Poe conv = one ACP session"</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -136,8 +136,8 @@ launchd plists can't load an `EnvironmentFile` directly, so wrap the binary in a
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/Users/<you>/Library/Logs/poe-acp-relay.out.log</string>
-  <key>StandardErrorPath</key><string>/Users/<you>/Library/Logs/poe-acp-relay.err.log</string>
+  <key>StandardOutPath</key><string>/Users/<you>/Library/Logs/poe-acp.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/<you>/Library/Logs/poe-acp.err.log</string>
 </dict>
 </plist>
 ```
@@ -151,11 +151,11 @@ Notes:
 Load / reload / stop:
 
 ```bash
-launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.<you>.poe-acp-relay.plist    # start + enable
-launchctl kickstart -k gui/$UID/dev.<you>.poe-acp-relay                              # restart (e.g. after upgrade)
-launchctl bootout   gui/$UID/dev.<you>.poe-acp-relay                                 # stop + disable
-launchctl print     gui/$UID/dev.<you>.poe-acp-relay | head                          # status
-tail -f ~/Library/Logs/poe-acp-relay.err.log                                         # logs
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.<you>.poe-acp.plist    # start + enable
+launchctl kickstart -k gui/$UID/dev.<you>.poe-acp                              # restart (e.g. after upgrade)
+launchctl bootout   gui/$UID/dev.<you>.poe-acp                                 # stop + disable
+launchctl print     gui/$UID/dev.<you>.poe-acp | head                          # status
+tail -f ~/Library/Logs/poe-acp.err.log                                         # logs
 ```
 
 ### 5. Verify
@@ -176,7 +176,7 @@ Then set the Poe bot's Server URL to `https://<host>.<tailnet>.ts.net/<poe-path>
 ### 6. Tail logs during first conversations
 
 ```bash
-ssh <host> 'journalctl --user -u poe-acp-relay -f'
+ssh <host> 'journalctl --user -u poe-acp -f'
 ```
 
 Look for per-conversation cwd, ACP `initialize` handshake, and `session/prompt` traffic.
@@ -185,25 +185,25 @@ Look for per-conversation cwd, ACP `initialize` handshake, and `session/prompt` 
 
 See the `update` skill (`.fir/skills/update/SKILL.md`) for the per-host upgrade flow. Quick reference:
 
-- **Brew-managed (macOS local):** `brew upgrade poe-acp-relay && launchctl kickstart -k gui/$UID/dev.<you>.poe-acp-relay`.
-- **Brew-managed (remote):** `ssh <host> 'brew upgrade poe-acp-relay' && ssh <host> 'systemctl --user restart poe-acp-relay'`.
-- **Direct hotfix:** `make deploy HOST=<host> && ssh <host> 'systemctl --user restart poe-acp-relay'`.
+- **Brew-managed (macOS local):** `brew upgrade poe-acp && launchctl kickstart -k gui/$UID/dev.<you>.poe-acp`.
+- **Brew-managed (remote):** `ssh <host> 'brew upgrade poe-acp' && ssh <host> 'systemctl --user restart poe-acp'`.
+- **Direct hotfix:** `make deploy HOST=<host> && ssh <host> 'systemctl --user restart poe-acp'`.
 
 ## Pitfalls
 
 - **Prefix 404** — funnel `--set-path=/X` strips `/X`; `--poe-path` must equal `/X`.
 - **401** — host's `POEACP_ACCESS_KEY` doesn't match what Poe sends.
 - **Agent not found** — `--agent-cmd` resolves against the service user's PATH. On launchd you must set PATH explicitly in `EnvironmentVariables`; shell PATH is not inherited.
-- **launchd env file** — plists have no `EnvironmentFile`; wrap in `sh -c 'set -a; . ~/.config/poe-acp-relay/env; set +a; exec …'`.
+- **launchd env file** — plists have no `EnvironmentFile`; wrap in `sh -c 'set -a; . ~/.config/poe-acp/env; set +a; exec …'`.
 - **Multiple bots on one host** — one relay process per bot, each on its own loopback port + funnel prefix + access key.
 
 ## Handoff checklist
 
-- [ ] `poe-acp-relay --version` on the host matches the intended release.
+- [ ] `poe-acp --version` on the host matches the intended release.
 - [ ] `tailscale funnel status` shows the expected mapping.
 - [ ] Curl smoke test returns `200` with SSE headers.
 - [ ] Poe test message round-trips.
 - [ ] Service supervisor enabled: systemd user unit + `loginctl enable-linger` (Linux) **or** launchd user agent with `RunAtLoad` + `KeepAlive` (macOS).
-- [ ] `~/.config/poe-acp-relay/env` is mode `0600`.
-- [ ] `~/.config/poe-acp-relay/config.json` exists with `bot_name` matching the Poe slug (or intentionally omitted; auto-refetch will be skipped).
+- [ ] `~/.config/poe-acp/env` is mode `0600`.
+- [ ] `~/.config/poe-acp/config.json` exists with `bot_name` matching the Poe slug (or intentionally omitted; auto-refetch will be skipped).
 - [ ] `-introduction` flag set to the intended greeting (or intentionally omitted).

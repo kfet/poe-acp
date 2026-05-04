@@ -2,7 +2,7 @@
 
 ## Status
 
-Active build. Lives as a standalone Go module (`github.com/kfet/poe-acp-relay`) —
+Active build. Lives as a standalone Go module (`github.com/kfet/poe-acp`) —
 not linked into the main `fir` binary.
 
 ## Motivation
@@ -36,7 +36,7 @@ So: the relay is a pure **ACP client** that drives ACP-compliant agents
 3. **Per-conv cwd** so fir's session history, `.fir/settings.json`, and any
    `.fir/mcp.json` are naturally isolated between Poe convs.
 4. **Zero fir-side changes.** Consumed via `--mode acp` over stdio.
-5. **Own Go module** (`github.com/kfet/poe-acp-relay`). Not linked into the fir binary.
+5. **Own Go module** (`github.com/kfet/poe-acp`). Not linked into the fir binary.
 
 ## Non-goals (v1)
 
@@ -55,7 +55,7 @@ So: the relay is a pure **ACP client** that drives ACP-compliant agents
 - **No permission round-trip to the Poe user.** `session/request_permission`
   is handled by a local policy (allow-all / read-only / deny-all).
 
-## fir multi-session facts (as of wt/poe-acp-relay base)
+## fir multi-session facts (as of wt/poe-acp base)
 
 - `firAgent.sessions map[string]*firSession` holds concurrent sessions;
   `Prompt` / `SessionUpdate` are keyed by `SessionId`.
@@ -78,7 +78,7 @@ right thing with zero modifications.
 
 ```
   ┌──────────┐   HTTPS POST (query)     ┌──────────────────────────────┐
-  │   Poe    │ ────────────────────────▶│  poe-acp-relay (single bin)  │
+  │   Poe    │ ────────────────────────▶│  poe-acp (single bin)  │
   │ servers  │ ◀──────── SSE ───────────│                              │
   └──────────┘                          │  ┌────────────────────────┐  │
                                         │  │ internal/httpsrv       │  │
@@ -197,7 +197,7 @@ attachments are *not* re-downloaded on resume.
 - `/healthz` (public): `ok sessions=N`
 - `/debug/sessions` (bearer-gated): JSON dump for triage
 
-### `cmd/poe-acp-relay` — entry point
+### `cmd/poe-acp` — entry point
 
 Flags:
 
@@ -205,7 +205,7 @@ Flags:
 --http-addr            :8080
 --agent-cmd            "fir --mode acp"
 --agent-dir            $FIR_AGENT_DIR   (env override for the spawned fir)
---state-dir            $XDG_STATE_HOME/poe-acp-relay
+--state-dir            $XDG_STATE_HOME/poe-acp
 --permission           allow-all|read-only|deny-all
 --access-key-env       POEACP_ACCESS_KEY
 --session-ttl          2h

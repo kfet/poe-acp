@@ -8,7 +8,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/acpclient"
 )
 
 // TestSystemPrompt_CapPath: agent advertises session.systemPrompt cap,

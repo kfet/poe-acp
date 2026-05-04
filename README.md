@@ -1,14 +1,14 @@
-# poe-acp-relay
+# poe-acp
 
 Poe.com server-bot that drives ACP-compliant agents (default: `fir --mode acp`)
 as a pure ACP client. One binary, no MCP server surface. Each Poe
 `conversation_id` maps 1:1 to an ACP session inside a shared agent process.
 
-See [docs/poe-acp-relay-design.md](docs/poe-acp-relay-design.md) for the full
+See [docs/poe-acp-design.md](docs/poe-acp-design.md) for the full
 design, scope, and milestones. For the underlying Poe wire protocol see
 [docs/poe-protocol-reference.md](docs/poe-protocol-reference.md).
 
-Module: `github.com/kfet/poe-acp-relay`. Standalone — not linked into
+Module: `github.com/kfet/poe-acp`. Standalone — not linked into
 the main fir binary.
 
 **Status:** M1 complete. End-to-end Poe `query` → ACP `session/prompt` →
@@ -19,11 +19,11 @@ child. See the "Live test" section below.
 
 ```bash
 # build
-go build -o ./bin/poe-acp-relay ./cmd/poe-acp-relay
+go build -o ./bin/poe-acp ./cmd/poe-acp
 
 # run (requires fir on $PATH, or override via --agent-cmd)
 export POEACP_ACCESS_KEY=mysecret        # match the key in your Poe bot dashboard
-./bin/poe-acp-relay \
+./bin/poe-acp \
   --http-addr :8080 \
   --agent-cmd "fir --mode acp" \
   --permission allow-all
@@ -52,7 +52,7 @@ tailscale funnel --bg 127.0.0.1:8080
 
 # 3. Start the relay with that key in env.
 export POEACP_ACCESS_KEY=<key-from-poe-dashboard>
-./bin/poe-acp-relay --http-addr 127.0.0.1:8080 --agent-cmd "fir --mode acp"
+./bin/poe-acp --http-addr 127.0.0.1:8080 --agent-cmd "fir --mode acp"
 ```
 
 ### Multiple bots on one host (path-based routing)
@@ -75,7 +75,7 @@ tailscale funnel --bg --set-path=/poe-acp 127.0.0.1:8081
 
 # Start the relay. --poe-path is optional; /poe is always served as a
 # fallback so tests keep working regardless.
-POEACP_ACCESS_KEY=<key> ./bin/poe-acp-relay \
+POEACP_ACCESS_KEY=<key> ./bin/poe-acp \
   --http-addr 127.0.0.1:8081 \
   --poe-path /poe-acp \
   --agent-cmd "fir --mode acp"
@@ -126,8 +126,8 @@ follow-up; a template will land alongside the first production deploy.
 --poe-path             HTTP path for the Poe protocol endpoint (default /poe)
 --agent-cmd            ACP agent command + args (default "fir --mode acp")
 --agent-dir            FIR_AGENT_DIR passed to the child (default inherit)
---state-dir            Per-conv state root (default $XDG_STATE_HOME/poe-acp-relay)
---config               JSON config path (default $XDG_CONFIG_HOME/poe-acp-relay/config.json)
+--state-dir            Per-conv state root (default $XDG_STATE_HOME/poe-acp)
+--config               JSON config path (default $XDG_CONFIG_HOME/poe-acp/config.json)
 --permission           allow-all|read-only|deny-all (default allow-all)
 --access-key-env       Env var holding the Poe bearer secret (default POEACP_ACCESS_KEY)
 --introduction         Poe introduction message
@@ -140,7 +140,7 @@ follow-up; a template will land alongside the first production deploy.
 ## Configuration
 
 Operator-facing knobs live in a JSON config file (default
-`$XDG_CONFIG_HOME/poe-acp-relay/config.json`, override with `--config`).
+`$XDG_CONFIG_HOME/poe-acp/config.json`, override with `--config`).
 Missing file = empty config = built-in defaults; zero-config installs
 keep working.
 
@@ -227,7 +227,7 @@ the config file.
   Files past `AttachmentTTL` (30 days, ≥ `--session-ttl`) are reaped on
   the GC ticker. Hostile filenames are confined inside the per-message
   dir via Go 1.24's `os.Root`. Full design in
-  `docs/poe-acp-relay-design.md → internal/router → Attachments`.
+  `docs/poe-acp-design.md → internal/router → Attachments`.
 - **Agent → Poe surface.** Agent-emitted attachments, thoughts (when
   `hide_thinking=true`), plans, and tool-call updates are not
   forwarded back to the Poe user in v1 — only `AgentMessageChunk`
@@ -269,8 +269,8 @@ context and is fine.
 ## Layout
 
 ```
-poe-acp-relay/
-  cmd/poe-acp-relay/       entry point
+poe-acp/
+  cmd/poe-acp/       entry point
   docs/                    design doc + Poe protocol reference
   internal/acpclient/      acp.Client impl + stdio agent proc wrapper
   internal/config/         JSON config loader (DisallowUnknownFields)

@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
-	"github.com/kfet/poe-acp-relay/internal/config"
-	"github.com/kfet/poe-acp-relay/internal/router"
+	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/config"
+	"github.com/kfet/poe-acp/internal/router"
 )
 
 func boolPtr(b bool) *bool { return &b }
