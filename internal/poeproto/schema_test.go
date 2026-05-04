@@ -9,10 +9,10 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
-	"github.com/kfet/poe-acp-relay/internal/config"
-	"github.com/kfet/poe-acp-relay/internal/paramctl"
-	"github.com/kfet/poe-acp-relay/internal/poeproto"
+	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/config"
+	"github.com/kfet/poe-acp/internal/paramctl"
+	"github.com/kfet/poe-acp/internal/poeproto"
 )
 
 //go:embed testdata/*.schema.json

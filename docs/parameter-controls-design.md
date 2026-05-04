@@ -244,7 +244,7 @@ probe (see "Model list discovery" above).
 - Sink wrapper: applies `HideThinking` (drop thinking blocks) before
   forwarding to the SSE writer.
 
-### `cmd/poe-acp-relay`
+### `cmd/poe-acp`
 
 No new flags. The model list is discovered automatically.
 
@@ -308,7 +308,7 @@ unrelated reason silently changed the bot's UI default and invalidated
 Poe's cached settings response. v0.5.0 separates these dynamics:
 
 - **`internal/config`** — JSON config at
-  `$XDG_CONFIG_HOME/poe-acp-relay/config.json`. Holds `bot_name`,
+  `$XDG_CONFIG_HOME/poe-acp/config.json`. Holds `bot_name`,
   `defaults.{model,thinking,hide_thinking}`, and reserved `agent.profile`.
   `DisallowUnknownFields` so typos fail at boot.
 - **`paramctl.Resolve(cfg.Defaults, models, probeCurrent) → router.Options`** —

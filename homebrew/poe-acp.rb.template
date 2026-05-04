@@ -1,30 +1,30 @@
 # This is a template for the kfet/homebrew-fir tap.
 #
-# Formula/poe-acp-relay.rb in the tap is regenerated automatically by
-# GoReleaser on every kfet/poe-acp-relay tag push (see the brews: block
+# Formula/poe-acp.rb in the tap is regenerated automatically by
+# GoReleaser on every kfet/poe-acp tag push (see the brews: block
 # in .goreleaser.yaml). This file is kept in the main repo purely as a
 # reference — it is NOT the file Homebrew reads, and edits here do not
 # affect users.
 #
 # Users install with:
-#   brew install kfet/fir/poe-acp-relay
-#   (or: brew tap kfet/fir && brew install poe-acp-relay)
+#   brew install kfet/fir/poe-acp
+#   (or: brew tap kfet/fir && brew install poe-acp)
 
 class PoeAcpRelay < Formula
   desc "HTTP relay between Poe server bots and ACP-speaking agents"
-  homepage "https://github.com/kfet/poe-acp-relay"
+  homepage "https://github.com/kfet/poe-acp"
   license "MIT"
 
   # GoReleaser replaces url, sha256, and version on each release.
-  url "https://github.com/kfet/poe-acp-relay/releases/download/v0.1.0/poe-acp-relay-#{OS}-#{ARCH}"
+  url "https://github.com/kfet/poe-acp/releases/download/v0.1.0/poe-acp-#{OS}-#{ARCH}"
   version "0.1.0"
   sha256 "PLACEHOLDER"
 
   def install
-    bin.install Dir["poe-acp-relay-*"].first => "poe-acp-relay"
+    bin.install Dir["poe-acp-*"].first => "poe-acp"
   end
 
   test do
-    system bin/"poe-acp-relay", "--version"
+    system bin/"poe-acp", "--version"
   end
 end

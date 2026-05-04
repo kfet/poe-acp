@@ -10,10 +10,10 @@ package paramctl
 import (
 	"log"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
-	"github.com/kfet/poe-acp-relay/internal/config"
-	"github.com/kfet/poe-acp-relay/internal/poeproto"
-	"github.com/kfet/poe-acp-relay/internal/router"
+	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/config"
+	"github.com/kfet/poe-acp/internal/poeproto"
+	"github.com/kfet/poe-acp/internal/router"
 )
 
 // ThinkingLevels is the v1 thinking dropdown options. Wire values match

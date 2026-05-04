@@ -5,7 +5,7 @@
 // Design (see docs/skill-injection-plan.md):
 //   - Bundle = a small set of Markdown SKILL.md files describing
 //     deploy / update / release flows specific to running an agent under
-//     poe-acp-relay. The whole tree is embedded via go:embed so that
+//     poe-acp. The whole tree is embedded via go:embed so that
 //     `.fir/skills` (a symlink into bundle/) stays git-coherent and fir
 //     running in this repo sees every skill as a project-local one.
 //   - Only SKILL.md files whose YAML frontmatter declares `builtin: true`
@@ -13,7 +13,7 @@
 //     and stay out of the catalog. This mirrors fir's own
 //     pkg/resources/builtin_skills loader.
 //   - At startup the relay extracts the selected bundle to
-//     $TMPDIR/poe-acp-relay-<hash>/skills/<name>/SKILL.md once. The hash
+//     $TMPDIR/poe-acp-<hash>/skills/<name>/SKILL.md once. The hash
 //     covers the embedded content so a new binary uses a new dir and
 //     never reads stale skill text.
 //   - The relay then formats a fir-style catalog (name + description +
@@ -63,7 +63,7 @@ func Extract() ([]Skill, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hash bundle: %w", err)
 	}
-	root := filepath.Join(os.TempDir(), "poe-acp-relay-"+hash[:12], "skills")
+	root := filepath.Join(os.TempDir(), "poe-acp-"+hash[:12], "skills")
 
 	var skills []Skill
 	err = fs.WalkDir(bundleFS, "bundle", func(p string, d fs.DirEntry, walkErr error) error {

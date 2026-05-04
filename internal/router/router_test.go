@@ -21,7 +21,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/acpclient"
 )
 
 // fakeAgent implements Agent for tests.

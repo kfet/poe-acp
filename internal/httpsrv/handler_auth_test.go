@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
-	"github.com/kfet/poe-acp-relay/internal/authbroker"
-	"github.com/kfet/poe-acp-relay/internal/router"
+	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/authbroker"
+	"github.com/kfet/poe-acp/internal/router"
 )
 
 type stubAuth struct {

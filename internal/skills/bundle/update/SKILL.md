@@ -1,12 +1,12 @@
 ---
 builtin: true
 name: update
-description: Update poe-acp-relay on a single host to the latest released version and restart its supervisor (systemd or launchd) so the new binary is live.
+description: Update poe-acp on a single host to the latest released version and restart its supervisor (systemd or launchd) so the new binary is live.
 ---
 
 # Update Skill
 
-Upgrade `poe-acp-relay` on **one** host (local or remote) and restart the supervisor. Use after a release publishes or when a specific host is stale.
+Upgrade `poe-acp` on **one** host (local or remote) and restart the supervisor. Use after a release publishes or when a specific host is stale.
 
 > Releasing lives in `.fir/skills/release/SKILL.md`. For multi-host rollouts, repeat this skill per host.
 
@@ -33,11 +33,11 @@ If `VERSION` is ahead of every pushed tag, an unpublished release exists — sto
 Detect installed version, install method, and supervisor. For remote use `ssh <host>` prefix; for local run directly.
 
 ```bash
-poe-acp-relay --version 2>/dev/null || echo not-installed
-brew list --versions poe-acp-relay 2>/dev/null         # brew install?
-ls -l ~/.local/bin/poe-acp-relay 2>/dev/null           # direct deploy?
-systemctl --user is-active poe-acp-relay 2>/dev/null   # Linux supervisor
-launchctl list 2>/dev/null | grep -i poe-acp-relay     # macOS supervisor
+poe-acp --version 2>/dev/null || echo not-installed
+brew list --versions poe-acp 2>/dev/null         # brew install?
+ls -l ~/.local/bin/poe-acp 2>/dev/null           # direct deploy?
+systemctl --user is-active poe-acp 2>/dev/null   # Linux supervisor
+launchctl list 2>/dev/null | grep -i poe-acp     # macOS supervisor
 ```
 
 If installed version already equals target, tell the user and stop unless they want a forced restart.
@@ -46,22 +46,22 @@ If installed version already equals target, tell the user and stop unless they w
 
 **Brew + launchd (typical macOS):**
 ```bash
-brew update && brew upgrade poe-acp-relay
+brew update && brew upgrade poe-acp
 launchctl kickstart -k gui/$UID/<label>
 ```
-Find `<label>` in `~/Library/LaunchAgents/dev.*.poe-acp-relay.plist` (e.g. `dev.<user>.poe-acp-relay`). On remote, use `gui/$(id -u)/<label>` inside the ssh command.
+Find `<label>` in `~/Library/LaunchAgents/dev.*.poe-acp.plist` (e.g. `dev.<user>.poe-acp`). On remote, use `gui/$(id -u)/<label>` inside the ssh command.
 
 **Brew + systemd (typical Linux):**
 ```bash
-brew update && brew upgrade poe-acp-relay
-systemctl --user restart poe-acp-relay
+brew update && brew upgrade poe-acp
+systemctl --user restart poe-acp
 ```
 
 **Direct deploy (`~/.local/bin`, hotfix):**
 From the repo:
 ```bash
 make deploy HOST=<host>
-ssh <host> 'systemctl --user restart poe-acp-relay'   # or launchctl kickstart
+ssh <host> 'systemctl --user restart poe-acp'   # or launchctl kickstart
 ```
 
 If `brew upgrade` reports "already up-to-date" but the version still lags, the tap index is stale — re-run `brew update`. Persistent miss → fall back to `make deploy`.
@@ -69,8 +69,8 @@ If `brew upgrade` reports "already up-to-date" but the version still lags, the t
 ### 4. Verify
 
 ```bash
-poe-acp-relay --version                       # must equal target
-systemctl --user is-active poe-acp-relay      # → active   (Linux)
+poe-acp --version                       # must equal target
+systemctl --user is-active poe-acp      # → active   (Linux)
 launchctl print gui/$UID/<label> | grep state # → state = running  (macOS)
 ```
 
@@ -92,8 +92,8 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 
 - **Stale tap** — `brew upgrade` is a no-op until `brew update` refreshes the tap.
 - **Missed restart** — replacing the binary on disk does not reload the running process. Always restart the supervisor.
-- **launchd label varies** — embeds the deploying user (`dev.<user>.poe-acp-relay`). Read it from the plist, don't guess.
-- **Mixed install methods** — a host may have both `~/.local/bin/poe-acp-relay` and a brew copy; the supervisor's `ExecStart` pins one. Upgrade whichever the unit/plist points at.
+- **launchd label varies** — embeds the deploying user (`dev.<user>.poe-acp`). Read it from the plist, don't guess.
+- **Mixed install methods** — a host may have both `~/.local/bin/poe-acp` and a brew copy; the supervisor's `ExecStart` pins one. Upgrade whichever the unit/plist points at.
 - **Active conversations drop** — restart kills in-flight SSE; Poe will retry. Avoid during peak use if avoidable.
 
 ## Checklist
@@ -102,5 +102,5 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 - [ ] Install method + supervisor identified on the host.
 - [ ] Binary upgraded via the matching path.
 - [ ] Supervisor restarted.
-- [ ] `poe-acp-relay --version` matches target.
+- [ ] `poe-acp --version` matches target.
 - [ ] Service active.
