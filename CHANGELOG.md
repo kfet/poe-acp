@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-04
+
 ### Changed
 
 - Project renamed from `poe-acp-relay` to `poe-acp`. Module path is now `github.com/kfet/poe-acp`, binary is `poe-acp`, GoReleaser project and Homebrew formula are renamed accordingly. Existing installs must reinstall under the new name.
