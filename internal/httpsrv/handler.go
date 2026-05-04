@@ -108,7 +108,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 
 	turns := make([]router.Turn, 0, len(req.Query))
 	for _, m := range req.Query {
-		t := router.Turn{Role: m.Role, Content: m.Content}
+		t := router.Turn{Role: m.Role, Content: m.Content, MessageID: m.MessageID}
 		// Defensive: if the operator turned attachments off, strip them
 		// even if a misbehaving / stale Poe client still sends some.
 		if h.cfg.Settings.AllowAttachments && len(m.Attachments) > 0 {

@@ -5,7 +5,17 @@ package router
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"mime"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,8 +45,12 @@ type ChunkSink interface {
 // Turn is one message in a Poe query, decoupled from the wire type so
 // the router doesn't depend on poeproto.
 type Turn struct {
-	Role        string // "user", "bot", or "system"
-	Content     string
+	Role    string // "user", "bot", or "system"
+	Content string
+	// MessageID is Poe's per-turn id (unique within a query). The router
+	// uses the latest user turn's MessageID to scope downloaded attachments
+	// into a per-message subdir under the conv cwd. Empty is tolerated.
+	MessageID   string
 	Attachments []Attachment
 }
 
@@ -103,6 +117,28 @@ type Config struct {
 	SystemPrompt string
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
+	// HTTPClient is used to fetch attachment bytes (download-to-disk
+	// path, plus the inline ImageBlock for vision-capable models).
+	// Defaults to http.DefaultClient.
+	HTTPClient *http.Client
+	// MaxInlineImageBytes caps the raw byte size of an image attachment
+	// that the relay will base64-encode into an additive ImageBlock
+	// alongside the file:// ResourceLink. Anything larger gets the
+	// link-only treatment. Zero falls back to defaultMaxInlineImageBytes
+	// (3 MiB — leaves headroom for base64 overhead under the tightest
+	// provider cap, Bedrock-Anthropic at 3.75 MB).
+	MaxInlineImageBytes int64
+	// MaxAttachmentBytes caps how many bytes the relay will download to
+	// disk per attachment. Files exceeding the cap are skipped (logged
+	// and dropped from the prompt). Zero falls back to
+	// defaultMaxAttachmentBytes (100 MiB).
+	MaxAttachmentBytes int64
+	// AttachmentTTL is how long downloaded attachment files persist on
+	// disk before the GC sweep deletes them. Zero falls back to
+	// defaultAttachmentTTL (30 days). The router clamps AttachmentTTL
+	// to be no shorter than SessionTTL with a warn log so that a live
+	// resumed session never points at a swept file.
+	AttachmentTTL time.Duration
 }
 
 // Router is the conv_id → session map.
@@ -171,6 +207,15 @@ func New(cfg Config) (*Router, error) {
 	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = 2 * time.Hour
+	}
+	if cfg.AttachmentTTL == 0 {
+		cfg.AttachmentTTL = defaultAttachmentTTL
+	}
+	if cfg.AttachmentTTL < cfg.SessionTTL {
+		// A live resumed session must never reference a swept file.
+		log.Printf("router: AttachmentTTL=%s < SessionTTL=%s; clamping AttachmentTTL up to SessionTTL",
+			cfg.AttachmentTTL, cfg.SessionTTL)
+		cfg.AttachmentTTL = cfg.SessionTTL
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -324,13 +369,22 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 
 	blocks := []acp.ContentBlock{acp.TextBlock(promptText)}
 	embedded := r.cfg.Agent.Caps().EmbeddedContext
-	for _, a := range latestUserAttachments(query) {
-		if a.URL == "" {
-			// Defensive: an empty URL would produce a ResourceLink that
-			// most agents reject. Skip silently.
-			continue
+	if latest, ok := latestUserTurnRef(query); ok {
+		msgID := latest.MessageID
+		if msgID == "" {
+			// Fallback: hash the latest user content so retries land in
+			// the same dir but distinct messages don't collide.
+			h := sha256.Sum256([]byte(latest.Content))
+			msgID = "anon-" + hex.EncodeToString(h[:4])
 		}
-		blocks = append(blocks, attachmentBlock(a, embedded))
+		used := map[string]struct{}{}
+		for _, a := range latest.Attachments {
+			if a.URL == "" {
+				// Defensive: empty URL would be useless to the agent.
+				continue
+			}
+			blocks = append(blocks, r.attachmentBlocks(ctx, st.cwd, msgID, used, a, embedded)...)
+		}
 	}
 
 	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, blocks)
@@ -422,6 +476,15 @@ func ParseOptions(params map[string]any, defaults Options) Options {
 // this router. The HTTP layer uses this to seed ParseOptions.
 func (r *Router) Defaults() Options { return r.cfg.Defaults }
 
+// httpClient returns the configured HTTP client, defaulting to
+// http.DefaultClient.
+func (r *Router) httpClient() *http.Client {
+	if r.cfg.HTTPClient != nil {
+		return r.cfg.HTTPClient
+	}
+	return http.DefaultClient
+}
+
 // latestUserText returns the content of the last user message in the query.
 func latestUserText(q []Turn) string {
 	for i := len(q) - 1; i >= 0; i-- {
@@ -432,47 +495,314 @@ func latestUserText(q []Turn) string {
 	return ""
 }
 
-// attachmentBlock turns one Poe attachment into an ACP content block.
-// Prefers ContentBlock::Resource (TextResourceContents) when the agent
-// advertises embeddedContext AND Poe has computed parsed_content for
-// the file — that path delivers the text inline, avoiding a fetch.
-// Falls back to ResourceLink (the mandatory ACP baseline) otherwise.
-// Sets MimeType on either block when known so the agent can route the
-// file correctly without sniffing.
-func attachmentBlock(a Attachment, embedded bool) acp.ContentBlock {
+// Image inline policy and attachment-disk constants.
+//
+// The relay's universal path for any attachment is: download to disk
+// under the conv's cwd, emit file:// ResourceLink. ACP agents handle
+// file:// ResourceLink natively (fir, for example, converts it to an
+// @<path> mention in ExtractPromptContent). Inline ImageBlock is an
+// additive optimisation, not a replacement: when the format and size
+// fit the universal vision-model envelope (PNG/JPEG/GIF/WebP, ≤ ~3 MB
+// raw to leave headroom for base64 under Bedrock-Anthropic's 3.75 MB
+// cap), the relay also emits an ImageBlock so the LLM sees the pixels
+// directly without needing a tool round-trip.
+//
+// Anything outside the inline envelope (HEIC, BMP, PDF, video, octet
+// stream, oversize images, …) "just works" because the agent falls
+// back to its own tools (sips, pdftotext, ffprobe, Read) on the
+// file:// path.
+const (
+	defaultMaxInlineImageBytes int64         = 3 * 1024 * 1024
+	defaultMaxAttachmentBytes  int64         = 100 * 1024 * 1024
+	defaultAttachmentTTL       time.Duration = 30 * 24 * time.Hour
+)
+
+// attachmentDirName is the per-conv subdir holding downloaded files.
+const attachmentDirName = ".poe-attachments"
+
+var imageInlineAllowedMimeTypes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// attachmentBlocks turns one Poe attachment into one or more ACP content
+// blocks for the latest user prompt.
+//
+// Universal path:
+//
+//  1. parsed_content + agent advertises embeddedContext → inline
+//     ResourceBlock (TextResourceContents). Poe pre-parsed the file for
+//     us; no fetch, no tool round-trip on the agent side.
+//
+//  2. Otherwise: download a.URL to <cwd>/.poe-attachments/<msgID>/<name>
+//     (using os.Root to confine writes inside the conv cwd, even if
+//     a.Name is hostile), emit a ResourceLink whose URI is the
+//     properly-escaped file:// form of the absolute path, with the
+//     MimeType set so the agent can route without sniffing.
+//
+//  3. Additive inline: when the mime type is in the inline allow-list
+//     (PNG/JPEG/GIF/WebP) and the file is within MaxInlineImageBytes,
+//     also emit an ImageBlock(base64) AFTER the link. Agent gets both:
+//     file path for tool work, pixels for the LLM directly.
+//
+// Download failures degrade to a plain https ResourceLink so the agent
+// at least learns the URL existed. Logged via debuglog. A prompt is
+// never failed because of attachment IO.
+//
+// `used` is a per-prompt set tracking already-claimed filenames inside
+// the message dir; on collision the helper appends "-2", "-3", ….
+func (r *Router) attachmentBlocks(
+	ctx context.Context,
+	cwd, msgID string,
+	used map[string]struct{},
+	a Attachment,
+	embedded bool,
+) []acp.ContentBlock {
+	// Path 1: pre-parsed text — fastest, agent gets the bytes directly.
 	if embedded && a.ParsedContent != "" {
-		trc := acp.TextResourceContents{
-			Uri:  a.URL,
-			Text: a.ParsedContent,
-		}
-		if a.ContentType != "" {
-			ct := a.ContentType
-			trc.MimeType = &ct
-		}
-		return acp.ResourceBlock(acp.EmbeddedResourceResource{TextResourceContents: &trc})
+		return []acp.ContentBlock{textResourceBlock(a.URL, a.ParsedContent, a.ContentType)}
 	}
+
+	// Paths 2 + 3: download to disk, emit file:// ResourceLink, possibly
+	// followed by an inline ImageBlock.
+	absPath, name, size, err := r.downloadAttachment(ctx, cwd, msgID, used, a)
+	if err != nil {
+		debuglog.Logf("attachmentBlocks: download failed url=%s err=%v; emitting bare ResourceLink", a.URL, err)
+		// Last-resort: tell the agent about the URL so a vision-capable
+		// agent that can fetch directly still has a chance.
+		return []acp.ContentBlock{resourceLinkBlockHTTPS(a)}
+	}
+
+	link := fileResourceLinkBlock(name, absPath, a.ContentType)
+	out := []acp.ContentBlock{link}
+
+	if imageInlineAllowedMimeTypes[a.ContentType] && size <= r.maxInlineImageBytes() {
+		data, rerr := os.ReadFile(absPath)
+		if rerr != nil {
+			debuglog.Logf("attachmentBlocks: inline read failed path=%s err=%v; link-only", absPath, rerr)
+		} else {
+			out = append(out, acp.ImageBlock(base64.StdEncoding.EncodeToString(data), a.ContentType))
+		}
+	}
+	return out
+}
+
+func (r *Router) maxInlineImageBytes() int64 {
+	if r.cfg.MaxInlineImageBytes > 0 {
+		return r.cfg.MaxInlineImageBytes
+	}
+	return defaultMaxInlineImageBytes
+}
+
+func (r *Router) maxAttachmentBytes() int64 {
+	if r.cfg.MaxAttachmentBytes > 0 {
+		return r.cfg.MaxAttachmentBytes
+	}
+	return defaultMaxAttachmentBytes
+}
+
+// downloadAttachment GETs a.URL and writes the body to
+// <cwd>/.poe-attachments/<msgID>/<name>, using os.Root so a hostile
+// a.Name (e.g. "../../etc/passwd") cannot escape the message dir. The
+// helper retries with a hash-derived fallback name if the kernel/runtime
+// rejects the supplied name. Returns the absolute path, the final name,
+// and the byte count on success.
+func (r *Router) downloadAttachment(
+	ctx context.Context,
+	cwd, msgID string,
+	used map[string]struct{},
+	a Attachment,
+) (absPath, name string, size int64, err error) {
+	root, err := openMessageDir(cwd, msgID)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("open message dir: %w", err)
+	}
+	defer root.Close()
+
+	hc := r.httpClient()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
+	if err != nil {
+		return "", "", 0, err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return "", "", 0, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	max := r.maxAttachmentBytes()
+	if resp.ContentLength > 0 && resp.ContentLength > max {
+		return "", "", 0, fmt.Errorf("declared content-length %d exceeds cap %d", resp.ContentLength, max)
+	}
+
+	preferred := preferredName(a)
+	finalName := uniqueName(preferred, used)
+	f, perr := root.OpenFile(finalName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if perr != nil {
+		// os.Root rejects ".." components and absolute paths. Retry
+		// once with a hash-derived fallback so a hostile a.Name can't
+		// kill the attachment.
+		debuglog.Logf("downloadAttachment: Root rejected name=%q err=%v; using fallback", finalName, perr)
+		finalName = uniqueName(fallbackName(a), used)
+		f, perr = root.OpenFile(finalName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		if perr != nil {
+			return "", "", 0, fmt.Errorf("create attachment file: %w", perr)
+		}
+	}
+	used[finalName] = struct{}{}
+	// LimitReader+1 so we can detect overflow.
+	n, cerr := io.Copy(f, io.LimitReader(resp.Body, max+1))
+	closeErr := f.Close()
+	if cerr != nil {
+		_ = root.Remove(finalName)
+		return "", "", 0, cerr
+	}
+	if closeErr != nil {
+		_ = root.Remove(finalName)
+		return "", "", 0, closeErr
+	}
+	if n > max {
+		_ = root.Remove(finalName)
+		return "", "", 0, fmt.Errorf("attachment exceeds cap %d bytes", max)
+	}
+	abs := filepath.Join(cwd, attachmentDirName, msgID, finalName)
+	return abs, finalName, n, nil
+}
+
+// openMessageDir opens (creating if needed) <cwd>/.poe-attachments/<msgID>
+// as an os.Root. The caller must Close() the returned Root.
+func openMessageDir(cwd, msgID string) (*os.Root, error) {
+	attBase := filepath.Join(cwd, attachmentDirName)
+	if err := os.MkdirAll(attBase, 0o755); err != nil {
+		return nil, err
+	}
+	parent, err := os.OpenRoot(attBase)
+	if err != nil {
+		return nil, err
+	}
+	// Mkdir tolerates ErrExist via Stat-then-create dance.
+	if err := parent.Mkdir(msgID, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+		parent.Close()
+		return nil, err
+	}
+	sub, err := parent.OpenRoot(msgID)
+	parent.Close()
+	if err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+// preferredName picks the filename to write under .poe-attachments/<msgID>/.
+// Empty / "." / ".." trigger fallback. Names longer than 200 bytes are
+// truncated while preserving the extension.
+func preferredName(a Attachment) string {
+	name := a.Name
+	switch name {
+	case "", ".", "..":
+		return fallbackName(a)
+	}
+	return capName(name, 200)
+}
+
+// fallbackName synthesises a stable, harmless filename from the URL hash
+// plus an extension derived from the content type.
+func fallbackName(a Attachment) string {
+	h := sha256.Sum256([]byte(a.URL))
+	stem := "attachment-" + hex.EncodeToString(h[:4])
+	if exts, _ := mime.ExtensionsByType(a.ContentType); len(exts) > 0 {
+		return stem + exts[0]
+	}
+	return stem + ".bin"
+}
+
+// capName truncates name to max bytes while preserving its extension.
+func capName(name string, max int) string {
+	if len(name) <= max {
+		return name
+	}
+	ext := filepath.Ext(name)
+	if len(ext) >= max {
+		return name[:max]
+	}
+	return name[:max-len(ext)] + ext
+}
+
+// uniqueName returns name if unused, otherwise appends "-2", "-3", …
+// before the extension until it finds an unclaimed slot. The caller is
+// responsible for marking the result as used.
+func uniqueName(name string, used map[string]struct{}) string {
+	if _, taken := used[name]; !taken {
+		return name
+	}
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d%s", stem, i, ext)
+		if _, taken := used[candidate]; !taken {
+			return candidate
+		}
+	}
+}
+
+// fileResourceLinkBlock builds a ResourceLink with a properly-escaped
+// file:// URI for the absolute path. Using net/url ensures spaces and
+// non-ASCII characters in absPath are encoded per RFC 3986 rather than
+// emitted raw (which would yield a malformed URI for spec-conformant
+// agents).
+func fileResourceLinkBlock(name, absPath, contentType string) acp.ContentBlock {
+	uri := (&url.URL{Scheme: "file", Path: absPath}).String()
+	return resourceLinkBlock(name, uri, contentType)
+}
+
+// resourceLinkBlockHTTPS is the last-resort fallback when download
+// fails: emit a ResourceLink to the original Poe URL.
+func resourceLinkBlockHTTPS(a Attachment) acp.ContentBlock {
 	name := a.Name
 	if name == "" {
 		name = a.URL
 	}
-	block := acp.ResourceLinkBlock(name, a.URL)
-	if a.ContentType != "" && block.ResourceLink != nil {
-		ct := a.ContentType
+	return resourceLinkBlock(name, a.URL, a.ContentType)
+}
+
+// resourceLinkBlock is the shared builder behind the file:// and https
+// helpers. Sets MimeType on the returned ResourceLink when known so
+// the agent can route without sniffing.
+func resourceLinkBlock(name, uri, contentType string) acp.ContentBlock {
+	block := acp.ResourceLinkBlock(name, uri)
+	if contentType != "" && block.ResourceLink != nil {
+		ct := contentType
 		block.ResourceLink.MimeType = &ct
 	}
 	return block
 }
 
-// latestUserAttachments returns the attachments on the last user message.
-// Only the latest turn's attachments are forwarded; prior turns' files
-// are already part of the agent's session history.
-func latestUserAttachments(q []Turn) []Attachment {
+// textResourceBlock builds an embedded text Resource block. Sets MimeType
+// when known so the agent can route without sniffing.
+func textResourceBlock(uri, text, mime string) acp.ContentBlock {
+	trc := acp.TextResourceContents{Uri: uri, Text: text}
+	if mime != "" {
+		m := mime
+		trc.MimeType = &m
+	}
+	return acp.ResourceBlock(acp.EmbeddedResourceResource{TextResourceContents: &trc})
+}
+
+// latestUserTurnRef returns the last user turn in the query, or zero
+// + false if none exists. Only the latest turn's attachments are
+// forwarded; prior turns' files are already part of the agent's
+// session history.
+func latestUserTurnRef(q []Turn) (Turn, bool) {
 	for i := len(q) - 1; i >= 0; i-- {
 		if q[i].Role == "user" {
-			return q[i].Attachments
+			return q[i], true
 		}
 	}
-	return nil
+	return Turn{}, false
 }
 
 // flattenTranscript turns a multi-turn Poe query into a single seed prompt
@@ -635,6 +965,7 @@ func (r *Router) RunGC(ctx context.Context, every time.Duration) (stop func()) {
 				return
 			case <-t.C:
 				r.gcOnce()
+				r.sweepAttachmentsOnce()
 			}
 		}
 	}()
@@ -649,6 +980,76 @@ func (r *Router) gcOnce() {
 		if st.inUse == 0 && st.lastUsedNs < cutoff {
 			delete(r.sessions, id)
 		}
+	}
+}
+
+// sweepAttachmentsOnce walks <StateDir>/convs/*/.poe-attachments/ and
+// removes files whose mtime is older than AttachmentTTL. Empty message
+// dirs are removed afterwards so the directory tree doesn't drift.
+//
+// Decoupled from gcOnce: a hot session may keep its memory state but
+// still have stale files from old turns that should be reaped.
+func (r *Router) sweepAttachmentsOnce() {
+	ttl := r.cfg.AttachmentTTL
+	if ttl <= 0 {
+		return
+	}
+	cutoff := r.cfg.Now().Add(-ttl)
+	convsRoot := filepath.Join(r.cfg.StateDir, "convs")
+	convDirs, err := os.ReadDir(convsRoot)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			debuglog.Logf("sweepAttachmentsOnce: read %s: %v", convsRoot, err)
+		}
+		return
+	}
+	var removedFiles, removedDirs int
+	for _, cd := range convDirs {
+		if !cd.IsDir() {
+			continue
+		}
+		attRoot := filepath.Join(convsRoot, cd.Name(), attachmentDirName)
+		msgDirs, err := os.ReadDir(attRoot)
+		if err != nil {
+			continue // no attachments for this conv
+		}
+		for _, md := range msgDirs {
+			if !md.IsDir() {
+				continue
+			}
+			msgPath := filepath.Join(attRoot, md.Name())
+			files, err := os.ReadDir(msgPath)
+			if err != nil {
+				continue
+			}
+			liveCount := 0
+			for _, fe := range files {
+				p := filepath.Join(msgPath, fe.Name())
+				info, err := fe.Info()
+				if err != nil {
+					liveCount++
+					continue
+				}
+				if info.Mode().IsRegular() && info.ModTime().Before(cutoff) {
+					if err := os.Remove(p); err == nil {
+						removedFiles++
+					} else {
+						liveCount++
+						debuglog.Logf("sweepAttachmentsOnce: remove %s: %v", p, err)
+					}
+				} else {
+					liveCount++
+				}
+			}
+			if liveCount == 0 {
+				if err := os.Remove(msgPath); err == nil {
+					removedDirs++
+				}
+			}
+		}
+	}
+	if removedFiles > 0 || removedDirs > 0 {
+		debuglog.Logf("sweepAttachmentsOnce: removed %d files, %d empty dirs", removedFiles, removedDirs)
 	}
 }
 

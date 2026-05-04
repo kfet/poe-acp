@@ -6,9 +6,17 @@
 
 - Thinking dropdown now offers `xhigh` and `max` levels in addition to `off`/`minimal`/`low`/`medium`/`high`, matching fir's full `ai.ThinkingLevel` set. Config validation and `ParseOptions` accept the new values.
 
+### Changed
+
+- Attachment forwarding pivoted to a file-on-disk + inline hybrid. The relay now downloads every attachment to `<StateDir>/convs/<conv_id>/.poe-attachments/<message_id>/<name>` and emits a `file://` `ResourceLink` as the universal carrier; ACP agents (fir included) handle file:// natively, so HEIC/PDF/video/octet-stream/big images "just work" because the agent reaches for its own tools (`sips`, `pdftotext`, `Read`, …) on the file path. For supported inline formats (PNG/JPEG/GIF/WebP) under `MaxInlineImageBytes` (3 MiB raw default), an `ImageBlock` is *additionally* emitted after the `ResourceLink` so the LLM sees the pixels directly without a tool round-trip. Pre-parsed text from Poe (`parsed_content` + `embeddedContext`) keeps its existing zero-fetch fast path. New `Config.MaxAttachmentBytes` (100 MiB default), `Config.AttachmentTTL` (30 days default, clamped up to `SessionTTL` with a warn log) and `Turn.MessageID`. Hostile filenames (e.g. `../../etc/passwd`) are contained inside the per-message dir via `os.Root` (Go 1.24) plus a hash-derived fallback when the kernel/runtime rejects the supplied name. The GC ticker sweeps stale files past `AttachmentTTL` and removes empty per-message dirs. Fixes images being silently dropped by fir (and most ACP agents) when forwarded as bare `https://` `ResourceLink`.
+
 ### Fixed
 
 - Non-reasoning models (e.g. `kimi-k2.6`) that reject `thinking_level` other than `"off"` no longer surface a user-visible "option not applied" notice on every prompt. The router logs the rejection at debug level, marks the level as applied to suppress per-turn retries, and proceeds with the prompt normally.
+
+### Removed
+
+- `Config.MaxInlineTextBytes` (subsumed by the universal file:// `ResourceLink` path; text attachments are now downloaded to disk like everything else).
 
 ## [0.9.1] - 2026-05-03
 
