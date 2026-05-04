@@ -17,7 +17,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/acpclient"
 )
 
 // Authenticator is the agent-side surface the broker depends on. The full

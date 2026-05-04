@@ -8,14 +8,14 @@ Do not leave incomplete or stubbed code. Ensure all code is functional and teste
 
 ## What this is
 
-`poe-acp-relay` is a standalone HTTP server that implements Poe's server-bot protocol and relays each conversation to a spawned ACP-speaking agent (`fir --mode acp`, Claude Code, etc.) over stdio. One binary, no MCP surface. Each Poe `conversation_id` maps 1:1 to an ACP session inside a shared agent process.
+`poe-acp` is a standalone HTTP server that implements Poe's server-bot protocol and relays each conversation to a spawned ACP-speaking agent (`fir --mode acp`, Claude Code, etc.) over stdio. One binary, no MCP surface. Each Poe `conversation_id` maps 1:1 to an ACP session inside a shared agent process.
 
-See [docs/poe-acp-relay-design.md](docs/poe-acp-relay-design.md) for the full design, goals, non-goals, and milestones. For the Poe wire protocol see [docs/poe-protocol-reference.md](docs/poe-protocol-reference.md).
+See [docs/poe-acp-design.md](docs/poe-acp-design.md) for the full design, goals, non-goals, and milestones. For the Poe wire protocol see [docs/poe-protocol-reference.md](docs/poe-protocol-reference.md).
 
 ## Repository layout
 
 ```
-cmd/poe-acp-relay/       entry point: flags + server wiring
+cmd/poe-acp/       entry point: flags + server wiring
 docs/                    design doc + Poe protocol reference
 internal/acpclient/      acp.Client impl + stdio agent process wrapper
 internal/config/         JSON config loader (DisallowUnknownFields)
@@ -92,7 +92,7 @@ New entries go at the top of their subsection (most recent first).
 
 ## Release
 
-Releasing is driven by `.fir/skills/release/SKILL.md`. `make publish` pushes `main + vVERSION` to `origin`; `release.yml` runs `make all` + `make notices` and then GoReleaser, which publishes the GitHub release and updates `Formula/poe-acp-relay.rb` in the shared `kfet/homebrew-fir` tap. Users install with `brew install kfet/fir/poe-acp-relay`.
+Releasing is driven by `.fir/skills/release/SKILL.md`. `make publish` pushes `main + vVERSION` to `origin`; `release.yml` runs `make all` + `make notices` and then GoReleaser, which publishes the GitHub release and updates `Formula/poe-acp.rb` in the shared `kfet/homebrew-fir` tap. Users install with `brew install kfet/fir/poe-acp`.
 
 ## Caveman Mode
 

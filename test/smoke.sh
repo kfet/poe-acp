@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# test/smoke.sh — black-box end-to-end check against a running poe-acp-relay.
+# test/smoke.sh — black-box end-to-end check against a running poe-acp.
 #
 # Assumes: relay binary running on $POEACP_ADDR (default localhost:8080) with
 # $POEACP_ACCESS_KEY set to the same value in this shell. Typically:
 #
 #   export POEACP_ACCESS_KEY=testsecret
-#   go run ./cmd/poe-acp-relay --agent-cmd "fir --mode acp" &
+#   go run ./cmd/poe-acp --agent-cmd "fir --mode acp" &
 #   ./test/smoke.sh
 #
 # Exits non-zero on failure. Prints the SSE stream to stderr for eyeballing.
@@ -58,7 +58,7 @@ echo "--- /poe query with attachment (conv=${conv}-att) ---" >&2
 # Spin up a tiny local file server so the smoke test has zero network deps.
 ATT_DIR="$(mktemp -d)"
 trap 'rm -rf "$ATT_DIR"; [ -n "${ATT_PID:-}" ] && kill "$ATT_PID" 2>/dev/null || true' EXIT
-echo "hello from poe-acp-relay smoke test" > "$ATT_DIR/note.txt"
+echo "hello from poe-acp smoke test" > "$ATT_DIR/note.txt"
 ATT_PORT="${POEACP_ATT_PORT:-18181}"
 ( cd "$ATT_DIR" && python3 -m http.server "$ATT_PORT" --bind 127.0.0.1 ) >/dev/null 2>&1 &
 ATT_PID=$!

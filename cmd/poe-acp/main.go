@@ -1,5 +1,5 @@
-// Command poe-acp-relay is a Poe server-bot that drives ACP agents (e.g.
-// fir --mode acp) as a pure ACP client. See docs/poe-acp-relay/DESIGN.md.
+// Command poe-acp is a Poe server-bot that drives ACP agents (e.g.
+// fir --mode acp) as a pure ACP client. See docs/poe-acp/DESIGN.md.
 package main
 
 import (
@@ -21,16 +21,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
-	"github.com/kfet/poe-acp-relay/internal/authbroker"
-	"github.com/kfet/poe-acp-relay/internal/config"
-	"github.com/kfet/poe-acp-relay/internal/debuglog"
-	"github.com/kfet/poe-acp-relay/internal/httpsrv"
-	"github.com/kfet/poe-acp-relay/internal/paramctl"
-	"github.com/kfet/poe-acp-relay/internal/poeproto"
-	"github.com/kfet/poe-acp-relay/internal/policy"
-	"github.com/kfet/poe-acp-relay/internal/router"
-	"github.com/kfet/poe-acp-relay/internal/skills"
+	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/authbroker"
+	"github.com/kfet/poe-acp/internal/config"
+	"github.com/kfet/poe-acp/internal/debuglog"
+	"github.com/kfet/poe-acp/internal/httpsrv"
+	"github.com/kfet/poe-acp/internal/paramctl"
+	"github.com/kfet/poe-acp/internal/poeproto"
+	"github.com/kfet/poe-acp/internal/policy"
+	"github.com/kfet/poe-acp/internal/router"
+	"github.com/kfet/poe-acp/internal/skills"
 )
 
 // version is set via -ldflags at build time.
@@ -41,12 +41,12 @@ func main() {
 		httpAddr     = flag.String("http-addr", ":8080", "Poe HTTP listen address")
 		agentCmd     = flag.String("agent-cmd", "fir --mode acp", "ACP agent command (stdio)")
 		agentDirFlag = flag.String("agent-dir", "", "FIR_AGENT_DIR passed to the child agent (default: inherit)")
-		stateDirFlag = flag.String("state-dir", "", "Per-conv state dir root (default: $XDG_STATE_HOME/poe-acp-relay)")
-		configFlag   = flag.String("config", "", "Path to JSON config (default: $XDG_CONFIG_HOME/poe-acp-relay/config.json)")
+		stateDirFlag = flag.String("state-dir", "", "Per-conv state dir root (default: $XDG_STATE_HOME/poe-acp)")
+		configFlag   = flag.String("config", "", "Path to JSON config (default: $XDG_CONFIG_HOME/poe-acp/config.json)")
 		permission   = flag.String("permission", "allow-all", "Permission policy: allow-all|read-only|deny-all")
 		accessKeyEnv = flag.String("access-key-env", "POEACP_ACCESS_KEY", "Env var holding the Poe bearer secret")
 		poePath      = flag.String("poe-path", "/poe", "HTTP path for the Poe protocol endpoint")
-		introMsg     = flag.String("introduction", "poe-acp-relay: ACP-backed bot.", "Poe introduction message")
+		introMsg     = flag.String("introduction", "poe-acp: ACP-backed bot.", "Poe introduction message")
 		ttl          = flag.Duration("session-ttl", 2*time.Hour, "Idle TTL before a conv session is evicted")
 		gcEvery      = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
 		heartbeat    = flag.Duration("heartbeat-interval", 10*time.Second, "SSE heartbeat interval (0 to disable)")
@@ -68,7 +68,7 @@ func main() {
 
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Printf("poe-acp-relay %s starting", version)
+	log.Printf("poe-acp %s starting", version)
 	if debuglog.Enabled() {
 		log.Printf("debug logging: ON")
 	}
@@ -335,22 +335,22 @@ func truncate(s string, n int) string {
 
 func defaultStateDir() string {
 	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
-		return filepath.Join(d, "poe-acp-relay")
+		return filepath.Join(d, "poe-acp")
 	}
 	if h, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(h, ".local", "state", "poe-acp-relay")
+		return filepath.Join(h, ".local", "state", "poe-acp")
 	}
-	return filepath.Join(os.TempDir(), "poe-acp-relay")
+	return filepath.Join(os.TempDir(), "poe-acp")
 }
 
 func defaultConfigPath() string {
 	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
-		return filepath.Join(d, "poe-acp-relay", "config.json")
+		return filepath.Join(d, "poe-acp", "config.json")
 	}
 	if h, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(h, ".config", "poe-acp-relay", "config.json")
+		return filepath.Join(h, ".config", "poe-acp", "config.json")
 	}
-	return filepath.Join(os.TempDir(), "poe-acp-relay", "config.json")
+	return filepath.Join(os.TempDir(), "poe-acp", "config.json")
 }
 
 func appendEnv(env []string, kv string) []string {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Project renamed from `poe-acp-relay` to `poe-acp`. Module path is now `github.com/kfet/poe-acp`, binary is `poe-acp`, GoReleaser project and Homebrew formula are renamed accordingly. Existing installs must reinstall under the new name.
+
 ### Added
 
 - Thinking dropdown now offers `xhigh` and `max` levels in addition to `off`/`minimal`/`low`/`medium`/`high`, matching fir's full `ai.ThinkingLevel` set. Config validation and `ParseOptions` accept the new values.
@@ -64,7 +68,7 @@
 
 ### Added
 
-- JSON config file at `$XDG_CONFIG_HOME/poe-acp-relay/config.json` (override with `--config /path`). Holds the bot's identity (`bot_name`), per-conversation defaults (`defaults.model`, `defaults.thinking`, `defaults.hide_thinking`), and reserved `agent.profile` field. Unknown keys fail loudly at boot (DisallowUnknownFields). See `docs/config.example.json`. Empty/missing file preserves zero-config behavior.
+- JSON config file at `$XDG_CONFIG_HOME/poe-acp/config.json` (override with `--config /path`). Holds the bot's identity (`bot_name`), per-conversation defaults (`defaults.model`, `defaults.thinking`, `defaults.hide_thinking`), and reserved `agent.profile` field. Unknown keys fail loudly at boot (DisallowUnknownFields). See `docs/config.example.json`. Empty/missing file preserves zero-config behavior.
 - Auto-invalidation of Poe's cached settings response when `parameter_controls` change between boots. Relay hashes the schema, persists to `<state-dir>/last_schema_hash`, and POSTs `https://api.poe.com/bot/fetch_settings/<bot_name>/<key>/1.1` on change. Skipped when `bot_name` is unset.
 
 ### Changed
@@ -123,8 +127,8 @@
 
 ### Added
 
-- M0 skeleton: design doc and compiling scaffold for `poe-acp-relay`, an HTTP server that implements Poe's server-bot protocol and relays each conversation to a spawned ACP-speaking agent over stdio.
-- Extracted to its own standalone Go module (`github.com/kfet/poe-acp-relay`) so it can be vendored/deployed independently of fir.
+- M0 skeleton: design doc and compiling scaffold for `poe-acp`, an HTTP server that implements Poe's server-bot protocol and relays each conversation to a spawned ACP-speaking agent over stdio.
+- Extracted to its own standalone Go module (`github.com/kfet/poe-acp`) so it can be vendored/deployed independently of fir.
 - M1 build: per-conversation cwd, heartbeat keep-alive, cancellation, session GC, and unit tests for the HTTP handler and router.
 - Capture of `available_commands_update` notifications from the agent; M1 complete.
 - Review pass cleanups.

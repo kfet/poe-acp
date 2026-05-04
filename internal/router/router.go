@@ -25,8 +25,8 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
-	"github.com/kfet/poe-acp-relay/internal/debuglog"
+	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/debuglog"
 )
 
 // ChunkSink is the interface the HTTP/SSE layer implements to receive

@@ -1,11 +1,11 @@
 ---
 name: release
-description: Release a new version of poe-acp-relay. Confirms build/tests pass, updates VERSION and CHANGELOG.md, commits, tags, and pushes.
+description: Release a new version of poe-acp. Confirms build/tests pass, updates VERSION and CHANGELOG.md, commits, tags, and pushes.
 ---
 
 # Release Skill
 
-Release a new version of `poe-acp-relay`.
+Release a new version of `poe-acp`.
 
 ## Version determination
 
@@ -27,23 +27,23 @@ If the user provides a version, use it. Otherwise, auto-determine:
 6. **Commit** — check `git status` first. Stage **all** uncommitted changes with `git add -A`, then `git commit -m "release: vVERSION"`.
 7. **Tag** — use `git tag -a vVERSION -m "release: vVERSION"` (pass `-m` to avoid opening an editor).
 8. **Install** — `make install` to install the new version locally into `$GOBIN`.
-9. **Verify** — run `poe-acp-relay --version` and confirm it prints the new version.
+9. **Verify** — run `poe-acp --version` and confirm it prints the new version.
 
 ## Important notes
 
 - **Uncommitted changes**: Always check `git status` before committing. All release-related and pending changes should be included in the release commit.
 - **Avoid interactive git**: Always pass `-m` to `git tag -a` and `git commit`. Git may try to open vim/nano, which fails in non-interactive environments.
 - **Moving tags**: If you need to move a tag after an additional commit, use `git tag -d vVERSION` then re-create it.
-- **No PGO here.** Unlike fir, poe-acp-relay does not use PGO, so `make publish` is a straight push — no amend dance.
+- **No PGO here.** Unlike fir, poe-acp does not use PGO, so `make publish` is a straight push — no amend dance.
 
 ## Publishing
 
 After the user confirms, run `make publish`. This pushes `main` and `vVERSION` to `origin`. The GitHub `release.yml` workflow then:
 
 1. Runs `make all` + `make notices`.
-2. Invokes GoReleaser: builds the 5 cross-compile targets, creates the GitHub release with binaries + checksums + THIRD_PARTY_NOTICES.md, and commits `Formula/poe-acp-relay.rb` to `kfet/homebrew-fir` (the shared tap).
+2. Invokes GoReleaser: builds the 5 cross-compile targets, creates the GitHub release with binaries + checksums + THIRD_PARTY_NOTICES.md, and commits `Formula/poe-acp.rb` to `kfet/homebrew-fir` (the shared tap).
 
-After which `brew install kfet/fir/poe-acp-relay` (or `brew upgrade`) will pick up the new version.
+After which `brew install kfet/fir/poe-acp` (or `brew upgrade`) will pick up the new version.
 
 Alternatively, `make deploy HOST=<host>` pushes the right cross-compiled binary directly to a remote host via scp (no GitHub release needed) — useful for hotfixing a Funnel-exposed deployment.
 
@@ -72,12 +72,12 @@ Do not ask the user whether to monitor — always do it automatically after a su
 Once the `release` workflow concludes successfully, confirm the formula landed in the tap:
 
 ```bash
-gh api repos/kfet/homebrew-fir/contents/Formula/poe-acp-relay.rb --jq '.sha,.size' 2>&1
+gh api repos/kfet/homebrew-fir/contents/Formula/poe-acp.rb --jq '.sha,.size' 2>&1
 ```
 
 And that `brew` sees the new version (optional, on a machine with brew installed):
 
 ```bash
 brew update
-brew info kfet/fir/poe-acp-relay | head -5
+brew info kfet/fir/poe-acp | head -5
 ```

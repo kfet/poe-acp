@@ -1,9 +1,9 @@
 version: 2
-project_name: poe-acp-relay
+project_name: poe-acp
 
 builds:
-  - main: ./cmd/poe-acp-relay/
-    binary: poe-acp-relay
+  - main: ./cmd/poe-acp/
+    binary: poe-acp
     env:
       - CGO_ENABLED=0
     ldflags:
@@ -23,7 +23,7 @@ builds:
 
 archives:
   - formats: [binary]
-    name_template: "poe-acp-relay-{{ .Os }}-{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    name_template: "poe-acp-{{ .Os }}-{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
 
 checksum:
   name_template: checksums.txt
@@ -35,9 +35,9 @@ checksum:
 release:
   github:
     owner: kfet
-    name: poe-acp-relay
+    name: poe-acp
   prerelease: auto
-  name_template: "poe-acp-relay {{.Version}}"
+  name_template: "poe-acp {{.Version}}"
   extra_files:
     - glob: LICENSE
     - glob: THIRD_PARTY_NOTICES.md
@@ -45,36 +45,36 @@ release:
 # ---------------------------------------------------------------------------
 # Homebrew tap
 #
-# GoReleaser regenerates Formula/poe-acp-relay.rb on kfet/homebrew-fir on
+# GoReleaser regenerates Formula/poe-acp.rb on kfet/homebrew-fir on
 # every release (reusing fir's tap so users don't need a second tap).
 #
 # Users install with:
-#   brew install kfet/fir/poe-acp-relay
+#   brew install kfet/fir/poe-acp
 # ---------------------------------------------------------------------------
 brews:
-  - name: poe-acp-relay
+  - name: poe-acp
     repository:
       owner: kfet
       name: homebrew-fir
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
-    url_template: "https://github.com/kfet/poe-acp-relay/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
-    homepage: "https://github.com/kfet/poe-acp-relay"
+    url_template: "https://github.com/kfet/poe-acp/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    homepage: "https://github.com/kfet/poe-acp"
     description: "HTTP relay between Poe server bots and ACP-speaking agents"
     license: MIT
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
-    commit_msg_template: "poe-acp-relay: update to {{ .Tag }}"
+    commit_msg_template: "poe-acp: update to {{ .Tag }}"
     skip_upload: auto
     test: |
-      system "#{bin}/poe-acp-relay", "--version"
-    # The downloaded artifact is named poe-acp-relay-<os>-<arch> (archives.formats=binary
-    # emits raw binaries, not tarballs), so `bin.install "poe-acp-relay"` fails
+      system "#{bin}/poe-acp", "--version"
+    # The downloaded artifact is named poe-acp-<os>-<arch> (archives.formats=binary
+    # emits raw binaries, not tarballs), so `bin.install "poe-acp"` fails
     # with ENOENT. Glob the staged artifact and rename it on install.
     install: |
-      bin.install Dir["poe-acp-relay-*"].first => "poe-acp-relay"
+      bin.install Dir["poe-acp-*"].first => "poe-acp"
 
 changelog:
   use: github-native

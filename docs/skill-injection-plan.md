@@ -1,17 +1,17 @@
 # Skill Injection — Plan / Handoff
 
 Branch: `skill-injection`  
-Worktree: `~/dev/ai/poe-acp-relay.wt/skill-injection`
+Worktree: `~/dev/ai/poe-acp.wt/skill-injection`
 
 ## Goal
 
-Make poe-acp-relay a *universal* ACP relay that injects a small, Poe-environment-aware **skills catalog** into any ACP agent it fronts. Agents read skill bodies on demand using whatever read tool they have.
+Make poe-acp a *universal* ACP relay that injects a small, Poe-environment-aware **skills catalog** into any ACP agent it fronts. Agents read skill bodies on demand using whatever read tool they have.
 
 Pattern is copied from fir's `<available_skills>` block (see `~/dev/ai/fir/pkg/resources/skills.go:259`).
 
 ## Design (settled)
 
-1. **Skill bundle** — markdown files embedded in the relay binary via `go:embed`. On startup, extracted to a per-install tmp dir (`os.TempDir()/poe-acp-relay-<version>-<hash>/skills/`). Idempotent.
+1. **Skill bundle** — markdown files embedded in the relay binary via `go:embed`. On startup, extracted to a per-install tmp dir (`os.TempDir()/poe-acp-<version>-<hash>/skills/`). Idempotent.
 2. **Injected payload = catalog only**, not skill bodies. fir-style XML:
    ```
    <available_skills>

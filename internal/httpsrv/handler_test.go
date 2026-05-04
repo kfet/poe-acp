@@ -13,9 +13,9 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp-relay/internal/acpclient"
-	"github.com/kfet/poe-acp-relay/internal/poeproto"
-	"github.com/kfet/poe-acp-relay/internal/router"
+	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/poe-acp/internal/poeproto"
+	"github.com/kfet/poe-acp/internal/router"
 )
 
 type fakeAgent struct {

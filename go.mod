@@ -1,4 +1,4 @@
-module github.com/kfet/poe-acp-relay
+module github.com/kfet/poe-acp
 
 go 1.24.11
 

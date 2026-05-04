@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/kfet/poe-acp-relay/internal/debuglog"
+	"github.com/kfet/poe-acp/internal/debuglog"
 )
 
 // RequestType values Poe sends.

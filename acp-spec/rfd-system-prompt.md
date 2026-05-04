@@ -1,6 +1,6 @@
 # ACP RFD: Session System Prompt
 
-> Status: Draft (poe-acp-relay local extension)
+> Status: Draft (poe-acp local extension)
 > Last updated: 2026-05-03
 
 ## Motivation
@@ -110,7 +110,7 @@ agents that want correct behaviour should implement the capability.
 
 ## Implementation notes
 
-- Reference client: poe-acp-relay (`internal/router`, `internal/acpclient`).
+- Reference client: poe-acp (`internal/router`, `internal/acpclient`).
 - Reference agent: pending — fir is the first target.
 - The capability namespace `_meta["session.systemPrompt"]` is intentionally
   generic (not vendor-prefixed) so that any ACP client/agent pair may adopt
