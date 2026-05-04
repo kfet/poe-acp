@@ -139,6 +139,54 @@ right thing with zero modifications.
 - Idle GC: sessions idle > `SESSION_TTL` removed from map. Agent proc
   itself runs until relay shutdown (no pool).
 
+#### Attachments
+
+For every attachment on the latest user turn the relay produces ACP
+content blocks following a file-on-disk + inline hybrid:
+
+1. **Pre-parsed text fast path.** If Poe supplied `parsed_content` and
+   the agent advertises `promptCapabilities.embeddedContext`, the relay
+   emits an inline `Resource` (`TextResourceContents`) block. Zero
+   fetch, no file written.
+2. **Universal path.** Otherwise the relay GETs `a.url` and writes the
+   body to `<cwd>/.poe-attachments/<message_id>/<name>` — bounded by the
+   request context and capped at `MaxAttachmentBytes` (default 100 MiB
+   per file). It then emits a `ResourceLink` block with a `file://`
+   URI and the `MimeType` set. ACP agents handle file:// `ResourceLink`
+   natively (fir converts it to `@<path>` in `ExtractPromptContent`),
+   so HEIC, PDF, video, octet-stream, and oversized images "just work"
+   via the agent's own tools (`sips`, `pdftotext`, `Read`, …).
+3. **Additive inline image.** When `a.content_type` is in the universal
+   vision allow-list (`image/{jpeg,png,gif,webp}`) and the file is
+   within `MaxInlineImageBytes` (default 3 MiB raw — leaves headroom
+   for base64 overhead under Bedrock-Anthropic's 3.75 MB cap), the
+   relay *also* emits an `ImageBlock(base64, content_type)` after the
+   `ResourceLink`. Vision-capable LLMs see the pixels directly without
+   a tool round-trip; the file path remains for tool work.
+4. **Download failure last-resort.** If the GET fails, the relay emits
+   a bare `ResourceLink` to the original `https://` URL so a fetch-
+   capable agent still has something. Logged via `--debug`.
+
+**Filesystem safety.** All writes go through Go 1.24's `os.Root`
+rooted at `<cwd>/.poe-attachments/<message_id>/`, so a hostile `a.name`
+(e.g. `../../etc/passwd`) cannot escape the per-message dir. If Root
+rejects the supplied name, the relay falls back to a hash-derived name
+`attachment-<sha256(url)[:8]><ext>`. Within one message, duplicate
+filenames get `-2`, `-3`, … collision suffixes.
+
+**Disk reaping.** A second sweep on the GC ticker walks
+`<StateDir>/convs/*/.poe-attachments/**` and deletes regular files
+whose mtime is older than `AttachmentTTL` (default 30 days), then
+removes any now-empty `<message_id>/` dirs. The sweep is decoupled
+from in-memory session GC: a hot conv keeps its session, but old turn
+attachments still get reaped. `AttachmentTTL` is clamped up to
+`SessionTTL` at startup with a warn log so a live resumed session
+never points at a swept file.
+
+**Only the latest user turn's attachments are forwarded** — earlier
+turns' files are part of the agent's session history. Prior-turn
+attachments are *not* re-downloaded on resume.
+
 ### `internal/policy` — permission policy
 
 `allow-all` / `read-only` / `deny-all`. Selected via `--permission`.
@@ -246,11 +294,12 @@ under `/poe-acp` needs its Poe URL set to `/poe-acp/poe` (not bare
 - **Permission round-trip to the Poe user.** Turn
   `session/request_permission` into an interstitial Poe message with
   an inline allow/deny; requires a pending-continuation mechanism.
-- **Attachments.** Forwarded as ACP `ResourceLink` content blocks
-  alongside the latest user text. The agent fetches if it wants to;
-  the relay does not download or parse files. Only the latest user
-  turn's attachments are forwarded — prior turns are part of the agent
-  session history.
+- **Attachments.** Implemented. See _Components → router → Attachments_
+  for the file-on-disk + additive-inline design. Out of scope for v1:
+  per-conv disk quota (operator can use a shorter `AttachmentTTL` or
+  FS-level quota), HEIC→JPEG transcoding (the agent does it via `sips`),
+  and re-fetching prior-turn attachments on cold resume (signed Poe
+  URLs may have expired by then anyway).
 - **Slash commands.** Forward a command list (from fir's
   `BuiltinSlashCommands` + extensions) into Poe settings. First version
   can be a static hand-written list.

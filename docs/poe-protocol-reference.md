@@ -26,7 +26,7 @@ minimum needed to make a single-user chat bot work. Specifically:
 | `replace_response`          | ✅                 | Emitted on `StopReasonCancelled`.                   |
 | `error` event               | ✅                 | Emitted on agent refusal / internal errors.         |
 | Tool calling                | ❌                 | Tools live on the ACP side (fir does its own).      |
-| Attachments                 | ✅                 | Forwarded as ACP `Resource` (when `parsed_content` available + agent supports `embeddedContext`) or `ResourceLink` fallback. Relay never fetches. |
+| Attachments                 | ✅                 | Pre-parsed text → inline `Resource` (when agent supports `embeddedContext`). Otherwise downloaded to `<cwd>/.poe-attachments/<message_id>/<name>` and forwarded as `file://` `ResourceLink`; for jpeg/png/gif/webp ≤ 3 MiB an additive `ImageBlock` follows. See `internal/router` design notes. |
 | Parameter controls          | ✅                 | `model` + `thinking` dropdowns + `hide_thinking` toggle. |
 | Monetisation                | ❌                 | Not used.                                           |
 | `suggested_reply`           | ❌                 | Not emitted; easy to add if useful.                 |

@@ -213,9 +213,25 @@ the config file.
 - **Permission.** `allow-all` (default), `read-only`, or `deny-all`
   via `--permission`. The relay answers `session/request_permission`
   locally; no prompt to the Poe user in v1.
-- **Attachments / thoughts / plans / tool-call updates** are not
-  forwarded to the Poe user in v1 — only `AgentMessageChunk` text
-  reaches the SSE stream.
+- **Attachments → agent.** Each Poe attachment on the latest user
+  turn is downloaded to
+  `$STATE/convs/<conv_id>/.poe-attachments/<message_id>/<name>` and
+  forwarded as a `file://` ACP `ResourceLink`, which fir picks up as
+  an `@<path>` mention. Pre-parsed text (when Poe supplies
+  `parsed_content` and the agent advertises `embeddedContext`) takes
+  a zero-fetch fast path. Vision-friendly images
+  (`jpeg`/`png`/`gif`/`webp`) under 3 MiB get an additive inline
+  `ImageBlock` after the link so the LLM sees pixels directly.
+  HEIC/PDF/video/octet-stream/oversized images "just work" via the
+  agent's own tools (`sips`, `pdftotext`, `Read`, …) on the file path.
+  Files past `AttachmentTTL` (30 days, ≥ `--session-ttl`) are reaped on
+  the GC ticker. Hostile filenames are confined inside the per-message
+  dir via Go 1.24's `os.Root`. Full design in
+  `docs/poe-acp-relay-design.md → internal/router → Attachments`.
+- **Agent → Poe surface.** Agent-emitted attachments, thoughts (when
+  `hide_thinking=true`), plans, and tool-call updates are not
+  forwarded back to the Poe user in v1 — only `AgentMessageChunk`
+  text reaches the SSE stream.
 
 ## Tests
 
