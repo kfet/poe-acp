@@ -46,7 +46,7 @@ type Defaults struct {
 	// dropdown's default_value (UI shows first option, runtime falls
 	// through to the agent's own default).
 	Model string `json:"model,omitempty"`
-	// Thinking is one of "off","minimal","low","medium","high". Empty
+	// Thinking is one of "off","minimal","low","medium","high","xhigh","max". Empty
 	// string means "use built-in default" (currently "medium").
 	Thinking string `json:"thinking,omitempty"`
 	// HideThinking suppresses agent_thought_chunk in the SSE stream.
@@ -92,9 +92,9 @@ func Load(path string) (cfg Config, ok bool, err error) {
 // list?") happen in main.go after the probe completes.
 func (c Config) Validate() error {
 	switch c.Defaults.Thinking {
-	case "", "off", "minimal", "low", "medium", "high":
+	case "", "off", "minimal", "low", "medium", "high", "xhigh", "max":
 	default:
-		return fmt.Errorf("defaults.thinking: invalid %q (want off|minimal|low|medium|high)", c.Defaults.Thinking)
+		return fmt.Errorf("defaults.thinking: invalid %q (want off|minimal|low|medium|high|xhigh|max)", c.Defaults.Thinking)
 	}
 	return nil
 }

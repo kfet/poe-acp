@@ -283,6 +283,53 @@ func TestRouter_ApplyOptionsFailureSurfacesText(t *testing.T) {
 	}
 }
 
+// TestRouter_ThinkingRejectionIsSilent pins the fix for non-reasoning
+// models (e.g. kimi-k2.6) that reject any thinking_level other than
+// "off". The relay should:
+//  1. NOT surface a user-visible "option not applied" notice for
+//     thinking_level rejection (it's expected, not an error).
+//  2. Mark applied.Thinking anyway so it doesn't retry every turn.
+//  3. Still proceed with the prompt normally.
+func TestRouter_ThinkingRejectionIsSilent(t *testing.T) {
+	t.Parallel()
+	agent := newOptsAgent()
+	agent.setConfigErr = stringErr(`set_config thinking_level=high: {"code":-32603,"message":"Internal error","data":{"error":"invalid thinking level: high"}}`)
+	r := mustRouter(t, agent)
+
+	sink := &captureSink{}
+	if err := r.Prompt(context.Background(), "c1", "u",
+		[]Turn{{Role: "user", Content: "hi"}},
+		Options{Thinking: "high"},
+		sink,
+	); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	got := sink.text.String()
+	if strings.Contains(got, "option not applied") {
+		t.Fatalf("thinking rejection should be silent, got %q", got)
+	}
+	// applied.Thinking should be set so we don't retry next turn.
+	r.mu.Lock()
+	st := r.sessions["c1"]
+	r.mu.Unlock()
+	if st.applied.Thinking != "high" {
+		t.Fatalf("applied.Thinking should be %q after rejection (to suppress retry), got %q", "high", st.applied.Thinking)
+	}
+
+	// Second prompt with same value: no further SetConfigOption call.
+	calls := len(agent.setConfigCalls)
+	if err := r.Prompt(context.Background(), "c1", "u",
+		[]Turn{{Role: "user", Content: "hi again"}},
+		Options{Thinking: "high"},
+		&captureSink{},
+	); err != nil {
+		t.Fatalf("prompt2: %v", err)
+	}
+	if len(agent.setConfigCalls) != calls {
+		t.Fatalf("expected no retry of SetConfigOption; calls went %d -> %d", calls, len(agent.setConfigCalls))
+	}
+}
+
 type stringErr string
 
 func (e stringErr) Error() string { return string(e) }

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Thinking dropdown now offers `xhigh` and `max` levels in addition to `off`/`minimal`/`low`/`medium`/`high`, matching fir's full `ai.ThinkingLevel` set. Config validation and `ParseOptions` accept the new values.
+
+### Fixed
+
+- Non-reasoning models (e.g. `kimi-k2.6`) that reject `thinking_level` other than `"off"` no longer surface a user-visible "option not applied" notice on every prompt. The router logs the rejection at debug level, marks the level as applied to suppress per-turn retries, and proceeds with the prompt normally.
+
 ## [0.9.1] - 2026-05-03
 
 ### Changed
