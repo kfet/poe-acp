@@ -95,6 +95,10 @@ func hasModel(models []acpclient.ModelInfo, id string) bool {
 //
 // If models is empty (probe failed or agent is unauthed) the model
 // dropdown is omitted entirely.
+//
+// Model order is preserved as received from the agent: the agent owns
+// priority semantics (capability score, cost tier) that the relay
+// can't see, so re-sorting here would clobber a meaningful order.
 func Build(models []acpclient.ModelInfo, defaults router.Options) *poeproto.ParameterControls {
 	var controls []poeproto.Control
 
