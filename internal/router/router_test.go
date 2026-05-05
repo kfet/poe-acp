@@ -1255,3 +1255,118 @@ func TestRouter_SweepRemovesStaleFiles(t *testing.T) {
 		t.Fatalf("fresh msg dir removed: %v", err)
 	}
 }
+
+// eventKind distinguishes SSE event types in the ordering test.
+type eventKind string
+
+const (
+	evReplace eventKind = "replace"
+	evText    eventKind = "text"
+)
+
+type sseEvent struct {
+	kind eventKind
+	body string
+}
+
+// eventSink records Replace and Text calls in arrival order, simulating
+// the spinner-clearing behaviour of handler.sink: FirstChunk emits
+// Replace("") to wipe the spinner before real content arrives.
+type eventSink struct {
+	mu     sync.Mutex
+	events []sseEvent
+}
+
+func (s *eventSink) FirstChunk() {
+	s.mu.Lock()
+	s.events = append(s.events, sseEvent{evReplace, ""})
+	s.mu.Unlock()
+}
+func (s *eventSink) Text(t string) error {
+	s.mu.Lock()
+	s.events = append(s.events, sseEvent{evText, t})
+	s.mu.Unlock()
+	return nil
+}
+func (s *eventSink) Replace(t string) error   { return nil }
+func (s *eventSink) Error(t, et string) error { return nil }
+func (s *eventSink) Done() error              { return nil }
+
+// simulatedContent replays an event sequence as Poe renders it:
+// Replace("") wipes all prior Text; subsequent Text events append.
+func simulatedContent(events []sseEvent) string {
+	var buf strings.Builder
+	for _, ev := range events {
+		switch ev.kind {
+		case evReplace:
+			buf.Reset()
+			buf.WriteString(ev.body)
+		case evText:
+			buf.WriteString(ev.body)
+		}
+	}
+	return buf.String()
+}
+
+// TestRouter_FirstChunkReplaceCannotWipeSubsequentText is the regression
+// test for the "missing text content" bug.
+//
+// Root cause: the ACP SDK spawns one goroutine per notification. In the
+// old per-turn-channel design a race between goroutine A's
+// FirstChunk→Replace("") and goroutine B's Text could erase B's content.
+// With the session-lifetime channel the drain goroutine is the sole sink
+// writer so the race is structurally impossible.
+//
+// The test wires up a full session-lifetime drain goroutine, sends two
+// chunks concurrently via OnUpdate, and verifies both survive.
+func TestRouter_FirstChunkReplaceCannotWipeSubsequentText(t *testing.T) {
+	rec := &eventSink{}
+	st := &sessionState{
+		convID:    "test",
+		chunkCh:   make(chan chunkMsg, 64),
+		drainStop: make(chan struct{}),
+	}
+	go st.drainChunks()
+
+	// Begin turn so the drain goroutine has a sink to write to.
+	st.chunkCh <- chunkMsg{beginTurn: &turnDef{sink: rec}}
+
+	makeChunk := func(text string) acp.SessionNotification {
+		return acp.SessionNotification{
+			SessionId: "test",
+			Update: acp.SessionUpdate{
+				AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+					Content: acp.TextBlock(text),
+				},
+			},
+		}
+	}
+
+	// Send two chunks concurrently; the channel serialises them.
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, chunk := range []string{"alpha", "beta"} {
+		chunk := chunk
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = st.OnUpdate(context.Background(), makeChunk(chunk))
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	// End the turn and wait for the drain goroutine to finish processing.
+	endDone := make(chan struct{})
+	st.chunkCh <- chunkMsg{endTurn: endDone}
+	<-endDone
+
+	// Both chunks must be visible; neither should be erased by Replace("").
+	content := simulatedContent(rec.events)
+	if content != "alphabeta" && content != "betaalpha" {
+		t.Errorf("content = %q; want both chunks present (neither erased by Replace)", content)
+	}
+
+	close(st.drainStop)
+}
