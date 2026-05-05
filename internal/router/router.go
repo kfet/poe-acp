@@ -163,15 +163,14 @@ type sessionState struct {
 	// Protected by Router.mu (read by gcOnce, written by Prompt).
 	inUse int
 
-	// sinkMu guards sink (written by Prompt, read by OnUpdate).
-	sinkMu       sync.Mutex
-	sink         ChunkSink
-	first        bool
-	hideThinking bool
-	// chunkMode tracks the kind of stream currently being emitted,
-	// so multi-chunk thoughts render as one continuous block.
-	// Reset to chunkNone at the start of each turn.
-	chunkMode chunkKind
+	// chunkCh is session-lifetime: created once in getOrCreate, never
+	// reassigned. OnUpdate sends to it from any goroutine without any
+	// lock — the channel itself is the synchronisation primitive.
+	// drainChunks consumes from it for the session's whole lifetime.
+	chunkCh chan chunkMsg
+	// drainStop is closed by gcOnce when the session is evicted; the
+	// drain goroutine exits on the next select iteration.
+	drainStop chan struct{}
 
 	// applied tracks the last successfully-applied agent options, so
 	// we only call set_model / set_config_option when values change.
@@ -186,6 +185,24 @@ type sessionState struct {
 	// session.systemPrompt cap) for fresh sessions and on resume.
 	// Protected by turnMu.
 	pendingSystemPromptInline bool
+}
+
+// chunkMsg is a message on the session-lifetime chunkCh. Exactly one
+// field is meaningful per message kind:
+//
+//	beginTurn != nil  — Prompt is starting; sink and options are attached.
+//	endTurn   != nil  — Prompt is ending; drain closes the channel to ack.
+//	otherwise         — a streaming chunk notification from OnUpdate.
+type chunkMsg struct {
+	notif     acp.SessionNotification // chunk (when beginTurn == nil && endTurn == nil)
+	beginTurn *turnDef                // start-of-turn control message
+	endTurn   chan struct{}           // end-of-turn control message; drain closes to ack
+}
+
+// turnDef carries per-turn configuration forwarded to the drain goroutine.
+type turnDef struct {
+	sink         ChunkSink
+	hideThinking bool
 }
 
 // chunkKind classifies the most recent stream chunk written to the sink.
@@ -226,11 +243,61 @@ func New(cfg Config) (*Router, error) {
 	return &Router{cfg: cfg, sessions: make(map[string]*sessionState)}, nil
 }
 
-// OnUpdate implements acpclient.SessionUpdateSink; forwards to the current
-// sink (if one is attached). Emits transition markers between thought and
-// message streams so multi-chunk thoughts render as one Markdown block
-// quote.
+// OnUpdate implements acpclient.SessionUpdateSink. It enqueues the
+// notification on the session-lifetime chunkCh. No lock is needed:
+// chunkCh is set once at session creation and never reassigned; the
+// channel itself serialises concurrent senders.
+//
+// Corner-case note: the ACP SDK spawns one goroutine per notification
+// (go c.handleInbound). A goroutine created for turn N could in theory
+// be scheduled after turn N's endTurn sentinel has been drained. If
+// that happens the chunk lands when td==nil and is silently dropped.
+// Cross-contamination into turn N+1 is not possible in practice: the
+// next beginTurn only arrives after the current HTTP response completes
+// and a new request is received — seconds to minutes later.
 func (s *sessionState) OnUpdate(_ context.Context, n acp.SessionNotification) error {
+	select {
+	case s.chunkCh <- chunkMsg{notif: n}:
+	case <-s.drainStop:
+	}
+	return nil
+}
+
+// drainChunks runs for the entire session lifetime, processing begin/end
+// turn control messages and chunk notifications in arrival order. It exits
+// when drainStop is closed. All per-turn state is local to this goroutine —
+// no synchronisation required.
+func (s *sessionState) drainChunks() {
+	var (
+		td        *turnDef
+		first     bool
+		chunkMode chunkKind
+	)
+	for {
+		select {
+		case <-s.drainStop:
+			return
+		case msg := <-s.chunkCh:
+			switch {
+			case msg.beginTurn != nil:
+				td = msg.beginTurn
+				first = false
+				chunkMode = chunkNone
+			case msg.endTurn != nil:
+				td = nil
+				close(msg.endTurn) // ack: Prompt can proceed
+			case td != nil:
+				// Chunk within an active turn.
+				drainProcessChunk(msg.notif, td, &first, &chunkMode)
+				// td == nil: late-arriving chunk outside a turn — drop.
+			}
+		}
+	}
+}
+
+// drainProcessChunk handles one chunk notification. Called only from
+// drainChunks so the pointer arguments need no synchronisation.
+func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chunkMode *chunkKind) {
 	u := n.Update
 	var (
 		kind chunkKind
@@ -242,52 +309,32 @@ func (s *sessionState) OnUpdate(_ context.Context, n acp.SessionNotification) er
 	case u.AgentThoughtChunk != nil && u.AgentThoughtChunk.Content.Text != nil:
 		kind, text = chunkThought, u.AgentThoughtChunk.Content.Text.Text
 	default:
-		// Tool-calls, plans, available_commands_update etc. are
-		// suppressed in v1.
-		return nil
+		// Tool-calls, plans, available_commands_update etc. suppressed in v1.
+		return
 	}
-	if text == "" {
-		return nil
+	if text == "" || (kind == chunkThought && td.hideThinking) {
+		return
 	}
-
-	s.sinkMu.Lock()
-	sink := s.sink
-	firstSent := s.first
-	hideThinking := s.hideThinking
-	prevMode := s.chunkMode
-	if sink == nil {
-		s.sinkMu.Unlock()
-		return nil
-	}
-	if kind == chunkThought && hideThinking {
-		s.sinkMu.Unlock()
-		return nil
-	}
-	// Compute the transition prefix (if any) before unlocking.
 	var prefix string
 	switch {
-	case prevMode == chunkNone && kind == chunkThought:
+	case *chunkMode == chunkNone && kind == chunkThought:
 		prefix = "> _Thinking…_\n> "
-	case prevMode == chunkMessage && kind == chunkThought:
+	case *chunkMode == chunkMessage && kind == chunkThought:
 		prefix = "\n\n> _Thinking…_\n> "
-	case prevMode == chunkThought && kind == chunkMessage:
+	case *chunkMode == chunkThought && kind == chunkMessage:
 		prefix = "\n\n"
 	}
-	s.chunkMode = kind
-	if !firstSent {
-		s.first = true
-	}
-	s.sinkMu.Unlock()
-
-	if !firstSent {
-		sink.FirstChunk()
+	*chunkMode = kind
+	if !*first {
+		*first = true
+		td.sink.FirstChunk()
 	}
 	if kind == chunkThought {
 		// Continue the blockquote across newlines inside the thought
 		// chunk so Poe's Markdown renderer keeps it as one block.
 		text = strings.ReplaceAll(text, "\n", "\n> ")
 	}
-	return sink.Text(prefix + text)
+	_ = td.sink.Text(prefix + text)
 }
 
 // Prompt handles one Poe query end-to-end. Serialises per-conv. The query
@@ -334,19 +381,15 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 		_ = sink.Text(fmt.Sprintf("_(option not applied: %v)_\n\n", err))
 	}
 
-	st.sinkMu.Lock()
-	st.sink = sink
-	st.first = false
-	st.hideThinking = opts.HideThinking
-	st.chunkMode = chunkNone
-	st.sinkMu.Unlock()
+	// Announce the turn to the session-lifetime drain goroutine.
+	// All chunks arriving via OnUpdate during Agent.Prompt() will be
+	// processed in order before the matching endTurn message is drained.
+	st.chunkCh <- chunkMsg{beginTurn: &turnDef{
+		sink:         sink,
+		hideThinking: opts.HideThinking,
+	}}
 
-	defer func() {
-		st.sinkMu.Lock()
-		st.sink = nil
-		st.sinkMu.Unlock()
-		r.touch(convID)
-	}()
+	defer r.touch(convID)
 
 	promptText := latest
 	if freshSeed {
@@ -388,6 +431,15 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	}
 
 	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, blocks)
+
+	// Drain all queued chunks before touching the sink with Done/Error/Replace.
+	// endTurn is behind every chunk that was sent before Agent.Prompt returned
+	// (FIFO channel order), so <-endDone guarantees the drain goroutine has
+	// finished processing everything for this turn.
+	endDone := make(chan struct{})
+	st.chunkCh <- chunkMsg{endTurn: endDone}
+	<-endDone
+
 	if err != nil {
 		_ = sink.Error(fmt.Sprintf("acp prompt: %v", err), "user_caused_error")
 		_ = sink.Done()
@@ -872,7 +924,10 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		userID:     userID,
 		cwd:        cwd,
 		lastUsedNs: r.cfg.Now().UnixNano(),
+		chunkCh:    make(chan chunkMsg, 256),
+		drainStop:  make(chan struct{}),
 	}
+	go st.drainChunks()
 
 	// Tier 1: try resume if the agent supports list+resume.
 	caps := r.cfg.Agent.Caps()
@@ -937,7 +992,9 @@ func (r *Router) install(convID string, st *sessionState) (*sessionState, bool) 
 	defer r.mu.Unlock()
 	if existing, ok := r.sessions[convID]; ok {
 		// Lost the race; the session we just created/resumed leaks on the
-		// agent side but that is cheap and rare.
+		// agent side but that is cheap and rare. Stop the loser's drain
+		// goroutine so it doesn't run for the session's lifetime unchecked.
+		close(st.drainStop)
 		return existing, false
 	}
 	r.sessions[convID] = st
@@ -978,6 +1035,7 @@ func (r *Router) gcOnce() {
 	defer r.mu.Unlock()
 	for id, st := range r.sessions {
 		if st.inUse == 0 && st.lastUsedNs < cutoff {
+			close(st.drainStop) // stop the session-lifetime drain goroutine
 			delete(r.sessions, id)
 		}
 	}

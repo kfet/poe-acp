@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-05
+
+### Fixed
+
+- **Scrambled / missing response text** — the ACP SDK dispatches each
+  `session/update` notification in its own goroutine (`go c.handleInbound`).
+  With the old per-turn channel design, concurrent goroutines raced to call
+  `sink.Text()`, which caused chunks to arrive at the SSE stream out of order;
+  worse, when the first goroutine's `FirstChunk() → Replace("")` fired *after*
+  a later goroutine's `Text()`, the Replace silently erased already-rendered
+  content.
+
+  The fix replaces the per-turn channel + `sync.Mutex` + `sync.WaitGroup` with
+  a **session-lifetime channel** and a **single drain goroutine** per session.
+  `OnUpdate` is now a lock-free two-line channel send; all per-turn state
+  (`first`, `chunkMode`, `hideThinking`) lives as local variables in
+  `drainChunks` and is only ever touched by that one goroutine — no
+  synchronisation required. Begin- and end-of-turn control messages
+  (`beginTurn` / `endTurn`) flow on the same FIFO channel so ordering is
+  guaranteed by the channel itself. The drain goroutine is stopped via
+  `drainStop` when the session is GC'd.
+
 ## [0.10.0] - 2026-05-04
 
 ### Changed
