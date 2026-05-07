@@ -97,22 +97,12 @@ run-tests: tidy
 	@mkdir -p $(BINDIR)
 	@tmpfile=$$(mktemp); \
 	trap 'rm -f $$tmpfile' EXIT; \
-	go test -cover $(TEST_FLAGS) ./... -coverprofile=$(BINDIR)/coverage.tmp.out > $$tmpfile 2>&1; \
-	if [ $$? -ne 0 ]; then cat $$tmpfile; exit 1; fi
-	@tmpign=$$(mktemp); \
-	trap 'rm -f $$tmpign' EXIT; \
-	grep -vE '^(#|$$)' .covignore > $$tmpign 2>/dev/null || true; \
-	if [ -s $$tmpign ]; then \
-		grep -v -E -f $$tmpign $(BINDIR)/coverage.tmp.out > $(BINDIR)/coverage.out; \
-	else \
-		cp $(BINDIR)/coverage.tmp.out $(BINDIR)/coverage.out; \
+	if ! go test -cover $(TEST_FLAGS) ./... -coverprofile=$(BINDIR)/coverage.tmp.out > $$tmpfile 2>&1; then \
+		cat $$tmpfile; exit 1; \
 	fi
-	@if go tool cover -func=$(BINDIR)/coverage.out | tail -1 | grep -qv '100.0%'; then \
-		echo "ERROR: coverage is not 100% — see $(BINDIR)/coverage.out (make open-coverage)"; \
-		go tool cover -func=$(BINDIR)/coverage.out | grep -v '100.0%' | grep -v '^total:' || true; \
-		exit 1; \
-	fi
-	@echo "✓ coverage 100%"
+	@go run github.com/kfet/covgate/cmd/covgate@v0.1.0 \
+		-profile=$(BINDIR)/coverage.tmp.out -out=$(BINDIR)/coverage.out \
+		-ignore=.covignore -min=100
 
 test-cover: tidy
 	@mkdir -p $(BINDIR)
