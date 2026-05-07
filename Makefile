@@ -1,15 +1,12 @@
-.PHONY: build build-all install test test-cover test-race vet fmt clean tidy check-licenses notices _all_parallel $(CROSS_TARGETS)
+.DEFAULT_GOAL := all
 
-# Output directory for all build artifacts
-BINDIR    := bin
-BINARY    := $(BINDIR)/poe-acp
+BINDIR      := bin
+BINARY      := $(BINDIR)/poe-acp
 NOTICE_FILE := THIRD_PARTY_NOTICES.md
+GOBIN       := $(shell go env GOPATH)/bin
+VERSION     := $(shell cat VERSION 2>/dev/null || echo dev)
 
-# Go binary install path
-GOBIN     := $(shell go env GOPATH)/bin
-VERSION   := $(shell cat VERSION 2>/dev/null || echo dev)
-
-# Compute version metadata
+# Append -dev+<sha>[.dirty] unless HEAD is the exact release tag.
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
 GIT_TAG    := $(shell git describe --exact-match --tags HEAD 2>/dev/null)
 GIT_DIRTY  := $(shell git diff --quiet 2>/dev/null || echo .dirty)
@@ -19,12 +16,17 @@ ifneq ($(GIT_TAG),v$(VERSION))
   endif
 endif
 
-LDFLAGS   := -s -w -X main.version=$(VERSION)
+LDFLAGS := -s -w -X main.version=$(VERSION)
+
+GO_LICENSES := go run github.com/google/go-licenses@v1.6.0
+COVGATE     := go run github.com/kfet/covgate/cmd/covgate@v0.1.0
+
+# Cross-compile matrix. Element format: <goos>-<goarch>[-<goarm>].
+CROSS      := darwin-arm64 darwin-amd64 linux-amd64 linux-arm64 linux-armv6
+CROSS_BINS := $(addprefix $(BINARY)-,$(CROSS))
 
 # ---------------------------------------------------------------------------
-# Quiet build helpers — print a short step name, show output only on failure.
-# Usage: $(call RUN,label,command)
-# Set V=1 for verbose output: make all V=1
+# Quiet step helper: $(call RUN,label,command). V=1 for verbose output.
 # ---------------------------------------------------------------------------
 ifdef V
   define RUN
@@ -39,100 +41,84 @@ else
   endef
 endif
 
-build: tidy
-	@mkdir -p $(BINDIR)
-	$(call RUN,build (native),go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/poe-acp/)
+.PHONY: all _parallel build build-all install fmt tidy vet \
+        test test-race test-cover open-coverage \
+        clean notices check-licenses publish deploy
 
-# `make all` runs fmt first, then everything else in parallel via recursive make -j.
-# TIDY_DONE=1 tells sub-targets to skip redundant go-mod-tidy (already ran here).
+# ---------------------------------------------------------------------------
+# Top-level: bare `make` runs the full CI pipeline.
+# fmt + tidy run serially (they mutate files); the rest run in parallel
+# via a recursive sub-make so internal -j works without the caller
+# passing -j on the command line.
+# ---------------------------------------------------------------------------
 all: fmt tidy
-	@$(MAKE) -j --no-print-directory _all_parallel TIDY_DONE=1
+	@$(MAKE) -j --no-print-directory _parallel
 
-_all_parallel: vet test-race build-all check-licenses
+_parallel: vet test-race build build-all check-licenses
 
 fmt:
 	@gofmt -s -w .
 
-install:
-	go install -ldflags="$(LDFLAGS)" ./cmd/poe-acp/
-
-# Ensure modules are tidy once; other targets depend on this.
-# Skipped when TIDY_DONE=1 (set by `make all` after running tidy upfront).
 tidy:
-ifndef TIDY_DONE
 	@go mod tidy
-endif
-
-# Cross-compile for all targets (each is an independent phony target for parallelism).
-# Matches fir's target matrix: darwin/{arm64,amd64}, linux/{armv6,arm64,amd64}.
-CROSS_TARGETS := build-darwin-arm64 build-darwin-amd64 build-linux-armv6 build-linux-arm64 build-linux-amd64
-
-build-all: $(CROSS_TARGETS) build
-
-build-darwin-arm64: | $(BINDIR)
-	$(call RUN,build darwin/arm64,GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-darwin-arm64 ./cmd/poe-acp/)
-
-build-darwin-amd64: | $(BINDIR)
-	$(call RUN,build darwin/amd64,GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-darwin-amd64 ./cmd/poe-acp/)
-
-build-linux-armv6: | $(BINDIR)
-	$(call RUN,build linux/armv6,GOOS=linux GOARCH=arm GOARM=6 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-armv6 ./cmd/poe-acp/)
-
-build-linux-arm64: | $(BINDIR)
-	$(call RUN,build linux/arm64,GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-arm64 ./cmd/poe-acp/)
-
-build-linux-amd64: | $(BINDIR)
-	$(call RUN,build linux/amd64,GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-amd64 ./cmd/poe-acp/)
-
-$(BINDIR):
-	@mkdir -p $(BINDIR)
-
-test: tidy
-	go test ./...
-
-# run-tests runs the unit tests with a 100% coverage gate (paths in .covignore
-# excluded). Usage: make run-tests TEST_FLAGS="-race -shuffle=on"
-.PHONY: run-tests
-run-tests: tidy
-	@mkdir -p $(BINDIR)
-	@tmpfile=$$(mktemp); \
-	trap 'rm -f $$tmpfile' EXIT; \
-	if ! go test -cover $(TEST_FLAGS) ./... -coverprofile=$(BINDIR)/coverage.tmp.out > $$tmpfile 2>&1; then \
-		cat $$tmpfile; exit 1; \
-	fi
-	@go run github.com/kfet/covgate/cmd/covgate@v0.1.0 \
-		-profile=$(BINDIR)/coverage.tmp.out -out=$(BINDIR)/coverage.out \
-		-ignore=.covignore -min=100
-
-test-cover: tidy
-	@mkdir -p $(BINDIR)
-	go test -coverprofile=$(BINDIR)/coverage.out ./...
-	go tool cover -func=$(BINDIR)/coverage.out
-
-.PHONY: open-coverage
-open-coverage:
-	go tool cover -html=$(BINDIR)/coverage.out
-
-test-race: tidy
-	$(call RUN,test (race),$(MAKE) --no-print-directory run-tests TEST_FLAGS="-race -shuffle=on")
 
 vet:
 	$(call RUN,vet,go vet ./...)
 
+$(BINDIR):
+	@mkdir -p $@
+
+# ---------------------------------------------------------------------------
+# Builds
+# ---------------------------------------------------------------------------
+
+build: | $(BINDIR)
+	$(call RUN,build (native),go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/poe-acp/)
+
+build-all: $(CROSS_BINS)
+
+# Pattern rule for cross-compiled binaries: bin/poe-acp-<os>-<arch>.
+# armv6 is special-cased to GOARCH=arm GOARM=6.
+define cross_build
+	$(call RUN,build $(1)/$(2),GOOS=$(1) GOARCH=$(if $(filter armv6,$(2)),arm,$(2)) $(if $(filter armv6,$(2)),GOARM=6) go build -trimpath -ldflags="$(LDFLAGS)" -o $@ ./cmd/poe-acp/)
+endef
+
+$(BINARY)-%: | $(BINDIR)
+	$(call cross_build,$(word 1,$(subst -, ,$*)),$(word 2,$(subst -, ,$*)))
+
+install:
+	go install -ldflags="$(LDFLAGS)" ./cmd/poe-acp/
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+# Plain quick run.
+test:
+	go test ./...
+
+# Full run: race + shuffle + 100% coverage gate (paths in .covignore excluded).
+# This is what `make all` exercises.
+test-race: | $(BINDIR)
+	$(call RUN,test (race),\
+		go test -race -shuffle=on -cover ./... -coverprofile=$(BINDIR)/coverage.tmp.out \
+		&& $(COVGATE) -profile=$(BINDIR)/coverage.tmp.out -out=$(BINDIR)/coverage.out -ignore=.covignore -min=100)
+
+# Human-friendly per-function coverage summary (no gate).
+test-cover: | $(BINDIR)
+	go test -coverprofile=$(BINDIR)/coverage.out ./...
+	go tool cover -func=$(BINDIR)/coverage.out
+
+open-coverage:
+	go tool cover -html=$(BINDIR)/coverage.out
+
 clean:
-	rm -rf $(BINDIR)
-	rm -rf dist
+	rm -rf $(BINDIR) dist
 	rm -f $(NOTICE_FILE)
 
 # ---------------------------------------------------------------------------
 # Third-party license notices
-#
-# `make notices` generates THIRD_PARTY_NOTICES.md from go.mod / go.sum via
-# go-licenses. `make check-licenses` fails the build if any dependency is
-# under a disallowed license.
 # ---------------------------------------------------------------------------
-
-GO_LICENSES := go run github.com/google/go-licenses@v1.6.0
 
 notices: $(NOTICE_FILE)
 
@@ -143,7 +129,7 @@ check-licenses:
 	$(call RUN,check licenses,$(GO_LICENSES) check ./cmd/poe-acp --disallowed_types=forbidden,restricted 2>/dev/null)
 
 # ---------------------------------------------------------------------------
-# Release publishing & remote deployment
+# Release / deploy
 # ---------------------------------------------------------------------------
 
 RELEASE_TAG := v$(shell cat VERSION 2>/dev/null || echo 0.0.0)
@@ -156,8 +142,7 @@ publish: build notices
 	git push origin main $(RELEASE_TAG)
 	@echo "Pushed $(RELEASE_TAG)."
 
-# Deploy to a remote host via scp (auto-detects OS and arch)
-# Usage: make deploy HOST=myhost
+# Cross-build, detect remote OS/arch via ssh, scp the matching binary.
 deploy: build-all
 	@if [ -z "$(HOST)" ]; then echo "Usage: make deploy HOST=<hostname>"; exit 1; fi
 	@INFO=$$(ssh -o ConnectTimeout=5 $(HOST) "uname -s -m") || { echo "Cannot reach $(HOST)"; exit 1; }; \
@@ -165,8 +150,7 @@ deploy: build-all
 	ARCH=$$(echo "$$INFO" | awk '{print $$2}'); \
 	case "$$OS-$$ARCH" in \
 		Linux-aarch64|Linux-arm64)   BIN=$(BINARY)-linux-arm64 ;; \
-		Linux-armv6l)                BIN=$(BINARY)-linux-armv6 ;; \
-		Linux-armv7l)                BIN=$(BINARY)-linux-armv6 ;; \
+		Linux-armv6l|Linux-armv7l)   BIN=$(BINARY)-linux-armv6 ;; \
 		Linux-x86_64)                BIN=$(BINARY)-linux-amd64 ;; \
 		Darwin-arm64)                BIN=$(BINARY)-darwin-arm64 ;; \
 		Darwin-x86_64)               BIN=$(BINARY)-darwin-amd64 ;; \
