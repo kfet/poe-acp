@@ -36,11 +36,7 @@ var httpClient = http.DefaultClient
 // used by tests against an httptest.Server.
 func maybeRefetchSettings(ctx context.Context, stateDir, botName, accessKey string, controls *poeproto.ParameterControls, endpointBase string) {
 	hashFile := filepath.Join(stateDir, "last_schema_hash")
-	h, err := schemaHash(controls)
-	if err != nil {
-		log.Printf("settings refetch: hash schema: %v", err)
-		return
-	}
+	h := schemaHash(controls)
 	prev, _ := os.ReadFile(hashFile)
 	if string(prev) == h {
 		log.Printf("settings refetch: schema unchanged (hash=%s), skipping", h[:12])
@@ -90,16 +86,12 @@ func maybeRefetchSettings(ctx context.Context, stateDir, botName, accessKey stri
 // controls JSON. JSON marshal output of struct types is deterministic
 // (field order fixed), and we don't reorder option lists, so equal
 // schemas produce equal hashes.
-func schemaHash(pc *poeproto.ParameterControls) (string, error) {
+func schemaHash(pc *poeproto.ParameterControls) string {
 	if pc == nil {
-		return "nil", nil
+		return "nil"
 	}
-	b, err := json.Marshal(pc)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), nil
+	sum := sha256.Sum256(mustMarshalJSON(pc))
+	return hex.EncodeToString(sum[:])
 }
 
 // truncate shortens s to at most n runes, appending an ellipsis when
@@ -153,6 +145,12 @@ func appendEnv(env []string, kv string) []string {
 	return append(out, kv)
 }
 
+// loadBuiltinSkills / loadDirSkills are overridable for tests.
+var (
+	loadBuiltinSkills = skills.LoadBuiltin
+	loadDirSkills     = skills.LoadDir
+)
+
 // buildSkillsCatalog merges embedded built-in skills with optional
 // host-supplied skills from <dirname(cfgPath)>/skills/ and returns a
 // fir-style <available_skills> block ready for injection. Best-effort:
@@ -160,12 +158,12 @@ func appendEnv(env []string, kv string) []string {
 // is still usable without a catalog). Host skills with the same name
 // as a built-in override the built-in (the disable mechanism).
 func buildSkillsCatalog(cfgPath string) string {
-	builtin, err := skills.LoadBuiltin()
+	builtin, err := loadBuiltinSkills()
 	if err != nil {
 		log.Printf("skills: builtin load failed (continuing): %v", err)
 	}
 	hostDir := filepath.Join(filepath.Dir(cfgPath), "skills")
-	host, err := skills.LoadDir(hostDir)
+	host, err := loadDirSkills(hostDir)
 	if err != nil {
 		log.Printf("skills: host dir %s: %v (continuing)", hostDir, err)
 	}

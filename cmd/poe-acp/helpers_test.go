@@ -11,18 +11,16 @@ import (
 	"testing"
 
 	"github.com/kfet/poe-acp/internal/poeproto"
+	"github.com/kfet/poe-acp/internal/skills"
 )
 
 func TestSchemaHash(t *testing.T) {
-	if got, _ := schemaHash(nil); got != "nil" {
+	if got := schemaHash(nil); got != "nil" {
 		t.Fatalf("nil: %q", got)
 	}
 	pc := &poeproto.ParameterControls{APIVersion: "2"}
-	a, err := schemaHash(pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, _ := schemaHash(pc)
+	a := schemaHash(pc)
+	b := schemaHash(pc)
 	if a != b || len(a) != 64 {
 		t.Fatalf("hash unstable: %q vs %q", a, b)
 	}
@@ -223,4 +221,17 @@ func swap[T any](dst *T, v T) func() {
 	old := *dst
 	*dst = v
 	return func() { *dst = old }
+}
+
+func TestBuildSkillsCatalog_LoaderErrors(t *testing.T) {
+	defer swap(&loadBuiltinSkills, func() ([]skills.Skill, error) {
+		return nil, errors.New("builtin-fail")
+	})()
+	defer swap(&loadDirSkills, func(string) ([]skills.Skill, error) {
+		return nil, errors.New("host-fail")
+	})()
+	// Both loaders fail → merged is empty → returns "".
+	if got := buildSkillsCatalog(filepath.Join(t.TempDir(), "config.json")); got != "" {
+		t.Fatalf("expected empty catalog on loader failure, got %q", got)
+	}
 }
