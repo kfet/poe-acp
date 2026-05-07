@@ -158,7 +158,19 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start agent: %w", err)
 	}
+	a, err := connect(ctx, cfg, cmd, stdin, stdout)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		return nil, err
+	}
+	return a, nil
+}
 
+// connect performs the post-spawn ACP handshake and returns a wired
+// AgentProc. Exported (lower-case) only for tests that need to drive
+// the handshake against an in-process fake agent over io.Pipe pairs;
+// real callers go through Start.
+func connect(ctx context.Context, cfg Config, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader) (*AgentProc, error) {
 	a := &AgentProc{
 		cfg:   cfg,
 		cmd:   cmd,
@@ -173,12 +185,6 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 		ClientCapabilities: acp.ClientCapabilities{
 			Fs:       acp.FileSystemCapability{ReadTextFile: true, WriteTextFile: true},
 			Terminal: false,
-			// Advertise the system-prompt extension (RFD:
-			// acp-spec/rfd-system-prompt.md). Agents that recognise
-			// it MAY echo the same key in agentCapabilities._meta;
-			// if they do, the relay will inject its skill catalog
-			// via session/new._meta instead of inlining on first
-			// prompt.
 			Meta: map[string]any{
 				"session.systemPrompt": map[string]any{"version": 1},
 			},
@@ -186,7 +192,6 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 	}
 	raw, err := acp.SendRequest[json.RawMessage](a.conn, ctx, acp.AgentMethodInitialize, initParams)
 	if err != nil {
-		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("acp initialize: %w", err)
 	}
 	a.caps = parseCaps(raw)

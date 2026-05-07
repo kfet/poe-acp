@@ -109,12 +109,12 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 	if t == "/login" || t == "/logins" {
 		return b.list(), nil
 	}
+	// At this point t starts with "/login " (IsLoginCommand verified that
+	// or one of the early-returned forms). After TrimSpace at the top,
+	// "/login " with no provider would have collapsed to "/login" and hit
+	// the listing branch above, so rest is non-empty here.
 	rest := strings.TrimSpace(strings.TrimPrefix(t, "/login"))
-	provider := strings.TrimSpace(rest)
-	if provider == "" {
-		return b.list(), nil
-	}
-	return b.start(ctx, convID, provider)
+	return b.start(ctx, convID, rest)
 }
 
 // list renders the available login methods.

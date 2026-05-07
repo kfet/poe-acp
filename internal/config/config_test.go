@@ -9,6 +9,22 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+func TestLoad_OpenError(t *testing.T) {
+	t.Parallel()
+	// Use a path under a non-directory: triggers ENOTDIR (non NotExist).
+	p := writeFile(t, `{}`)
+	_, _, err := Load(filepath.Join(p, "child.json"))
+	if err == nil || strings.Contains(err.Error(), "no such") {
+		t.Fatalf("expected open error, got %v", err)
+	}
+}
+
+func TestBoolPtr(t *testing.T) {
+	if v := boolPtr(true); v == nil || !*v {
+		t.Fatal("boolPtr broken")
+	}
+}
+
 func writeFile(t *testing.T, content string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "config.json")

@@ -38,7 +38,15 @@ type Config struct {
 	// AuthBroker, if set, intercepts /login commands and pasted redirect
 	// URLs from in-flight logins before they reach the router. Optional;
 	// nil disables interactive auth.
-	AuthBroker *authbroker.Broker
+	AuthBroker AuthBroker
+}
+
+// AuthBroker is the surface httpsrv depends on; *authbroker.Broker
+// implements it. Extracted so tests can inject brokers that return
+// odd combinations the real broker can't produce.
+type AuthBroker interface {
+	HasPending(convID string) bool
+	Handle(ctx context.Context, convID, text string) (*authbroker.Outcome, error)
 }
 
 // Handler serves the /poe endpoint.

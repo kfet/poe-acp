@@ -90,13 +90,41 @@ $(BINDIR):
 test: tidy
 	go test ./...
 
+# run-tests runs the unit tests with a 100% coverage gate (paths in .covignore
+# excluded). Usage: make run-tests TEST_FLAGS="-race -shuffle=on"
+.PHONY: run-tests
+run-tests: tidy
+	@mkdir -p $(BINDIR)
+	@tmpfile=$$(mktemp); \
+	trap 'rm -f $$tmpfile' EXIT; \
+	go test -cover $(TEST_FLAGS) ./... -coverprofile=$(BINDIR)/coverage.tmp.out > $$tmpfile 2>&1; \
+	if [ $$? -ne 0 ]; then cat $$tmpfile; exit 1; fi
+	@tmpign=$$(mktemp); \
+	trap 'rm -f $$tmpign' EXIT; \
+	grep -vE '^(#|$$)' .covignore > $$tmpign 2>/dev/null || true; \
+	if [ -s $$tmpign ]; then \
+		grep -v -E -f $$tmpign $(BINDIR)/coverage.tmp.out > $(BINDIR)/coverage.out; \
+	else \
+		cp $(BINDIR)/coverage.tmp.out $(BINDIR)/coverage.out; \
+	fi
+	@if go tool cover -func=$(BINDIR)/coverage.out | tail -1 | grep -qv '100.0%'; then \
+		echo "ERROR: coverage is not 100% — see $(BINDIR)/coverage.out (make open-coverage)"; \
+		go tool cover -func=$(BINDIR)/coverage.out | grep -v '100.0%' | grep -v '^total:' || true; \
+		exit 1; \
+	fi
+	@echo "✓ coverage 100%"
+
 test-cover: tidy
 	@mkdir -p $(BINDIR)
 	go test -coverprofile=$(BINDIR)/coverage.out ./...
 	go tool cover -func=$(BINDIR)/coverage.out
 
+.PHONY: open-coverage
+open-coverage:
+	go tool cover -html=$(BINDIR)/coverage.out
+
 test-race: tidy
-	$(call RUN,test (race),go test -race ./...)
+	$(call RUN,test (race),$(MAKE) --no-print-directory run-tests TEST_FLAGS="-race -shuffle=on")
 
 vet:
 	$(call RUN,vet,go vet ./...)

@@ -40,9 +40,16 @@ type fakeAgent struct {
 	listResult       []acpclient.SessionInfo
 	listErr          error
 	resumeErr        error
+	newSessErr       error
+	cancelErr        error
+	setModelErr      error
+	setConfigErr     error
 	listCalls        int32
 	resumeCalls      int32
 	newSessCalls     int32
+	cancelCalls      int32
+	setModelCalls    int32
+	setConfigCalls   int32
 	lastPromptTxt    string
 	lastPromptBlocks []acp.ContentBlock
 	lastSysBlocks    []acp.ContentBlock
@@ -72,6 +79,9 @@ func (f *fakeAgent) ResumeSession(_ context.Context, _ string, sid acp.SessionId
 }
 func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
 	atomic.AddInt32(&f.newSessCalls, 1)
+	if f.newSessErr != nil {
+		return "", f.newSessErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
@@ -94,12 +104,17 @@ func (f *fakeAgent) Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.
 	return f.onPrompt(ctx, f, sid, text)
 }
 
-func (f *fakeAgent) Cancel(_ context.Context, _ acp.SessionId) error { return nil }
+func (f *fakeAgent) Cancel(_ context.Context, _ acp.SessionId) error {
+	atomic.AddInt32(&f.cancelCalls, 1)
+	return f.cancelErr
+}
 func (f *fakeAgent) SetModel(_ context.Context, _ acp.SessionId, _ string) error {
-	return nil
+	atomic.AddInt32(&f.setModelCalls, 1)
+	return f.setModelErr
 }
 func (f *fakeAgent) SetConfigOption(_ context.Context, _ acp.SessionId, _, _ string) error {
-	return nil
+	atomic.AddInt32(&f.setConfigCalls, 1)
+	return f.setConfigErr
 }
 
 func (f *fakeAgent) emit(sid acp.SessionId, chunk string) {
