@@ -929,6 +929,87 @@ type errInfoEntry struct{ os.DirEntry }
 
 func (errInfoEntry) Info() (os.FileInfo, error) { return nil, errors.New("info-fail") }
 
+func TestRouter_Install_LostRace(t *testing.T) {
+	// Deterministic coverage for the lost-race branch in
+	// (*Router).install: pre-populate r.sessions with an entry under
+	// some convID, then call install with a freshly-built loser st;
+	// install must return the existing entry + false and close the
+	// loser's drainStop channel.
+	a := newFakeAgent(func(context.Context, *fakeAgent, acp.SessionId, string) (acp.StopReason, error) {
+		return acp.StopReasonEndTurn, nil
+	})
+	r, _ := New(Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+
+	winner := &sessionState{drainStop: make(chan struct{})}
+	r.sessions["c1"] = winner
+
+	loser := &sessionState{drainStop: make(chan struct{})}
+	got, won := r.install("c1", loser)
+	if won {
+		t.Fatalf("install: want won=false on collision")
+	}
+	if got != winner {
+		t.Fatalf("install: want existing winner returned")
+	}
+	select {
+	case <-loser.drainStop:
+	default:
+		t.Fatalf("install: loser.drainStop not closed")
+	}
+}
+
+// raceInjectingAgent wraps a fakeAgent and, on NewSession, writes a
+// pre-built winner sessionState into the router's session map before
+// returning. This forces the subsequent install() call inside
+// getOrCreate to lose deterministically — exercising the !won branch
+// (freshSeed=false) without relying on goroutine scheduling.
+type raceInjectingAgent struct {
+	*fakeAgent
+	r      *Router
+	convID string
+}
+
+func (a *raceInjectingAgent) NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
+	sid, err := a.fakeAgent.NewSession(ctx, cwd, sink, sysBlocks)
+	if err != nil {
+		return sid, err
+	}
+	a.r.mu.Lock()
+	a.r.sessions[a.convID] = &sessionState{
+		sessionID: "winner",
+		drainStop: make(chan struct{}),
+	}
+	a.r.mu.Unlock()
+	return sid, nil
+}
+
+func TestRouter_GetOrCreate_LostRaceFreshSeedFalse(t *testing.T) {
+	// Drives the !won branch in getOrCreate: install loses, so
+	// freshSeed must be reset to false even though the inbound query
+	// has prior turns.
+	fa := newFakeAgent(func(context.Context, *fakeAgent, acp.SessionId, string) (acp.StopReason, error) {
+		return acp.StopReasonEndTurn, nil
+	})
+	r, _ := New(Config{Agent: fa, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	r.cfg.Agent = &raceInjectingAgent{fakeAgent: fa, r: r, convID: "c1"}
+
+	query := []Turn{
+		{Role: "user", Content: "first"},
+		{Role: "bot", Content: "reply"},
+		{Role: "user", Content: "second"},
+	}
+	st, freshSeed, err := r.getOrCreate(context.Background(), "c1", "u", query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshSeed {
+		t.Fatalf("freshSeed must be false after losing install race")
+	}
+	if string(st.sessionID) != "winner" {
+		t.Fatalf("want winner returned, got sid=%q", st.sessionID)
+	}
+}
+
 func TestSweepAttachments_RemoveError(t *testing.T) {
 	defer swap(&osRemove, func(string) error { return errors.New("remove-fail") })()
 	prev := debuglog.Enabled()
