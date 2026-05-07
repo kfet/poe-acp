@@ -39,6 +39,7 @@ type fakeAgent struct {
 	authErr      *acp.RequestError
 	updates      []acp.SessionNotification // emitted before responding to prompt
 	cancelled    atomic.Bool
+	cancelCh     chan struct{} // closed on first session/cancel; nil-safe
 
 	// Capture for assertions.
 	mu             sync.Mutex
@@ -78,7 +79,9 @@ func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMe
 		}
 		return acp.PromptResponse{StopReason: stop}, nil
 	case "session/cancel":
-		f.cancelled.Store(true)
+		if f.cancelled.CompareAndSwap(false, true) && f.cancelCh != nil {
+			close(f.cancelCh)
+		}
 		return nil, nil
 	case acp.AgentMethodSessionSetModel:
 		var p acp.SetSessionModelRequest
@@ -154,12 +157,17 @@ func (stubPolicy) Decide(_ context.Context, _ acp.RequestPermissionRequest) acp.
 type capturingSink struct {
 	mu      sync.Mutex
 	updates []acp.SessionNotification
+	gotCh   chan struct{} // closed on first OnUpdate; nil-safe
 }
 
 func (c *capturingSink) OnUpdate(_ context.Context, n acp.SessionNotification) error {
 	c.mu.Lock()
+	first := len(c.updates) == 0
 	c.updates = append(c.updates, n)
 	c.mu.Unlock()
+	if first && c.gotCh != nil {
+		close(c.gotCh)
+	}
 	return nil
 }
 
@@ -289,6 +297,7 @@ func TestAgentProc_FullFlow(t *testing.T) {
 			}},
 		},
 		listResp: json.RawMessage(`{"sessions":[{"sessionId":"prior-1","cwd":"/x"}]}`),
+		cancelCh: make(chan struct{}),
 	}
 	cfg := Config{Command: []string{"/bin/true"}, Policy: stubPolicy{}, Cwd: t.TempDir()}
 	a := startFakeAgent(t, fa, cfg)
@@ -301,7 +310,7 @@ func TestAgentProc_FullFlow(t *testing.T) {
 		t.Fatalf("AuthMethods: %+v", ms)
 	}
 
-	sink := &capturingSink{}
+	sink := &capturingSink{gotCh: make(chan struct{})}
 	sid, err := a.NewSession(context.Background(), "/cwd", sink, []acp.ContentBlock{acp.TextBlock("system")})
 	if err != nil {
 		t.Fatal(err)
@@ -331,8 +340,12 @@ func TestAgentProc_FullFlow(t *testing.T) {
 	if stop != acp.StopReasonEndTurn {
 		t.Fatalf("stop=%v", stop)
 	}
-	// Wait briefly for update to be dispatched.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for update to be dispatched.
+	select {
+	case <-sink.gotCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no updates")
+	}
 	sink.mu.Lock()
 	got := len(sink.updates)
 	sink.mu.Unlock()
@@ -344,8 +357,9 @@ func TestAgentProc_FullFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Wait for cancel notification.
-	time.Sleep(50 * time.Millisecond)
-	if !fa.cancelled.Load() {
+	select {
+	case <-fa.cancelCh:
+	case <-time.After(3 * time.Second):
 		t.Fatal("cancel not received")
 	}
 

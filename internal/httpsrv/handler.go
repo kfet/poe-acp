@@ -227,6 +227,11 @@ func newSink(w *poeproto.SSEWriter, hb time.Duration, hideThinking bool) *sink {
 	return s
 }
 
+// heartbeatTickHook, when non-nil, is invoked after each heartbeat tick
+// completes. Test-only seam so spinner tests can wait on real ticks
+// instead of wall-clock sleeps. nil in production.
+var heartbeatTickHook func()
+
 func (s *sink) heartbeat(every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -235,6 +240,9 @@ func (s *sink) heartbeat(every time.Duration) {
 		case <-s.hbDone:
 			return
 		case <-t.C:
+			if heartbeatTickHook != nil {
+				heartbeatTickHook()
+			}
 			s.mu.Lock()
 			if s.started || s.stopped.Load() {
 				s.mu.Unlock()
