@@ -11,7 +11,7 @@
 
 ### Changed
 
-- `Makefile`: simplified — bare `make` now runs the full `all` pipeline (was a build-only default); 5 cross-build rules collapsed into one pattern rule; `run-tests` helper inlined into `test-race-cover` (renamed from `test-race` to make the coverage gate explicit); `TIDY_DONE` cross-target hack removed (tidy runs once in `all`, standalone elsewhere).
+- `Makefile`: simplified — bare `make` now runs the full `all` pipeline (was a build-only default); 5 cross-build rules collapsed into one pattern rule with a `FORCE` prereq so every `make` re-runs all checks; `run-tests` helper inlined into `test-race-cover` (renamed from `test-race` to make the coverage gate explicit); `TIDY_DONE` cross-target hack removed (tidy runs once in `all`, standalone elsewhere).
 - `.covignore`: migrated from line-number / per-function entries to two file-level patterns (`cmd/<binary>/main.go` and `**/unreachable.go`). Defensive paths previously listed by line number are now either tested directly or isolated in per-package `unreachable.go` helpers that panic instead of returning impossible errors. Coverage gate still enforces 100%.
 - `cmd/poe-acp`: `main.go` split into `main.go` (entry-point shim) + `helpers.go` (testable helpers).
 - `internal/httpsrv`: `Config.AuthBroker` is now an interface (`AuthBroker`) instead of `*authbroker.Broker` so tests can inject brokers.
