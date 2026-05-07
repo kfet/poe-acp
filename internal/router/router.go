@@ -572,6 +572,23 @@ const (
 // attachmentDirName is the per-conv subdir holding downloaded files.
 const attachmentDirName = ".poe-attachments"
 
+// attachmentIO collects the OS/IO operations that downloadAttachment and
+// related helpers depend on. Overridable in tests so defensive error
+// branches (read-after-write fails, root-open fails, copy errors) can
+// be exercised deterministically without contriving disk-level races.
+var (
+	osReadFile      = os.ReadFile
+	osMkdirAllAtt   = os.MkdirAll
+	osOpenRoot      = os.OpenRoot
+	ioCopy          = io.Copy
+	osReadDirRouter = os.ReadDir
+	osRemove        = os.Remove
+
+	// openMessageDirFn lets tests force openMessageDir to fail without
+	// constructing a hostile FS layout.
+	openMessageDirFn = openMessageDir
+)
+
 var imageInlineAllowedMimeTypes = map[string]bool{
 	"image/jpeg": true,
 	"image/png":  true,
@@ -631,7 +648,7 @@ func (r *Router) attachmentBlocks(
 	out := []acp.ContentBlock{link}
 
 	if imageInlineAllowedMimeTypes[a.ContentType] && size <= r.maxInlineImageBytes() {
-		data, rerr := os.ReadFile(absPath)
+		data, rerr := osReadFile(absPath)
 		if rerr != nil {
 			debuglog.Logf("attachmentBlocks: inline read failed path=%s err=%v; link-only", absPath, rerr)
 		} else {
@@ -667,7 +684,7 @@ func (r *Router) downloadAttachment(
 	used map[string]struct{},
 	a Attachment,
 ) (absPath, name string, size int64, err error) {
-	root, err := openMessageDir(cwd, msgID)
+	root, err := openMessageDirFn(cwd, msgID)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("open message dir: %w", err)
 	}
@@ -707,7 +724,7 @@ func (r *Router) downloadAttachment(
 	}
 	used[finalName] = struct{}{}
 	// LimitReader+1 so we can detect overflow.
-	n, cerr := io.Copy(f, io.LimitReader(resp.Body, max+1))
+	n, cerr := ioCopy(f, io.LimitReader(resp.Body, max+1))
 	closeErr := f.Close()
 	if cerr != nil {
 		_ = root.Remove(finalName)
@@ -729,10 +746,10 @@ func (r *Router) downloadAttachment(
 // as an os.Root. The caller must Close() the returned Root.
 func openMessageDir(cwd, msgID string) (*os.Root, error) {
 	attBase := filepath.Join(cwd, attachmentDirName)
-	if err := os.MkdirAll(attBase, 0o755); err != nil {
+	if err := osMkdirAllAtt(attBase, 0o755); err != nil {
 		return nil, err
 	}
-	parent, err := os.OpenRoot(attBase)
+	parent, err := osOpenRoot(attBase)
 	if err != nil {
 		return nil, err
 	}
@@ -1054,7 +1071,7 @@ func (r *Router) sweepAttachmentsOnce() {
 	}
 	cutoff := r.cfg.Now().Add(-ttl)
 	convsRoot := filepath.Join(r.cfg.StateDir, "convs")
-	convDirs, err := os.ReadDir(convsRoot)
+	convDirs, err := osReadDirRouter(convsRoot)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			debuglog.Logf("sweepAttachmentsOnce: read %s: %v", convsRoot, err)
@@ -1067,7 +1084,7 @@ func (r *Router) sweepAttachmentsOnce() {
 			continue
 		}
 		attRoot := filepath.Join(convsRoot, cd.Name(), attachmentDirName)
-		msgDirs, err := os.ReadDir(attRoot)
+		msgDirs, err := osReadDirRouter(attRoot)
 		if err != nil {
 			continue // no attachments for this conv
 		}
@@ -1076,7 +1093,7 @@ func (r *Router) sweepAttachmentsOnce() {
 				continue
 			}
 			msgPath := filepath.Join(attRoot, md.Name())
-			files, err := os.ReadDir(msgPath)
+			files, err := osReadDirRouter(msgPath)
 			if err != nil {
 				continue
 			}
@@ -1089,7 +1106,7 @@ func (r *Router) sweepAttachmentsOnce() {
 					continue
 				}
 				if info.Mode().IsRegular() && info.ModTime().Before(cutoff) {
-					if err := os.Remove(p); err == nil {
+					if err := osRemove(p); err == nil {
 						removedFiles++
 					} else {
 						liveCount++

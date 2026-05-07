@@ -39,6 +39,18 @@ import (
 //go:embed all:bundle
 var bundleFS embed.FS
 
+// Overridable for tests so error branches in LoadBuiltin / LoadDir /
+// bundleHash can be exercised without subverting the real embed.FS or
+// host filesystem.
+var (
+	bundleSrc   fs.FS = bundleFS
+	osMkdirAll        = os.MkdirAll
+	osWriteFile       = os.WriteFile
+	osReadFile        = os.ReadFile
+	osReadDir         = os.ReadDir
+	filepathAbs       = filepath.Abs
+)
+
 // Skill is one entry in the catalog.
 type Skill struct {
 	Name        string
@@ -67,14 +79,14 @@ func LoadBuiltin() ([]Skill, error) {
 	root := filepath.Join(os.TempDir(), "poe-acp-"+hash[:12], "skills")
 
 	var skills []Skill
-	err = fs.WalkDir(bundleFS, "bundle", func(p string, d fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(bundleSrc, "bundle", func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if d.IsDir() || filepath.Base(p) != "SKILL.md" {
 			return nil
 		}
-		body, rerr := bundleFS.ReadFile(p)
+		body, rerr := fs.ReadFile(bundleSrc, p)
 		if rerr != nil {
 			return rerr
 		}
@@ -88,13 +100,13 @@ func LoadBuiltin() ([]Skill, error) {
 		// p is "bundle/<name>/SKILL.md"; strip the bundle/ prefix.
 		rel := strings.TrimPrefix(p, "bundle/")
 		dst := filepath.Join(root, rel)
-		if mkerr := os.MkdirAll(filepath.Dir(dst), 0o755); mkerr != nil {
+		if mkerr := osMkdirAll(filepath.Dir(dst), 0o755); mkerr != nil {
 			return mkerr
 		}
 		// Best-effort: only write if missing or content differs. A simple
 		// stat-and-compare is sufficient for our small bundle.
-		if cur, rerr := os.ReadFile(dst); rerr != nil || string(cur) != string(body) {
-			if werr := os.WriteFile(dst, body, 0o644); werr != nil {
+		if cur, rerr := osReadFile(dst); rerr != nil || string(cur) != string(body) {
+			if werr := osWriteFile(dst, body, 0o644); werr != nil {
 				return werr
 			}
 		}
@@ -181,16 +193,22 @@ func parseFrontmatter(body []byte) (name, desc string, builtin bool) {
 // bundleHash returns a stable hex digest over the embedded bundle's
 // file paths and contents. Stable across rebuilds with identical
 // content; new content → new hash → new tmp dir.
-func bundleHash() (string, error) {
+func bundleHash() (string, error) { return bundleHashFn() }
+
+// bundleHashFn is overridable in tests so LoadBuiltin's hash-failure
+// branch can be exercised without an embed.FS that can fail.
+var bundleHashFn = func() (string, error) { return bundleHashFS(bundleFS) }
+
+func bundleHashFS(fsys fs.FS) (string, error) {
 	h := sha256.New()
-	err := fs.WalkDir(bundleFS, "bundle", func(p string, d fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(fsys, "bundle", func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if d.IsDir() {
 			return nil
 		}
-		b, rerr := bundleFS.ReadFile(p)
+		b, rerr := fs.ReadFile(fsys, p)
 		if rerr != nil {
 			return rerr
 		}
@@ -220,11 +238,11 @@ func LoadDir(path string) ([]Skill, error) {
 	if path == "" {
 		return nil, nil
 	}
-	abs, err := filepath.Abs(path)
+	abs, err := filepathAbs(path)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(abs)
+	entries, err := osReadDir(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -237,7 +255,7 @@ func LoadDir(path string) ([]Skill, error) {
 			continue
 		}
 		p := filepath.Join(abs, e.Name(), "SKILL.md")
-		body, rerr := os.ReadFile(p)
+		body, rerr := osReadFile(p)
 		if rerr != nil {
 			if !os.IsNotExist(rerr) {
 				log.Printf("skills: %s: %v, skipping", p, rerr)
