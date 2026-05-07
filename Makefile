@@ -43,7 +43,11 @@ endif
 
 .PHONY: all _parallel build build-all install fmt tidy vet \
         test test-race-cover test-cover open-coverage \
-        clean notices check-licenses publish deploy
+        clean notices check-licenses publish deploy FORCE
+
+# Used as a prereq to force pattern-rule recipes to run every invocation
+# (.PHONY would short-circuit pattern-rule matching for the target itself).
+FORCE:
 
 # ---------------------------------------------------------------------------
 # Top-level: bare `make` runs the full CI pipeline.
@@ -83,7 +87,7 @@ define cross_build
 	$(call RUN,build $(1)/$(2),GOOS=$(1) GOARCH=$(if $(filter armv6,$(2)),arm,$(2)) $(if $(filter armv6,$(2)),GOARM=6) go build -trimpath -ldflags="$(LDFLAGS)" -o $@ ./cmd/poe-acp/)
 endef
 
-$(BINARY)-%: | $(BINDIR)
+$(BINARY)-%: FORCE | $(BINDIR)
 	$(call cross_build,$(word 1,$(subst -, ,$*)),$(word 2,$(subst -, ,$*)))
 
 install:
