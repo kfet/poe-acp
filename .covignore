@@ -1,81 +1,16 @@
-# !!! MIGRATION NOTE — DO NOT ADD MORE LINE-NUMBER ENTRIES !!!
+# Coverage exclusions. Only two shapes allowed:
 #
-# This file currently contains line-number / per-function regex
-# entries. They are brittle: any edit above the line silently breaks
-# the exclusion. The convention has been superseded.
+#   1. Entry-point shims: cmd/<binary>/main.go is excluded wholesale.
+#      Keep main() to bare flag parsing, signal handling, and dependency
+#      assembly. Anything testable belongs in internal/* with 100% cov.
 #
-# New convention (file-level patterns only):
+#   2. Structurally-unreachable defensive code lives in a file named
+#      `unreachable.go` inside its package. Each helper there gets a
+#      doc comment justifying why it cannot be reached from a test.
+#      When the unreachable path is an error branch the production
+#      caller can't trigger, the helper panics rather than returning
+#      the error — leaving no impossible `if err != nil` for callers.
 #
-#   1. Entry-point shims: `cmd/<binary>/main.go` excluded wholesale.
-#      Keep main() to bare flag parsing, signal handling, and
-#      dependency assembly. Anything testable belongs in internal/*
-#      where it must be 100% covered.
-#
-#   2. Structurally-unreachable defensive code: isolate it in a file
-#      named `unreachable.go` inside the package that needs it. The
-#      project-wide `/unreachable\.go:` pattern excludes the file.
-#      Each helper in unreachable.go gets a doc comment justifying
-#      why it cannot be reached from a test.
-#
-#      When the unreachable code is an error branch the production
-#      caller can't trigger, the helper should `panic` rather than
-#      return the error — that way the caller has no impossible
-#      `if err != nil` branch left over to cover.
-#
-# Reference: slack-acp's AGENTS.md "Coverage" section
-# (github.com/kfet/slack-acp).
-#
-# TODO (next review): migrate every entry below into one of the two
-# shapes above and replace this whole file with:
-#
-#     ^github.com/kfet/<this-project>/cmd/[^/]+/main\.go:
-#     /unreachable\.go:
-#
-# Verify with `make coverage` (or equivalent) after migration; the
-# 100% gate must still pass.
-#
-# -----------------------------------------------------------------
-^github.com/kfet/poe-acp/cmd/poe-acp/main\.go:
-
-# helpers.go defensive paths in maybeRefetchSettings/buildSkillsCatalog
-# that fire only when JSON marshalling of a struct (impossible) or
-# embedded-FS skill loading fails. The skills package itself proves
-# those error branches via its own test swaps; the cmd shim just
-# logs and continues.
-^github.com/kfet/poe-acp/cmd/poe-acp/helpers\.go:40\.
-^github.com/kfet/poe-acp/cmd/poe-acp/helpers\.go:98\.
-^github.com/kfet/poe-acp/cmd/poe-acp/helpers\.go:164\.
-^github.com/kfet/poe-acp/cmd/poe-acp/helpers\.go:169\.
-^github.com/kfet/poe-acp/cmd/poe-acp/helpers\.go:173\.
-
-# Two defensive IO branches in router.go that can only fire under
-# pathological OS conditions we cannot synthesise without intrusive
-# fault injection deeper than the swap-vars pattern allows:
-#
-# - line 721-723: OpenFile fails for BOTH the preferred name and the
-#   hash-derived fallback. Only reachable if the kernel rejects both
-#   names, which our other tests prove doesn't happen.
-# - line 733-736: f.Close() returns an error AFTER io.Copy already
-#   succeeded on a freshly-created *os.File. Not observed on any
-#   POSIX-compliant FS in practice.
-^github.com/kfet/poe-acp/internal/router/router\.go:721\.
-^github.com/kfet/poe-acp/internal/router/router\.go:733\.
-
-# Defensive paths in acpclient.Start that fire only when the kernel
-# refuses to allocate stdio pipes for an exec.Cmd that successfully
-# returned from CommandContext. Cannot be triggered without injecting
-# a fake exec.Cmd, which would require restructuring Start around an
-# interface that adds no real value over the current direct call.
-^github.com/kfet/poe-acp/internal/acpclient/agent\.go:151\.
-^github.com/kfet/poe-acp/internal/acpclient/agent\.go:155\.
-
-# os.MkdirTemp(probe) — fails only if $TMPDIR is unwritable, which
-# every other test in this package proves false.
-^github.com/kfet/poe-acp/internal/acpclient/agent\.go:336\.
-
-# Close()'s 2-second SIGKILL fallback for processes that ignore SIGINT.
-# Constructing a child that survives both EOF on its stdio AND SIGINT
-# proved unreliable across the macOS / Linux test runners; the gentle
-# stop path covers the common case and Close itself has no logic in
-# the kill branch beyond Process.Kill + Wait.
-^github.com/kfet/poe-acp/internal/acpclient/agent\.go:509\.
+# Reference: slack-acp's AGENTS.md "Coverage" section.
+^github.com/kfet/poe-acp/cmd/[^/]+/main\.go:
+/unreachable\.go:

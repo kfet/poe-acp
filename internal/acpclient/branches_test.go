@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -481,10 +482,39 @@ func TestAgentProc_Close(t *testing.T) {
 	}
 }
 
-// TestAgentProc_Close_KillBranch is intentionally omitted: covered via
-// .covignore — see comments there. The kill-after-SIGINT fallback is
-// trivially correct and constructing a deterministic test for it
-// proved unreliable across runners.
+// TestAgentProc_Close_KillBranch forces the SIGKILL fallback by
+// replacing the gentle signal with a no-op (signal 0, "presence
+// check") so the child stays alive past closeKillTimeout, then
+// shrinking the timeout so Kill fires promptly. Sending signal 0
+// avoids the macOS-specific behaviour where wait4 reports a
+// SIG_IGN'd child as exited.
+func TestAgentProc_Close_KillBranch(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("sleep unavailable: %v", err)
+	}
+	defer swapVar(&closeKillTimeout, 50*time.Millisecond)()
+	defer swapVar[os.Signal](&closeGentleSignal, syscall.Signal(0))()
+
+	a := &AgentProc{cmd: cmd}
+	done := make(chan error, 1)
+	go func() { done <- a.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("Close did not return; kill branch may be broken")
+	}
+}
+
+func swapVar[T any](dst *T, v T) func() {
+	old := *dst
+	*dst = v
+	return func() { *dst = old }
+}
 
 func TestDispatch_AllPaths(t *testing.T) {
 	a := &AgentProc{

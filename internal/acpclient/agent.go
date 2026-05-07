@@ -148,13 +148,9 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 		cmd.Stderr = os.Stderr
 	}
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
+	mustPipe(err, "stdin")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
+	mustPipe(err, "stdout")
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start agent: %w", err)
 	}
@@ -333,9 +329,7 @@ func (a *AgentProc) ProbeModels(ctx context.Context) error {
 	a.mu.Unlock()
 
 	probeCwd, err := os.MkdirTemp("", "poeacp-probe-*")
-	if err != nil {
-		return fmt.Errorf("probe: mkdir tmp: %w", err)
-	}
+	mustTempDir(err)
 	defer os.RemoveAll(probeCwd)
 
 	// Use a noop sink — we don't care about updates.
@@ -493,6 +487,17 @@ func (a *AgentProc) AuthMethods() []AuthMethod {
 	return out
 }
 
+// closeKillTimeout is how long Close waits for a SIGINT'd child to
+// exit before escalating to SIGKILL. Overridable in tests.
+var closeKillTimeout = 2 * time.Second
+
+// closeGentleSignal is the signal Close sends as the first step.
+// Overridable in tests so the kill-fallback branch can be exercised
+// without a child that actually ignores SIGINT (which proved
+// impossible to construct deterministically on Darwin, where Go's
+// wait4 reports the child as exited even when its handler is SIG_IGN).
+var closeGentleSignal os.Signal = os.Interrupt
+
 // Close terminates the agent process. Returns after the process has
 // exited (or been force-killed).
 func (a *AgentProc) Close() error {
@@ -500,13 +505,13 @@ func (a *AgentProc) Close() error {
 		return nil
 	}
 	// Try a gentle stop first; fall through to Kill after a short grace.
-	_ = a.cmd.Process.Signal(os.Interrupt)
+	_ = a.cmd.Process.Signal(closeGentleSignal)
 	done := make(chan error, 1)
 	go func() { done <- a.cmd.Wait() }()
 	select {
 	case <-done:
 		return nil
-	case <-time.After(2 * time.Second):
+	case <-time.After(closeKillTimeout):
 		_ = a.cmd.Process.Kill()
 		<-done
 		return nil
