@@ -19,7 +19,7 @@ If the user provides a version, use it. Otherwise, auto-determine:
 
 ## Steps
 
-1. **Full build & test** — execute `make all` and confirm everything passes (vet, test-race, all 5 cross-builds, native build, check-licenses).
+1. **Full build & test** — execute `make all` and confirm everything passes (vet, test-race-cover, all 5 cross-builds, native build, check-licenses).
 2. **Check CHANGELOG** — read `CHANGELOG.md` and confirm there are entries under `## [Unreleased]`. If empty, ask the user.
 3. **Determine version** — follow the rules above if the user didn't specify one. State the version and proceed.
 4. **Update CHANGELOG** — rename `## [Unreleased]` to `## [VERSION] - YYYY-MM-DD` (today's date) and add a fresh empty `## [Unreleased]` section above it. Keep reverse-chronological order.
