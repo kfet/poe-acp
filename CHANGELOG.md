@@ -4,12 +4,16 @@
 
 ### Added
 
+- **100% unit-test coverage gate** — new `make run-tests` target enforces 100% line coverage (with a small `.covignore` for genuinely unreachable defensive IO branches and the `main()` shim). Wired into `make all` via `test-race`. Mirrors the pattern used in `kfet/skipstone`.
 - **Host-supplied skills** — relay now loads skills from `<dirname(config)>/skills/` (default `~/.config/poe-acp/skills/`) and merges them with the embedded built-in bundle. Last-wins by name, so a host SKILL.md with the same `name:` overrides the built-in (the disable mechanism). Required frontmatter fields: `name`, `description`. Missing dir is not an error.
 - `--print-catalog` flag prints the merged skills catalog to stdout and exits, for debugging multi-bot deployments.
 - `--state-dir` defaults to `<dirname(config)>/state` when `--config` is set explicitly, so multi-bot configs only need one path per bot.
 
 ### Changed
 
+- `cmd/poe-acp`: `main.go` split into `main.go` (entry-point shim) + `helpers.go` (testable helpers).
+- `internal/httpsrv`: `Config.AuthBroker` is now an interface (`AuthBroker`) instead of `*authbroker.Broker` so tests can inject brokers.
+- `internal/authbroker`: removed an unreachable `provider == ""` branch in `Handle` (input is trimmed at function entry, so the prior branch was dead code).
 - `internal/skills`: `Extract` renamed to `LoadBuiltin`; new `LoadDir(path)` and `Merge(layers, disable)` helpers.
 
 ## [0.11.0] - 2026-05-05
