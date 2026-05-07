@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-07
+
 ### Added
 
 - **100% unit-test coverage gate** — new `make run-tests` target enforces 100% line coverage (with a small `.covignore` for genuinely unreachable defensive IO branches and the `main()` shim). Wired into `make all` via `test-race`. Mirrors the pattern used in `kfet/skipstone`.
