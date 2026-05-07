@@ -1,3 +1,40 @@
+# !!! MIGRATION NOTE — DO NOT ADD MORE LINE-NUMBER ENTRIES !!!
+#
+# This file currently contains line-number / per-function regex
+# entries. They are brittle: any edit above the line silently breaks
+# the exclusion. The convention has been superseded.
+#
+# New convention (file-level patterns only):
+#
+#   1. Entry-point shims: `cmd/<binary>/main.go` excluded wholesale.
+#      Keep main() to bare flag parsing, signal handling, and
+#      dependency assembly. Anything testable belongs in internal/*
+#      where it must be 100% covered.
+#
+#   2. Structurally-unreachable defensive code: isolate it in a file
+#      named `unreachable.go` inside the package that needs it. The
+#      project-wide `/unreachable\.go:` pattern excludes the file.
+#      Each helper in unreachable.go gets a doc comment justifying
+#      why it cannot be reached from a test.
+#
+#      When the unreachable code is an error branch the production
+#      caller can't trigger, the helper should `panic` rather than
+#      return the error — that way the caller has no impossible
+#      `if err != nil` branch left over to cover.
+#
+# Reference: slack-acp's AGENTS.md "Coverage" section
+# (github.com/kfet/slack-acp).
+#
+# TODO (next review): migrate every entry below into one of the two
+# shapes above and replace this whole file with:
+#
+#     ^github.com/kfet/<this-project>/cmd/[^/]+/main\.go:
+#     /unreachable\.go:
+#
+# Verify with `make coverage` (or equivalent) after migration; the
+# 100% gate must still pass.
+#
+# -----------------------------------------------------------------
 ^github.com/kfet/poe-acp/cmd/poe-acp/main\.go:
 
 # helpers.go defensive paths in maybeRefetchSettings/buildSkillsCatalog
