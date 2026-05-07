@@ -42,7 +42,7 @@ else
 endif
 
 .PHONY: all _parallel build build-all install fmt tidy vet \
-        test test-race test-cover open-coverage \
+        test test-race-cover test-cover open-coverage \
         clean notices check-licenses publish deploy
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ endif
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _parallel
 
-_parallel: vet test-race build build-all check-licenses
+_parallel: vet test-race-cover build build-all check-licenses
 
 fmt:
 	@gofmt -s -w .
@@ -99,8 +99,8 @@ test:
 
 # Full run: race + shuffle + 100% coverage gate (paths in .covignore excluded).
 # This is what `make all` exercises.
-test-race: | $(BINDIR)
-	$(call RUN,test (race),\
+test-race-cover: | $(BINDIR)
+	$(call RUN,test (race+cover),\
 		go test -race -shuffle=on -cover ./... -coverprofile=$(BINDIR)/coverage.tmp.out \
 		&& $(COVGATE) -profile=$(BINDIR)/coverage.tmp.out -out=$(BINDIR)/coverage.out -ignore=.covignore -min=100)
 

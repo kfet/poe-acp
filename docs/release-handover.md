@@ -11,7 +11,7 @@
 ## Release workflow status (completed)
 
 ### Done
-- `make all` executed and passed (vet, test-race, native build, 5 cross-builds, check-licenses).
+- `make all` executed and passed (vet, test-race-cover, native build, 5 cross-builds, check-licenses).
 - `CHANGELOG.md` updated with:
   - fresh `## [Unreleased]` section at top
   - release section `## [0.2.0] - 2026-04-22`
