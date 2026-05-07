@@ -207,3 +207,85 @@ See the `update` skill (`.fir/skills/update/SKILL.md`) for the per-host upgrade 
 - [ ] `~/.config/poe-acp/env` is mode `0600`.
 - [ ] `~/.config/poe-acp/config.json` exists with `bot_name` matching the Poe slug (or intentionally omitted; auto-refetch will be skipped).
 - [ ] `-introduction` flag set to the intended greeting (or intentionally omitted).
+
+## Multi-bot on one host
+
+Run several Poe bots from a single host by giving each its own config dir, supervisor unit, loopback port, and funnel prefix.
+
+### Layout
+
+```
+~/.config/poe-acp/
+  bot-foo/
+    config.json          # bot_name="foo", model defaults, etc.
+    env                  # POEACP_ACCESS_KEY=<foo's key>, mode 0600
+    skills/              # host-supplied skills, foo-specific (optional)
+      release-foo/
+        SKILL.md
+    state/               # auto-created; per-conv state, schema-hash file
+  bot-bar/
+    config.json
+    env
+    state/
+```
+
+Each bot gets its own `--config` path. The relay derives `--state-dir` to `<dirname(config)>/state` automatically when you pass `--config` and leave `--state-dir` empty, so you only need to set one path per bot. Host skills under `<dirname(config)>/skills/` are loaded automatically — no config.json key needed.
+
+### Service units
+
+One unit per bot, named `poe-acp-<bot>.service` (Linux) or `dev.fir.poe-acp.<bot>.plist` (macOS). On Linux:
+
+```ini
+# ~/.config/systemd/user/poe-acp-foo.service
+[Unit]
+Description=poe-acp (foo)
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/poe-acp/bot-foo/env
+ExecStart=%h/.local/bin/poe-acp \
+  --http-addr 127.0.0.1:8347 \
+  --poe-path /foo \
+  --config %h/.config/poe-acp/bot-foo/config.json
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now poe-acp-foo.service poe-acp-bar.service
+```
+
+### Funnel layout (prefix, single port)
+
+Run all bots behind one funnel port with distinct prefixes. Each bot listens on its own loopback port; each prefix targets that port. The relay's `--poe-path /<prefix>` must equal the funnel prefix because funnel strips it before forwarding.
+
+```bash
+tailscale funnel --bg --set-path=/foo http://127.0.0.1:8347
+tailscale funnel --bg --set-path=/bar http://127.0.0.1:8348
+```
+
+Public URLs become `https://<host>.<tailnet>.ts.net/foo` and `.../bar`. Configure each Poe server bot's URL accordingly.
+
+### Minimal host skill example
+
+```
+~/.config/poe-acp/bot-foo/skills/foo-runbook/SKILL.md
+```
+
+```markdown
+---
+name: foo-runbook
+description: Foo-specific operations runbook — restart, log locations, on-call paging.
+---
+
+# Foo runbook
+
+Service unit: `poe-acp-foo.service`.
+Logs: `journalctl --user -u poe-acp-foo -f`.
+…
+```
+
+To override a built-in (e.g. replace `deploy` with a foo-specific procedure), drop a `SKILL.md` under `skills/deploy/` with `name: deploy` — last-wins by name silences the built-in. Verify with `poe-acp --print-catalog --config <path>`.

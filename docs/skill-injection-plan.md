@@ -70,3 +70,23 @@ Future skills (not in this branch): attachments, rendering quirks, conv-id seman
 - `_meta` extension pattern is established in this repo: see `_meta.auth.interactive` work (commit 81f6aeb) and `acp-spec/rfd-auth-methods.md` for the shape to mirror.
 - fir's skill bundling: `pkg/resources/skills.go:259` (`FormatSkillsForPrompt`) is the canonical reference for the XML format and preamble text.
 - User wants this *universal* — not fir-specific. The cap name and RFD must be agent-agnostic.
+
+## Host-supplied skills
+
+In addition to the embedded built-in bundle, the relay loads skills from a host directory next to the operator's `config.json`:
+
+- **Default path**: `filepath.Dir(configPath) + "/skills"`. With the default config that is `~/.config/poe-acp/skills/`. With a custom `--config /etc/poe-acp/<bot>/config.json` it is `/etc/poe-acp/<bot>/skills/` — host skills naturally scope per-bot in multi-bot deployments.
+- **Layout**: one subdirectory per skill, each containing a `SKILL.md` with YAML frontmatter (`name`, `description`). The `builtin:` flag is ignored for host skills — presence in the directory is the surface signal.
+- **Missing dir** is not an error; the relay just runs with built-ins only.
+- **Required fields**: `name` and `description`. A SKILL.md with no description is logged (`skills: <path>: missing description, skipping`) and skipped, non-fatal. Missing `name` falls back to the directory name.
+- **Path**: the catalog points at the actual on-disk file; nothing is copied to `$TMPDIR`.
+
+### Merge rules
+
+Layers are merged in order: embedded built-ins first, host directory second. **Last-wins by name.** A host SKILL.md whose `name:` matches a built-in (e.g. `deploy`) replaces the built-in entry in the catalog. This is the override-and-disable mechanism — write your own one-liner SKILL.md with the same name to silence or replace any built-in.
+
+The merged catalog is sorted by name for deterministic output. Use `poe-acp --print-catalog` to see exactly what would be injected for a given config.
+
+### Why no `skills` key in `config.json`
+
+Config schema stays focused on bot identity (model, thinking, profile, bot name). Skill set is a filesystem concern: drop a directory in, override by name. Keeps the JSON small and the override path obvious.
