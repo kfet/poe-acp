@@ -54,6 +54,7 @@ func main() {
 		allowAtt     = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
 		showVersion  = flag.Bool("version", false, "Print version and exit")
 		debugFlag    = flag.Bool("debug", false, "Enable verbose debug logging (also via POEACP_DEBUG=1)")
+		printCatalog = flag.Bool("print-catalog", false, "Build the merged skills catalog and print it to stdout, then exit")
 	)
 	flag.Parse()
 
@@ -84,6 +85,7 @@ func main() {
 	}
 
 	cfgPath := *configFlag
+	cfgExplicit := cfgPath != ""
 	if cfgPath == "" {
 		cfgPath = defaultConfigPath()
 	}
@@ -98,9 +100,18 @@ func main() {
 		log.Printf("config: %s not found, using built-in defaults", cfgPath)
 	}
 
+	if *printCatalog {
+		fmt.Print(buildSkillsCatalog(cfgPath))
+		return
+	}
+
 	stateDir := *stateDirFlag
 	if stateDir == "" {
-		stateDir = defaultStateDir()
+		if cfgExplicit {
+			stateDir = filepath.Join(filepath.Dir(cfgPath), "state")
+		} else {
+			stateDir = defaultStateDir()
+		}
 	}
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		log.Fatalf("state dir: %v", err)
@@ -158,7 +169,7 @@ func main() {
 		defaults.Model, defaults.Thinking, defaults.HideThinking)
 
 	// Router
-	catalog := buildSkillsCatalog()
+	catalog := buildSkillsCatalog(cfgPath)
 	rtr, err := router.New(router.Config{
 		Agent:        agent,
 		StateDir:     stateDir,
@@ -364,23 +375,31 @@ func appendEnv(env []string, kv string) []string {
 	return append(out, kv)
 }
 
-// buildSkillsCatalog extracts the embedded skill bundle to a per-version
-// tmp dir and returns a fir-style <available_skills> block ready for
-// injection. Best-effort: extraction failures degrade to no catalog
-// (the relay is still usable without skills).
-func buildSkillsCatalog() string {
-	list, err := skills.Extract()
+// buildSkillsCatalog merges embedded built-in skills with optional
+// host-supplied skills from <dirname(cfgPath)>/skills/ and returns a
+// fir-style <available_skills> block ready for injection. Best-effort:
+// extraction failures degrade to whatever layers succeeded (the relay
+// is still usable without a catalog). Host skills with the same name
+// as a built-in override the built-in (the disable mechanism).
+func buildSkillsCatalog(cfgPath string) string {
+	builtin, err := skills.LoadBuiltin()
 	if err != nil {
-		log.Printf("skills: extract failed (continuing without catalog): %v", err)
+		log.Printf("skills: builtin load failed (continuing): %v", err)
+	}
+	hostDir := filepath.Join(filepath.Dir(cfgPath), "skills")
+	host, err := skills.LoadDir(hostDir)
+	if err != nil {
+		log.Printf("skills: host dir %s: %v (continuing)", hostDir, err)
+	}
+	merged := skills.Merge([][]skills.Skill{builtin, host}, nil)
+	if len(merged) == 0 {
 		return ""
 	}
-	if len(list) == 0 {
-		return ""
-	}
-	names := make([]string, 0, len(list))
-	for _, s := range list {
+	names := make([]string, 0, len(merged))
+	for _, s := range merged {
 		names = append(names, s.Name)
 	}
-	log.Printf("skills: injected %d (%s)", len(list), strings.Join(names, ","))
-	return skills.FormatCatalog(list)
+	log.Printf("skills: %d builtin + %d host -> injected %d (%s)",
+		len(builtin), len(host), len(merged), strings.Join(names, ","))
+	return skills.FormatCatalog(merged)
 }

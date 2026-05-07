@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Host-supplied skills** — relay now loads skills from `<dirname(config)>/skills/` (default `~/.config/poe-acp/skills/`) and merges them with the embedded built-in bundle. Last-wins by name, so a host SKILL.md with the same `name:` overrides the built-in (the disable mechanism). Required frontmatter fields: `name`, `description`. Missing dir is not an error.
+- `--print-catalog` flag prints the merged skills catalog to stdout and exits, for debugging multi-bot deployments.
+- `--state-dir` defaults to `<dirname(config)>/state` when `--config` is set explicitly, so multi-bot configs only need one path per bot.
+
+### Changed
+
+- `internal/skills`: `Extract` renamed to `LoadBuiltin`; new `LoadDir(path)` and `Merge(layers, disable)` helpers.
+
 ## [0.11.0] - 2026-05-05
 
 ### Fixed
