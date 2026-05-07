@@ -60,7 +60,7 @@ If you have run the same command (`go test`, `go build`) more than 5 times since
 
 ## Build and test
 
-Run `make test` to verify your changes. Always finish every task with `make all` to confirm the full build and test suite passes (vet, test-race, 5 cross-builds, native build, check-licenses).
+Run `make test` to verify your changes. Always finish every task with `make all` to confirm the full build and test suite passes (vet, test-race-cover, 5 cross-builds, native build, check-licenses).
 
 When fixing a regression, **write the test first** so it fails before your fix, then make it pass. This confirms the test actually catches the bug.
 
