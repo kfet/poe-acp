@@ -315,19 +315,29 @@ func TestRouter_RunGC(t *testing.T) {
 		fa.emit(sid, "x")
 		return acp.StopReasonEndTurn, nil
 	})
-	r, _ := New(Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Millisecond, AttachmentTTL: time.Millisecond})
-	stop := r.RunGC(context.Background(), 5*time.Millisecond)
-	defer stop()
+	r, _ := New(Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Nanosecond, AttachmentTTL: time.Nanosecond})
 	_ = r.Prompt(context.Background(), "c1", "u",
 		[]Turn{{Role: "user", Content: "hi"}}, Options{}, &captureSink{})
-	// Wait for GC to evict.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if r.Len() == 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	if r.Len() != 1 {
+		t.Fatalf("pre-gc len=%d", r.Len())
 	}
+	ticked := make(chan struct{}, 4)
+	prev := runGCTickHook
+	runGCTickHook = func() {
+		select {
+		case ticked <- struct{}{}:
+		default:
+		}
+	}
+	defer func() { runGCTickHook = prev }()
+	stop := r.RunGC(context.Background(), time.Millisecond)
+	select {
+	case <-ticked:
+	case <-time.After(3 * time.Second):
+		stop()
+		t.Fatal("RunGC tick never fired")
+	}
+	stop()
 	if r.Len() != 0 {
 		t.Fatalf("expected eviction, len=%d", r.Len())
 	}

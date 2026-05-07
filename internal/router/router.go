@@ -1026,6 +1026,9 @@ func (r *Router) touch(convID string) {
 	r.mu.Unlock()
 }
 
+// runGCTickHook, when non-nil, is invoked after each RunGC tick. Test-only.
+var runGCTickHook func()
+
 // RunGC runs a background goroutine that drops idle sessions. Returns a
 // stop function.
 func (r *Router) RunGC(ctx context.Context, every time.Duration) (stop func()) {
@@ -1040,6 +1043,9 @@ func (r *Router) RunGC(ctx context.Context, every time.Duration) (stop func()) {
 			case <-t.C:
 				r.gcOnce()
 				r.sweepAttachmentsOnce()
+				if runGCTickHook != nil {
+					runGCTickHook()
+				}
 			}
 		}
 	}()

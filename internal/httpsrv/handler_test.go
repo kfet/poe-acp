@@ -377,13 +377,14 @@ func TestHandler_HideThinkingSpinner(t *testing.T) {
 
 	// Run in background so we can release the agent after a few ticks.
 	rec := httptest.NewRecorder()
+	wait := waitTicks(t, 2)
 	done := make(chan struct{})
 	go func() {
 		req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
 		h.ServeHTTP(rec, req)
 		close(done)
 	}()
-	time.Sleep(40 * time.Millisecond)
+	wait()
 	close(sa.release)
 	<-done
 
@@ -423,13 +424,14 @@ func TestHandler_NoSpinnerWhenThinkingVisible(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
+	wait := waitTicks(t, 2)
 	done := make(chan struct{})
 	go func() {
 		req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
 		h.ServeHTTP(rec, req)
 		close(done)
 	}()
-	time.Sleep(40 * time.Millisecond)
+	wait()
 	close(sa.release)
 	<-done
 

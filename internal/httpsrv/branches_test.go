@@ -177,12 +177,13 @@ func TestHandler_SpinnerInterval(t *testing.T) {
 		"query": []map[string]any{{"role": "user", "content": "hi", "parameters": map[string]any{"hide_thinking": true}}},
 	})
 	rec := httptest.NewRecorder()
+	wait := waitTicks(t, 2)
 	done := make(chan struct{})
 	go func() {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body)))
 		close(done)
 	}()
-	time.Sleep(40 * time.Millisecond)
+	wait()
 	close(sa.release)
 	<-done
 	if !strings.Contains(rec.Body.String(), "Thinking.") {
@@ -194,16 +195,20 @@ func TestHandler_SpinnerInterval(t *testing.T) {
 type hangAgent struct {
 	*fakeAgent
 	cancelled chan struct{}
+	entered   chan struct{}
 }
 
 func (a *hangAgent) Prompt(ctx context.Context, _ acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+	if a.entered != nil {
+		close(a.entered)
+	}
 	<-ctx.Done()
 	close(a.cancelled)
 	return acp.StopReasonCancelled, ctx.Err()
 }
 
 func TestHandler_CancelOnDisconnect(t *testing.T) {
-	a := &hangAgent{fakeAgent: &fakeAgent{}, cancelled: make(chan struct{})}
+	a := &hangAgent{fakeAgent: &fakeAgent{}, cancelled: make(chan struct{}), entered: make(chan struct{})}
 	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +226,10 @@ func TestHandler_CancelOnDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, bytes.NewReader(body))
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		select {
+		case <-a.entered:
+		case <-time.After(3 * time.Second):
+		}
 		cancel()
 	}()
 	resp, err := http.DefaultClient.Do(req)
@@ -342,8 +350,9 @@ func TestSink_FirstChunkWhileSpinning(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
+	wait := waitTicks(t, 1)
 	s := newSink(w, 5*time.Millisecond, true)
-	time.Sleep(20 * time.Millisecond) // let some spinner ticks fire
+	wait()
 	s.FirstChunk()
 	// after FirstChunk, heartbeat goroutine has exited.
 	if !strings.Contains(rec.Body.String(), "Thinking") {
@@ -385,8 +394,9 @@ func TestSink_HeartbeatExitsOnStop(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
+	wait := waitTicks(t, 1)
 	s := newSink(w, time.Millisecond, false)
-	time.Sleep(5 * time.Millisecond)
+	wait()
 	s.stop()
 }
 
@@ -394,14 +404,41 @@ func TestSink_HeartbeatExitsWhenStartedAtTick(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
+	wait := waitTicks(t, 1)
 	s := newSink(w, time.Millisecond, false)
 	// Flip started before the tick fires; the heartbeat goroutine should
 	// notice on its next tick and return without closing hbDone.
 	s.mu.Lock()
 	s.started = true
 	s.mu.Unlock()
-	time.Sleep(10 * time.Millisecond)
+	wait()
 	s.stop()
+}
+
+// waitTicks wires heartbeatTickHook to a channel and returns a func
+// that blocks until n heartbeat ticks have fired (or fails the test
+// after 3s). The hook is restored via t.Cleanup.
+func waitTicks(t *testing.T, n int) func() {
+	t.Helper()
+	ch := make(chan struct{}, 256)
+	prev := heartbeatTickHook
+	heartbeatTickHook = func() {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	t.Cleanup(func() { heartbeatTickHook = prev })
+	return func() {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			select {
+			case <-ch:
+			case <-time.After(3 * time.Second):
+				t.Fatalf("heartbeat tick %d/%d never fired", i+1, n)
+			}
+		}
+	}
 }
 
 // Ensure the fmt import is used to satisfy goimports.
