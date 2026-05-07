@@ -11,6 +11,7 @@
 
 ### Changed
 
+- `.covignore`: migrated from line-number / per-function entries to two file-level patterns (`cmd/<binary>/main.go` and `**/unreachable.go`). Defensive paths previously listed by line number are now either tested directly or isolated in per-package `unreachable.go` helpers that panic instead of returning impossible errors. Coverage gate still enforces 100%.
 - `cmd/poe-acp`: `main.go` split into `main.go` (entry-point shim) + `helpers.go` (testable helpers).
 - `internal/httpsrv`: `Config.AuthBroker` is now an interface (`AuthBroker`) instead of `*authbroker.Broker` so tests can inject brokers.
 - `internal/authbroker`: removed an unreachable `provider == ""` branch in `Handle` (input is trimmed at function entry, so the prior branch was dead code).

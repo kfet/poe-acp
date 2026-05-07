@@ -718,21 +718,15 @@ func (r *Router) downloadAttachment(
 		debuglog.Logf("downloadAttachment: Root rejected name=%q err=%v; using fallback", finalName, perr)
 		finalName = uniqueName(fallbackName(a), used)
 		f, perr = root.OpenFile(finalName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-		if perr != nil {
-			return "", "", 0, fmt.Errorf("create attachment file: %w", perr)
-		}
+		mustOpen(perr)
 	}
 	used[finalName] = struct{}{}
 	// LimitReader+1 so we can detect overflow.
 	n, cerr := ioCopy(f, io.LimitReader(resp.Body, max+1))
-	closeErr := f.Close()
+	mustClose(f.Close())
 	if cerr != nil {
 		_ = root.Remove(finalName)
 		return "", "", 0, cerr
-	}
-	if closeErr != nil {
-		_ = root.Remove(finalName)
-		return "", "", 0, closeErr
 	}
 	if n > max {
 		_ = root.Remove(finalName)
