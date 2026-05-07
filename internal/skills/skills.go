@@ -29,6 +29,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,7 +47,7 @@ type Skill struct {
 	Path string
 }
 
-// Extract walks the embedded bundle, selects skills whose frontmatter
+// LoadBuiltin walks the embedded bundle, selects skills whose frontmatter
 // declares `builtin: true`, writes them into a per-content-hash dir
 // under $TMPDIR, and returns the parsed catalog. Idempotent: re-running
 // with the same binary is a no-op (files already exist).
@@ -58,7 +59,7 @@ type Skill struct {
 // used by fir's own pkg/resources/builtin_skills loader.
 //
 // Returned skills are sorted by name for deterministic catalog output.
-func Extract() ([]Skill, error) {
+func LoadBuiltin() ([]Skill, error) {
 	hash, err := bundleHash()
 	if err != nil {
 		return nil, fmt.Errorf("hash bundle: %w", err)
@@ -203,6 +204,86 @@ func bundleHash() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// LoadDir walks <path>/*/SKILL.md (one level deep — each skill is its
+// own directory containing a SKILL.md) and returns the parsed catalog.
+// Missing dir is not an error: returns (nil, nil).
+//
+// Required frontmatter fields: name and description. A SKILL.md missing
+// either is logged and skipped (non-fatal). Files where the
+// frontmatter parser cannot find a closing `---` are also skipped.
+//
+// Skill.Path is the absolute on-disk path to the SKILL.md file as
+// found; nothing is copied.
+func LoadDir(path string) ([]Skill, error) {
+	if path == "" {
+		return nil, nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var skills []Skill
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(abs, e.Name(), "SKILL.md")
+		body, rerr := os.ReadFile(p)
+		if rerr != nil {
+			if !os.IsNotExist(rerr) {
+				log.Printf("skills: %s: %v, skipping", p, rerr)
+			}
+			continue
+		}
+		name, desc, _ := parseFrontmatter(body)
+		if name == "" {
+			name = e.Name()
+		}
+		if desc == "" {
+			log.Printf("skills: %s: missing description, skipping", p)
+			continue
+		}
+		skills = append(skills, Skill{Name: name, Description: desc, Path: p})
+	}
+	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+	return skills, nil
+}
+
+// Merge layers skill lists with last-wins-by-name semantics, drops any
+// names listed in disable, and returns a slice sorted by name.
+// Typical use: Merge([][]Skill{builtin, host}, nil) — host overrides
+// built-in by name. This is also the disable mechanism: ship a host
+// SKILL.md with the same name and an alternative description (or just
+// list it in disable to drop it entirely).
+func Merge(layers [][]Skill, disable []string) []Skill {
+	disabled := make(map[string]struct{}, len(disable))
+	for _, d := range disable {
+		disabled[d] = struct{}{}
+	}
+	by := make(map[string]Skill)
+	for _, layer := range layers {
+		for _, s := range layer {
+			by[s.Name] = s
+		}
+	}
+	out := make([]Skill, 0, len(by))
+	for name, s := range by {
+		if _, drop := disabled[name]; drop {
+			continue
+		}
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func escapeXML(s string) string {
