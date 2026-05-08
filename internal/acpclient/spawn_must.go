@@ -1,6 +1,6 @@
-// Package acpclient: defensive helpers for paths the production caller
-// cannot trigger. Excluded from coverage via /unreachable\.go: in
-// .covignore.
+// Package acpclient: defensive helpers for agent-spawn paths the
+// production caller cannot trigger. Excluded from coverage via the
+// `_must.go` suffix rule in .covignore.
 package acpclient
 
 // mustPipe panics if StdinPipe/StdoutPipe returns an error. exec.Cmd
