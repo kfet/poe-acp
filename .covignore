@@ -1,15 +1,17 @@
-# Coverage exclusions — regex patterns matched against lines of the
-# raw `go test -coverprofile` output, applied before the 100% gate
-# by covgate (https://github.com/kfet/covgate).
+# Coverage exclusions. Two shapes allowed:
 #
-# Convention: file-level patterns only. No line numbers, no
-# per-function regexes — both rot on any nearby edit. Whole files,
-# whole subpackages, whole generated bundles are fine.
-
-# Entry-point shims: cmd/<binary>/main.go.
+#   1. Entry-point shims: cmd/<binary>/main.go is excluded wholesale.
+#      Keep main() to bare flag parsing, signal handling, and dependency
+#      assembly. Anything testable belongs in internal/* with 100% cov.
+#
+#   2. Per-package "must" helpers — files named `*_must.go` contain
+#      only panic helpers for error branches the production caller
+#      cannot trigger (kernel-level pipe allocation, fresh-tempdir
+#      failure, post-success Close, etc.). Each helper carries a doc
+#      comment justifying why it cannot be reached from a test, and
+#      panics rather than returning the impossible error so callers
+#      have no leftover `if err != nil` branch to cover.
+#
+# Reference: slack-acp's AGENTS.md "Coverage" section.
 ^github.com/kfet/poe-acp/cmd/[^/]+/main\.go:
-
-# Per-package "unreachable.go" files (legacy — prefer excluding the
-# file the code naturally lives in, or restructure to remove the
-# unreachable branch entirely; see covgate README).
-/unreachable\.go:
+_must\.go:
