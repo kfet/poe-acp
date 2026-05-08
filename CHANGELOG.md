@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `.covignore`: replaced legacy `unreachable.go` exclusion pattern with `*_must.go` suffix rule. Renamed `cmd/poe-acp/unreachable.go` → `schema_hash_must.go`, `internal/acpclient/unreachable.go` → `spawn_must.go`, `internal/router/unreachable.go` → `attachment_io_must.go` so each file's name reflects what it covers rather than a meta-property ("hard to test").
+
 ## [0.12.0] - 2026-05-07
 
 ### Added

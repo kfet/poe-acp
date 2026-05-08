@@ -1,6 +1,6 @@
-// Package router: defensive helpers for paths the production caller
-// cannot trigger. Excluded from coverage via /unreachable\.go: in
-// .covignore.
+// Package router: defensive helpers for attachment IO paths the
+// production caller cannot trigger. Excluded from coverage via the
+// `_must.go` suffix rule in .covignore.
 package router
 
 // mustOpen panics if err is non-nil. Used after the second OpenFile

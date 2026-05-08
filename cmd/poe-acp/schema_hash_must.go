@@ -1,6 +1,6 @@
-// Package main: defensive helpers for paths the production caller cannot
-// trigger. Excluded from the coverage gate via /unreachable\.go: in
-// .covignore. Each helper has a justifying comment.
+// Package main: defensive helpers for paths the production caller
+// cannot trigger. Excluded from coverage via the `_must.go` suffix
+// rule in .covignore. Each helper carries a justifying comment.
 package main
 
 import "encoding/json"
