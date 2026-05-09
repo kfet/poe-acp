@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-05-09
+
+### Added
+
+- `sibling-repos` skill (project-only, not built-in) — points the agent at notes for repo paths.
+- `notes` built-in skill — documents `~/.local/state/poe-acp/notes/` as persistent scratch across conversations.
+- `deploy` skill: seed `~/.local/state/poe-acp/notes/repos.md` when repo paths are known.
+- `AGENTS.md`: documents the notes scratch dir for in-repo agents.
+
 ### Changed
 
 - `.covignore`: replaced legacy `unreachable.go` exclusion pattern with `*_must.go` suffix rule. Renamed `cmd/poe-acp/unreachable.go` → `schema_hash_must.go`, `internal/acpclient/unreachable.go` → `spawn_must.go`, `internal/router/unreachable.go` → `attachment_io_must.go` so each file's name reflects what it covers rather than a meta-property ("hard to test").

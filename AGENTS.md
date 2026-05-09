@@ -6,6 +6,10 @@ Do not ignore any issues, address them promptly, even if preexisting. Do not pos
 
 Do not leave incomplete or stubbed code. Ensure all code is functional and tested.
 
+## Notes
+
+`~/.local/state/poe-acp/notes/` is persistent scratch across conversations for agents running under poe-acp. Read and write freely.
+
 ## What this is
 
 `poe-acp` is a standalone HTTP server that implements Poe's server-bot protocol and relays each conversation to a spawned ACP-speaking agent (`fir --mode acp`, Claude Code, etc.) over stdio. One binary, no MCP surface. Each Poe `conversation_id` maps 1:1 to an ACP session inside a shared agent process.
