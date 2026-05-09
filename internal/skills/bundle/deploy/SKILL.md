@@ -158,7 +158,22 @@ launchctl print     gui/$UID/dev.<you>.poe-acp | head                          #
 tail -f ~/Library/Logs/poe-acp.err.log                                         # logs
 ```
 
-### 5. Verify
+### 5. Seed agent notes (if repo paths known)
+
+If you know where the operator's source repos live on the host, write them so spawned agents can find them:
+
+```bash
+ssh <host> 'mkdir -p ~/.local/state/poe-acp/notes && cat > ~/.local/state/poe-acp/notes/repos.md' <<'EOF'
+# Repos on this host
+
+- /Users/<you>/dev/poe-acp
+- /Users/<you>/dev/fir
+EOF
+```
+
+Free-form Markdown. Agents read this when the user references repos by name. Skip if unknown.
+
+### 6. Verify
 
 From your workstation:
 
@@ -173,7 +188,7 @@ Expect `200` with SSE headers. `401` → key mismatch. `404` → path layout mis
 
 Then set the Poe bot's Server URL to `https://<host>.<tailnet>.ts.net/<poe-path>` and the access key to the same value as `POEACP_ACCESS_KEY`. Send a test message from Poe and confirm a reply.
 
-### 6. Tail logs during first conversations
+### 7. Tail logs during first conversations
 
 ```bash
 ssh <host> 'journalctl --user -u poe-acp -f'
