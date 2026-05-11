@@ -491,8 +491,10 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 			st.applied.Thinking = opts.Thinking
 		}
 	}
-	// HideThinking is applied via st.hideThinking under sinkMu in
-	// Prompt; nothing to apply on the agent side.
+	// HideThinking is forwarded into turnDef.hideThinking via the
+	// beginTurn message in Prompt; drainProcessChunk reads it to
+	// suppress agent_thought_chunk content. Nothing to apply on the
+	// agent side.
 	return nil
 }
 

@@ -216,8 +216,9 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 // writes go through the user* methods, which set realWritten under the
 // same mutex. The heartbeat goroutine self-disarms (returns) the first
 // time hbReplace reports the gate has closed — no caller has to
-// remember to stop it. Done() / Error() additionally close hbDone so
-// the goroutine wakes immediately rather than waiting for the next tick.
+// remember to stop it. The sink-layer Done() / Error() also close
+// hbDone so the goroutine wakes immediately rather than waiting for
+// the next tick.
 type orderedWriter struct {
 	w  *poeproto.SSEWriter
 	mu sync.Mutex
