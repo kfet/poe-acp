@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-05-10
+
 ### Changed
 
 - **Unified heartbeat / spinner.** The animated `> _Thinking._` spinner now runs in BOTH `hide_thinking` modes — there's no separate "invisible heartbeat" code path. Spinner doubles as keepalive, gives the user liveness during the gap between submit and first chunk, and `orderedWriter` clears it the moment the first real chunk lands. Removed `Config.SpinnerInterval` and the `--spinner-interval` flag (collapsed into `HeartbeatInterval` / `--heartbeat-interval`); the heartbeat default dropped from 10s to 1.5s so the spinner animates at a human-readable pace. `hide_thinking` remains a router-level filter on `agent_thought_chunk` content; it no longer affects the spinner.
