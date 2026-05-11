@@ -22,14 +22,12 @@ type Config struct {
 	// Settings is the static response for `settings` requests. Parameter
 	// controls may be overridden per-request by ParameterControlsProvider.
 	Settings poeproto.SettingsResponse
-	// HeartbeatInterval is the SSE heartbeat tick while waiting for the
-	// first agent chunk. <=0 disables the heartbeat.
+	// HeartbeatInterval is the SSE heartbeat tick. The heartbeat
+	// emits an animated `> _Thinking._` spinner via replace_response
+	// until the first user-visible write closes the gate. <=0 disables
+	// the heartbeat. Doubles as the spinner animation rate, so values
+	// in the 1–2s range read well to humans.
 	HeartbeatInterval time.Duration
-	// SpinnerInterval overrides the tick rate when hide_thinking=true,
-	// so the animated "Thinking…" spinner cycles at a human-readable
-	// pace regardless of the heartbeat interval. <=0 falls back to
-	// HeartbeatInterval.
-	SpinnerInterval time.Duration
 	// ParameterControlsProvider, if set, is called on each `settings`
 	// request to populate SettingsResponse.ParameterControls. If nil,
 	// Settings.ParameterControls is used as-is.
@@ -164,14 +162,12 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	}
 
 	// Sink: SSE writer + heartbeat coordination + disconnect → cancel.
-	// When hide_thinking is on, swap the tick for SpinnerInterval so the
-	// spinner animates at a human-readable pace regardless of the
-	// configured heartbeat interval.
-	tick := h.cfg.HeartbeatInterval
-	if opts.HideThinking && tick > 0 && h.cfg.SpinnerInterval > 0 {
-		tick = h.cfg.SpinnerInterval
-	}
-	s := newSink(sse, tick, opts.HideThinking)
+	// The heartbeat always animates a `> _Thinking._` spinner; the
+	// orderedWriter clears it the moment the first real chunk lands,
+	// regardless of hide_thinking. (hide_thinking is a router-level
+	// concern: it suppresses agent_thought_chunk content from the
+	// stream, not the spinner.)
+	s := newSink(sse, h.cfg.HeartbeatInterval)
 	defer s.stop()
 
 	// Cancel propagation: if the HTTP client goes away while a prompt
@@ -194,13 +190,14 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	}
 }
 
-// sink adapts SSEWriter to router.ChunkSink, with a "still working…"
-// heartbeat that stops as soon as the first real chunk arrives. When
-// hideThinking is set the heartbeat doubles as a visible animated
-// "Thinking…" indicator (rendered via replace_response so each tick
-// overwrites the previous one), since the user has opted out of seeing
-// the agent's actual thought stream and would otherwise stare at a
-// blank reply for the duration of the thinking phase.
+// sink adapts SSEWriter to router.ChunkSink, with an animated
+// `> _Thinking._` spinner that runs until the first user-visible write
+// arrives. The spinner doubles as the SSE keepalive — there's no
+// separate "invisible heartbeat" mode. orderedWriter clears the
+// spinner the moment the first real chunk lands, regardless of
+// whether the user opted into seeing thoughts (hide_thinking is a
+// router-level filter on agent_thought_chunk content; it does not
+// affect the spinner).
 //
 // Concurrency model — single-writer invariant:
 //
@@ -322,8 +319,7 @@ func (o *orderedWriter) hbReplace(s string) (gateOpen bool, err error) {
 }
 
 type sink struct {
-	o            *orderedWriter
-	hideThinking bool
+	o *orderedWriter
 
 	// hbDone is closed exactly once via hbStop to wake the heartbeat
 	// goroutine for prompt shutdown (Done / Error / FirstChunk). The
@@ -339,12 +335,11 @@ type sink struct {
 	hbExited chan struct{}
 }
 
-func newSink(w *poeproto.SSEWriter, hb time.Duration, hideThinking bool) *sink {
+func newSink(w *poeproto.SSEWriter, hb time.Duration) *sink {
 	s := &sink{
-		o:            &orderedWriter{w: w},
-		hideThinking: hideThinking,
-		hbDone:       make(chan struct{}),
-		hbExited:     make(chan struct{}),
+		o:        &orderedWriter{w: w},
+		hbDone:   make(chan struct{}),
+		hbExited: make(chan struct{}),
 	}
 	if hb > 0 {
 		go s.heartbeat(hb)
@@ -376,22 +371,17 @@ func (s *sink) heartbeat(every time.Duration) {
 			if heartbeatTickHook != nil {
 				heartbeatTickHook()
 			}
-			var frame string
-			if s.hideThinking {
-				spinTick++
-				dots := strings.Repeat(".", 1+(spinTick-1)%3)
-				// replace_response overwrites the prior frame so the
-				// dots animate in place rather than accumulating.
-				frame = "> _Thinking" + dots + "_"
-			}
-			// Empty frame in the !hideThinking case is intentional:
-			// replace_response with empty body keeps the SSE stream
-			// alive without polluting the final rendered response.
-			// (text events would *append* each tick's payload, which
-			// Poe's Markdown renderer then sees as leading content
-			// and can mis-parse subsequent headings, lists or fenced
-			// blocks emitted by the agent.)
-			gateOpen, _ := s.o.hbReplace(frame)
+			spinTick++
+			dots := strings.Repeat(".", 1+(spinTick-1)%3)
+			// replace_response overwrites the prior frame so the
+			// dots animate in place rather than accumulating. We use
+			// replace (not text-append) for keepalive too: text events
+			// would *append* each tick's payload, which Poe's Markdown
+			// renderer then sees as leading content and can mis-parse
+			// subsequent headings, lists or fenced blocks emitted by
+			// the agent. Replace + spinner doubles as user-visible
+			// liveness AND keepalive, so one path covers both.
+			gateOpen, _ := s.o.hbReplace("> _Thinking" + dots + "_")
 			if !gateOpen {
 				// A user write has landed (or the stream is closed):
 				// any further tick would be a wasted mutex acquire.
