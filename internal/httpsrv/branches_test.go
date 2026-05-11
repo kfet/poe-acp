@@ -163,36 +163,8 @@ func TestHandler_DebugLogPath(t *testing.T) {
 }
 
 func TestHandler_SpinnerInterval(t *testing.T) {
-	sa := &slowAgent{fakeAgent: &fakeAgent{}, release: make(chan struct{}), chunk: "x"}
-	rtr, err := router.New(router.Config{Agent: sa, StateDir: t.TempDir(), SessionTTL: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := New(Config{
-		Router:            rtr,
-		HeartbeatInterval: 100 * time.Millisecond,
-		SpinnerInterval:   5 * time.Millisecond,
-	})
-	body := mustJSON(map[string]any{
-		"type": "query", "conversation_id": "c1",
-		"query": []map[string]any{{"role": "user", "content": "hi", "parameters": map[string]any{"hide_thinking": true}}},
-	})
-	rec := httptest.NewRecorder()
-	wait := waitTicks(t, 2)
-	done := make(chan struct{})
-	go func() {
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body)))
-		close(done)
-	}()
-	wait()
-	close(sa.release)
-	<-done
-	if !strings.Contains(rec.Body.String(), "Thinking.") {
-		t.Fatalf("expected spinner: %s", rec.Body.String())
-	}
-}
-
-// hangAgent blocks Prompt until ctx is cancelled.
+	t.Skip("retired: SpinnerInterval collapsed into HeartbeatInterval")
+} // hangAgent blocks Prompt until ctx is cancelled.
 type hangAgent struct {
 	*fakeAgent
 	cancelled chan struct{}
@@ -328,7 +300,7 @@ func TestSink_BasicFlow(t *testing.T) {
 	if err := w.Meta(); err != nil {
 		t.Fatal(err)
 	}
-	s := newSink(w, 0, false) // heartbeat disabled path
+	s := newSink(w, 0) // heartbeat disabled path
 	if err := s.Text("hi"); err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +324,7 @@ func TestSink_FirstChunkWhileSpinning(t *testing.T) {
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	wait := waitTicks(t, 2) // two ticks → first iteration's hbReplace has definitely written
-	s := newSink(w, 5*time.Millisecond, true)
+	s := newSink(w, 5*time.Millisecond)
 	wait()
 	s.FirstChunk()
 	<-s.hbExited // race-free: heartbeat goroutine has fully returned
@@ -440,7 +412,7 @@ func TestSink_HeartbeatSelfDisarmsViaGate(t *testing.T) {
 	}
 	t.Cleanup(func() { heartbeatTickHook = prev })
 
-	s := newSink(w, time.Millisecond, false)
+	s := newSink(w, time.Millisecond)
 
 	<-inTick // goroutine paused inside the tick body, before hbReplace
 	// Close the gate via a user write while the goroutine is paused.
@@ -463,7 +435,7 @@ func TestSink_HeartbeatExitsOnStop(t *testing.T) {
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	wait := waitTicks(t, 1)
-	s := newSink(w, time.Millisecond, false)
+	s := newSink(w, time.Millisecond)
 	wait()
 	s.stop()
 	<-s.hbExited
@@ -538,7 +510,7 @@ func TestSink_HeartbeatNeverOverwritesUserContent(t *testing.T) {
 	// hideThinking=true so the heartbeat emits visible "Thinking…" frames
 	// — making the test sensitive to the buggy "tick after user write
 	// overwrites content" behaviour.
-	s := newSink(w, time.Millisecond, true)
+	s := newSink(w, time.Millisecond)
 
 	// Wait for the heartbeat to definitely have ticked a few times.
 	for i := 0; i < 3; i++ {

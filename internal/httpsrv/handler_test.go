@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -359,94 +360,67 @@ func (a *slowAgent) Prompt(ctx context.Context, sid acp.SessionId, _ []acp.Conte
 	return acp.StopReasonEndTurn, nil
 }
 
-func TestHandler_HideThinkingSpinner(t *testing.T) {
-	sa := &slowAgent{fakeAgent: &fakeAgent{}, release: make(chan struct{}), chunk: "answer"}
-	rtr, err := router.New(router.Config{Agent: sa, StateDir: t.TempDir(), SessionTTL: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := New(Config{Router: rtr, HeartbeatInterval: 5 * time.Millisecond})
+func TestHandler_SpinnerAnimatesUntilFirstChunk(t *testing.T) {
+	// The animated `> _Thinking._` spinner runs in BOTH hide_thinking
+	// modes — there's no separate "invisible heartbeat" path. The
+	// spinner doubles as keepalive and gives the user liveness during
+	// the gap between submit and first chunk; orderedWriter clears it
+	// the moment the first real chunk lands.
+	for _, hide := range []bool{true, false} {
+		t.Run(fmt.Sprintf("hide_thinking=%v", hide), func(t *testing.T) {
+			sa := &slowAgent{fakeAgent: &fakeAgent{}, release: make(chan struct{}), chunk: "answer"}
+			rtr, err := router.New(router.Config{Agent: sa, StateDir: t.TempDir(), SessionTTL: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := New(Config{Router: rtr, HeartbeatInterval: 5 * time.Millisecond})
 
-	body := mustJSON(map[string]any{
-		"type": "query", "conversation_id": "c1", "user_id": "u", "message_id": "m",
-		"query": []map[string]any{{
-			"role": "user", "content": "hi",
-			"parameters": map[string]any{"hide_thinking": true},
-		}},
-	})
+			body := mustJSON(map[string]any{
+				"type": "query", "conversation_id": "c1", "user_id": "u", "message_id": "m",
+				"query": []map[string]any{{
+					"role": "user", "content": "hi",
+					"parameters": map[string]any{"hide_thinking": hide},
+				}},
+			})
 
-	// Run in background so we can release the agent after a few ticks.
-	rec := httptest.NewRecorder()
-	wait := waitTicks(t, 2)
-	done := make(chan struct{})
-	go func() {
-		req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
-		h.ServeHTTP(rec, req)
-		close(done)
-	}()
-	wait()
-	close(sa.release)
-	<-done
+			rec := httptest.NewRecorder()
+			wait := waitTicks(t, 2)
+			done := make(chan struct{})
+			go func() {
+				req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
+				h.ServeHTTP(rec, req)
+				close(done)
+			}()
+			wait()
+			close(sa.release)
+			<-done
 
-	out := rec.Body.String()
-	if rec.Code != 200 {
-		t.Fatalf("status=%d body=%s", rec.Code, out)
-	}
-	if !strings.Contains(out, "event: replace_response") {
-		t.Fatalf("missing replace_response (spinner): %s", out)
-	}
-	if !strings.Contains(out, `"text":"\u003e _Thinking.`) && !strings.Contains(out, `"text":"> _Thinking.`) {
-		t.Fatalf("missing Thinking spinner text: %s", out)
-	}
-	// Spinner must be cleared (empty replace_response) before final answer.
-	if !strings.Contains(out, `"text":""`) {
-		t.Fatalf("missing spinner clear: %s", out)
-	}
-	if !strings.Contains(out, `"text":"answer"`) {
-		t.Fatalf("missing real answer: %s", out)
-	}
-	if !strings.Contains(out, "event: done") {
-		t.Fatalf("missing done: %s", out)
-	}
-}
-
-func TestHandler_NoSpinnerWhenThinkingVisible(t *testing.T) {
-	sa := &slowAgent{fakeAgent: &fakeAgent{}, release: make(chan struct{}), chunk: "answer"}
-	rtr, err := router.New(router.Config{Agent: sa, StateDir: t.TempDir(), SessionTTL: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := New(Config{Router: rtr, HeartbeatInterval: 5 * time.Millisecond})
-
-	body := mustJSON(map[string]any{
-		"type": "query", "conversation_id": "c1", "user_id": "u", "message_id": "m",
-		"query": []map[string]any{{"role": "user", "content": "hi"}},
-	})
-
-	rec := httptest.NewRecorder()
-	wait := waitTicks(t, 2)
-	done := make(chan struct{})
-	go func() {
-		req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
-		h.ServeHTTP(rec, req)
-		close(done)
-	}()
-	wait()
-	close(sa.release)
-	<-done
-
-	out := rec.Body.String()
-	if strings.Contains(out, "Thinking") {
-		t.Fatalf("unexpected Thinking text when hide_thinking=false: %s", out)
-	}
-	// Heartbeat should still tick — now as empty replace_response
-	// events rather than zero-width-space text appends, so the keep-
-	// alive bytes never accumulate in the rendered response.
-	if !strings.Contains(out, "event: replace_response") || !strings.Contains(out, `"text":""`) {
-		t.Fatalf("missing replace_response heartbeat: %s", out)
-	}
-	if strings.Contains(out, "\u200b") {
-		t.Fatalf("zero-width heartbeat must not appear in rendered output: %s", out)
+			out := rec.Body.String()
+			if rec.Code != 200 {
+				t.Fatalf("status=%d body=%s", rec.Code, out)
+			}
+			if !strings.Contains(out, "event: replace_response") {
+				t.Fatalf("missing replace_response (spinner): %s", out)
+			}
+			if !strings.Contains(out, `"text":"\u003e _Thinking.`) && !strings.Contains(out, `"text":"> _Thinking.`) {
+				t.Fatalf("missing Thinking spinner text: %s", out)
+			}
+			// Spinner must be cleared (empty replace_response) before final answer.
+			if !strings.Contains(out, `"text":""`) {
+				t.Fatalf("missing spinner clear: %s", out)
+			}
+			if !strings.Contains(out, `"text":"answer"`) {
+				t.Fatalf("missing real answer: %s", out)
+			}
+			if !strings.Contains(out, "event: done") {
+				t.Fatalf("missing done: %s", out)
+			}
+			// Zero-width heartbeat is dead code from a previous design;
+			// must never appear in rendered output.
+			if strings.Contains(out, "\u200b") {
+				t.Fatalf("zero-width heartbeat must not appear in rendered output: %s", out)
+			}
+		})
 	}
 }
 

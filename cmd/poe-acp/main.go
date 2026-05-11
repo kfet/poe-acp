@@ -42,8 +42,7 @@ func main() {
 		introMsg     = flag.String("introduction", "poe-acp: ACP-backed bot.", "Poe introduction message")
 		ttl          = flag.Duration("session-ttl", 2*time.Hour, "Idle TTL before a conv session is evicted")
 		gcEvery      = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
-		heartbeat    = flag.Duration("heartbeat-interval", 10*time.Second, "SSE heartbeat interval (0 to disable)")
-		spinner      = flag.Duration("spinner-interval", 1500*time.Millisecond, "Tick interval for the animated 'Thinking…' spinner when hide_thinking is on (<=0 falls back to heartbeat-interval)")
+		heartbeat    = flag.Duration("heartbeat-interval", 1500*time.Millisecond, "SSE heartbeat / spinner tick interval (0 to disable)")
 		allowAtt     = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
 		showVersion  = flag.Bool("version", false, "Print version and exit")
 		debugFlag    = flag.Bool("debug", false, "Enable verbose debug logging (also via POEACP_DEBUG=1)")
@@ -194,7 +193,6 @@ func main() {
 			IntroductionMessage:   *introMsg,
 		},
 		HeartbeatInterval: *heartbeat,
-		SpinnerInterval:   *spinner,
 		ParameterControlsProvider: func() *poeproto.ParameterControls {
 			m, _ := agent.Models()
 			return paramctl.Build(m, defaults)
