@@ -162,9 +162,7 @@ func TestHandler_DebugLogPath(t *testing.T) {
 	}
 }
 
-func TestHandler_SpinnerInterval(t *testing.T) {
-	t.Skip("retired: SpinnerInterval collapsed into HeartbeatInterval")
-} // hangAgent blocks Prompt until ctx is cancelled.
+// hangAgent blocks Prompt until ctx is cancelled.
 type hangAgent struct {
 	*fakeAgent
 	cancelled chan struct{}
@@ -362,6 +360,113 @@ func TestHandler_AuthBroker_NilOutcome(t *testing.T) {
 	}
 }
 
+// TestOrderedWriter_SpinnerAutoClear focuses on the clearSpinnerLocked
+// helper: a userText/userError/userDone arriving while a visible
+// spinner frame is on screen must auto-emit Replace("") first, since
+// Poe `text` events append to whatever the renderer thinks the body
+// is. (userReplace doesn't need this — its own Replace overwrites.)
+func TestOrderedWriter_SpinnerAutoClear(t *testing.T) {
+	cases := []struct {
+		name        string
+		do          func(o *orderedWriter) error
+		wantContent string // body of the final user-visible event
+	}{
+		{
+			name:        "userText clears then appends",
+			do:          func(o *orderedWriter) error { return o.userText("answer") },
+			wantContent: `"text":"answer"`,
+		},
+		{
+			name:        "userError clears then errors",
+			do:          func(o *orderedWriter) error { return o.userError("bad", "user_caused_error") },
+			wantContent: `"text":"bad"`,
+		},
+		{
+			name:        "userDone clears before sealing",
+			do:          func(o *orderedWriter) error { return o.userDone() },
+			wantContent: "event: done",
+		},
+		{
+			name:        "userReplace overwrites without explicit clear",
+			do:          func(o *orderedWriter) error { return o.userReplace("final") },
+			wantContent: `"text":"final"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			w, _ := poeproto.NewSSEWriter(rec)
+			_ = w.Meta()
+			o := &orderedWriter{w: w}
+			// Simulate the heartbeat having shown a non-empty spinner frame.
+			if open, _ := o.hbReplace("> _Thinking._"); !open {
+				t.Fatal("precondition: hb gate must start open")
+			}
+			if !o.spinnerVisible {
+				t.Fatal("precondition: spinnerVisible must be true after hbReplace with non-empty body")
+			}
+			if err := tc.do(o); err != nil {
+				t.Fatal(err)
+			}
+			if o.spinnerVisible {
+				t.Fatalf("%s left spinnerVisible=true", tc.name)
+			}
+			out := rec.Body.String()
+			events := parseSSE(t, out)
+			// For paths that take clearSpinnerLocked (Text / Error / Done),
+			// expect a `replace_response` with empty body BEFORE the user
+			// content. userReplace doesn't pre-clear; its Replace IS the
+			// overwrite.
+			if strings.Contains(tc.name, "userReplace") {
+				if got := events[len(events)-1]; got.event != "replace_response" || got.text != "final" {
+					t.Fatalf("userReplace last event = %+v; want replace_response 'final'", got)
+				}
+			} else {
+				// At least one empty replace_response must precede the user content.
+				sawClear := false
+				for i, e := range events {
+					if e.event == "replace_response" && e.text == "" {
+						// Anything user-visible after this counts.
+						for _, after := range events[i+1:] {
+							if after.event == "text" || after.event == "error" || after.event == "done" {
+								sawClear = true
+								break
+							}
+						}
+					}
+				}
+				if !sawClear {
+					t.Fatalf("%s: expected empty replace_response (spinner clear) before user content; events=%+v", tc.name, events)
+				}
+			}
+			if !strings.Contains(out, tc.wantContent) {
+				t.Fatalf("%s: missing %q in stream:\n%s", tc.name, tc.wantContent, out)
+			}
+		})
+	}
+}
+
+// TestOrderedWriter_NoClearWhenSpinnerNotVisible covers the negative
+// case: if no spinner frame has been shown, userText must NOT emit a
+// gratuitous Replace("") — the stream should jump straight to the
+// `text` event.
+func TestOrderedWriter_NoClearWhenSpinnerNotVisible(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	o := &orderedWriter{w: w}
+	if err := o.userText("hi"); err != nil {
+		t.Fatal(err)
+	}
+	out := rec.Body.String()
+	events := parseSSE(t, out)
+	for _, e := range events {
+		if e.event == "replace_response" {
+			t.Fatalf("unexpected replace_response without prior spinner: %+v\n%s", e, out)
+		}
+	}
+}
+
 // TestOrderedWriter_PostCloseWritesAreNoOps covers the `if o.closed`
 // guard on every user* method: once Done has been emitted, subsequent
 // writes silently no-op so a buggy caller can't tail-emit content
@@ -507,9 +612,9 @@ func TestSink_HeartbeatNeverOverwritesUserContent(t *testing.T) {
 	heartbeatTickHook = func() { ticks <- struct{}{} }
 	t.Cleanup(func() { heartbeatTickHook = prev })
 
-	// hideThinking=true so the heartbeat emits visible "Thinking…" frames
-	// — making the test sensitive to the buggy "tick after user write
-	// overwrites content" behaviour.
+	// The heartbeat emits visible "Thinking…" frames so the test is
+	// sensitive to the buggy "tick after user write overwrites
+	// content" behaviour the structural fix is meant to prevent.
 	s := newSink(w, time.Millisecond)
 
 	// Wait for the heartbeat to definitely have ticked a few times.
