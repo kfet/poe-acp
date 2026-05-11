@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Garbled / out-of-order output** — heartbeat goroutine could race router-side writes (`_(cancelled)_` on `StopReasonCancelled`, `_(response truncated)_` on `MaxTokens`/`MaxTurnRequests`, `_(option not applied)_` on applyOptions failure) when the agent emitted no chunks for `FirstChunk` to fire on. A late tick would clobber the just-written content with `Replace("")` (or a "Thinking…" spinner frame).
+
+  Root cause was structural: the SSE stream had two concurrent writers (heartbeat goroutine + router-driven chunk path) and correctness depended on each call site remembering to stop the heartbeat first — a footgun. Fix introduces `orderedWriter`, which owns the SSEWriter, a `realWritten` flag, and a single mutex; user-visible writes (`userText` / `userReplace` / `userError` / `userDone`) and heartbeat frames (`hbReplace`) all serialise through it, with the gate-check-and-write atomic w.r.t. each other. `hbReplace` becomes a no-op once any user write has landed, and the heartbeat goroutine self-disarms (returns) the first time it observes the closed gate — no caller has to remember anything. Bonus: `userText` / `userError` / `userDone` now auto-clear a visible spinner so the user never sees a frozen "Thinking…" trailing their final content. Regression covered by `TestOrderedWriter_HeartbeatGatedByUserWrite` (structural property), `TestSink_HeartbeatNeverOverwritesUserContent` (end-to-end), and `TestSink_HeartbeatSelfDisarmsViaGate` (goroutine self-disarm).
+
 ## [0.13.0] - 2026-05-09
 
 ### Added
