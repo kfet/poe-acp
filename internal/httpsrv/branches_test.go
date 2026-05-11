@@ -3,6 +3,7 @@ package httpsrv
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -350,11 +351,11 @@ func TestSink_FirstChunkWhileSpinning(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	wait := waitTicks(t, 1)
+	wait := waitTicks(t, 2) // two ticks → first iteration's hbReplace has definitely written
 	s := newSink(w, 5*time.Millisecond, true)
 	wait()
 	s.FirstChunk()
-	// after FirstChunk, heartbeat goroutine has exited.
+	<-s.hbExited // race-free: heartbeat goroutine has fully returned
 	if !strings.Contains(rec.Body.String(), "Thinking") {
 		t.Fatalf("missing spinner: %s", rec.Body.String())
 	}
@@ -389,30 +390,246 @@ func TestHandler_AuthBroker_NilOutcome(t *testing.T) {
 	}
 }
 
-func TestSink_HeartbeatExitsOnStop(t *testing.T) {
-	// heartbeat with started=true at tick time: select hbDone branch when stopped already.
+// TestOrderedWriter_PostCloseWritesAreNoOps covers the `if o.closed`
+// guard on every user* method: once Done has been emitted, subsequent
+// writes silently no-op so a buggy caller can't tail-emit content
+// after the stream has been sealed.
+func TestOrderedWriter_PostCloseWritesAreNoOps(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	wait := waitTicks(t, 1)
-	s := newSink(w, time.Millisecond, false)
-	wait()
-	s.stop()
+	o := &orderedWriter{w: w}
+	if err := o.userDone(); err != nil {
+		t.Fatal(err)
+	}
+	for _, do := range []func() error{
+		func() error { return o.userText("late") },
+		func() error { return o.userReplace("late") },
+		func() error { return o.userError("late", "user_caused_error") },
+		func() error { return o.userDone() },
+	} {
+		if err := do(); err != nil {
+			t.Fatalf("post-close write should be silent no-op, got err: %v", err)
+		}
+	}
+	// Heartbeat path also no-ops post-close.
+	if open, _ := o.hbReplace("late"); open {
+		t.Fatalf("hbReplace must report gate closed after Done")
+	}
+	if strings.Contains(rec.Body.String(), "late") {
+		t.Fatalf("late content leaked into stream:\n%s", rec.Body.String())
+	}
 }
 
-func TestSink_HeartbeatExitsWhenStartedAtTick(t *testing.T) {
+// TestSink_HeartbeatSelfDisarmsViaGate covers the goroutine's
+// self-disarm branch: when a user write closes the gate WHILE the
+// heartbeat goroutine is mid-tick, the goroutine observes
+// gateOpen=false from hbReplace and returns. Catching it inside the
+// tick body via the hook makes the sequencing deterministic.
+func TestSink_HeartbeatSelfDisarmsViaGate(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+
+	inTick := make(chan struct{})
+	proceed := make(chan struct{})
+	prev := heartbeatTickHook
+	heartbeatTickHook = func() {
+		inTick <- struct{}{}
+		<-proceed
+	}
+	t.Cleanup(func() { heartbeatTickHook = prev })
+
+	s := newSink(w, time.Millisecond, false)
+
+	<-inTick // goroutine paused inside the tick body, before hbReplace
+	// Close the gate via a user write while the goroutine is paused.
+	// We deliberately do NOT call s.stop() / s.Done(): the hbDone
+	// channel stays open so the only way for the goroutine to exit
+	// is via the gateOpen=false self-disarm branch.
+	if err := s.Replace("user content"); err != nil {
+		t.Fatal(err)
+	}
+	close(proceed) // let the goroutine continue → hbReplace → gate closed → return
+	<-s.hbExited   // race-free: goroutine has fully returned via self-disarm
+	// Sanity: no spinner / heartbeat frame in the recorded stream.
+	if strings.Contains(rec.Body.String(), "Thinking") {
+		t.Fatalf("heartbeat must not have written after gate closed:\n%s", rec.Body.String())
+	}
+}
+
+func TestSink_HeartbeatExitsOnStop(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	wait := waitTicks(t, 1)
 	s := newSink(w, time.Millisecond, false)
-	// Flip started before the tick fires; the heartbeat goroutine should
-	// notice on its next tick and return without closing hbDone.
-	s.mu.Lock()
-	s.started = true
-	s.mu.Unlock()
 	wait()
 	s.stop()
+	<-s.hbExited
+}
+
+// TestOrderedWriter_HeartbeatGatedByUserWrite is the structural
+// regression for the "garbled / out-of-order output" bug. The
+// invariant: once any user-visible write has landed on the SSE stream
+// (Text / Replace / Error / Done), subsequent heartbeat frames must
+// become no-ops — enforced INSIDE orderedWriter, under the same mutex
+// that serialises user writes, so the gate-check-and-write is atomic.
+//
+// Earlier designs put this responsibility on each call site ("call
+// stop() before any user write"), which was a footgun: any new write
+// site that forgot would let a stale heartbeat tick clobber user
+// content with Replace("") (or a "Thinking…" frame). With the gate
+// inside orderedWriter, no caller can bypass it.
+func TestOrderedWriter_HeartbeatGatedByUserWrite(t *testing.T) {
+	cases := []struct {
+		name string
+		do   func(o *orderedWriter) error
+	}{
+		{"userText", func(o *orderedWriter) error { return o.userText("hi") }},
+		{"userReplace", func(o *orderedWriter) error { return o.userReplace("hi") }},
+		{"userError", func(o *orderedWriter) error { return o.userError("oops", "user_caused_error") }},
+		{"userDone", func(o *orderedWriter) error { return o.userDone() }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			w, _ := poeproto.NewSSEWriter(rec)
+			_ = w.Meta()
+			o := &orderedWriter{w: w}
+			// Pre-write: gate is open, heartbeat frames go on the wire.
+			if open, _ := o.hbReplace(""); !open {
+				t.Fatal("gate must start open on a fresh orderedWriter")
+			}
+			// User write closes the gate.
+			if err := tc.do(o); err != nil {
+				t.Fatal(err)
+			}
+			// Post-write: gate is closed; heartbeat frames are no-ops.
+			if open, _ := o.hbReplace("> _Thinking._"); open {
+				t.Fatalf("%s did not close the heartbeat gate", tc.name)
+			}
+			if open, _ := o.hbReplace(""); open {
+				t.Fatalf("%s did not close the heartbeat gate (empty frame)", tc.name)
+			}
+		})
+	}
+}
+
+// TestSink_HeartbeatNeverOverwritesUserContent exercises the invariant
+// end-to-end through the full sink → SSEWriter → http.ResponseWriter
+// path. After driving several heartbeat ticks (so the spinner is
+// definitely alive), it issues a user-visible Replace, then waits for
+// any stale tick to fire (deterministically, via the tick hook), and
+// verifies that no `replace_response` event with a heartbeat-shaped
+// body appears AFTER the user content in the recorded SSE sequence.
+func TestSink_HeartbeatNeverOverwritesUserContent(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+
+	// Hook: count ticks AND signal each one so we can sequence
+	// deterministically without time.Sleep.
+	ticks := make(chan struct{}, 256)
+	prev := heartbeatTickHook
+	heartbeatTickHook = func() { ticks <- struct{}{} }
+	t.Cleanup(func() { heartbeatTickHook = prev })
+
+	// hideThinking=true so the heartbeat emits visible "Thinking…" frames
+	// — making the test sensitive to the buggy "tick after user write
+	// overwrites content" behaviour.
+	s := newSink(w, time.Millisecond, true)
+
+	// Wait for the heartbeat to definitely have ticked a few times.
+	for i := 0; i < 3; i++ {
+		select {
+		case <-ticks:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("heartbeat did not tick %d times", i+1)
+		}
+	}
+
+	// User write — the structural invariant says no further heartbeat
+	// frame may appear after this in the SSE event sequence.
+	const userMarker = "_(cancelled)_"
+	if err := s.Replace(userMarker); err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	// Drain any tick that fires AFTER the user write — under the
+	// invariant the heartbeat goroutine self-disarms on its next
+	// tick (gate closed → return). Done() additionally closes hbDone
+	// so the goroutine wakes immediately rather than waiting for the
+	// next tick. Either way, hbExited is the race-free signal that
+	// the goroutine has returned and won't write to rec.Body again.
+	if err := s.Done(); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	<-s.hbExited
+
+	// Parse the recorded SSE event sequence.
+	events := parseSSE(t, rec.Body.String())
+	firstUser := -1
+	for i, e := range events {
+		if e.event == "text" || (e.event == "replace_response" && e.text == userMarker) {
+			firstUser = i
+			break
+		}
+	}
+	if firstUser < 0 {
+		t.Fatalf("user content %q not found in SSE stream:\n%s", userMarker, rec.Body.String())
+	}
+	for i := firstUser + 1; i < len(events); i++ {
+		e := events[i]
+		if e.event == "replace_response" && isHeartbeatFrame(e.text) {
+			t.Fatalf("heartbeat-shaped replace_response %q at idx %d (after first user content at %d) — would have overwritten user content:\n%s",
+				e.text, i, firstUser, rec.Body.String())
+		}
+	}
+}
+
+// sseEvent is one parsed `event: NAME\ndata: {...}` SSE record.
+type sseEventRec struct {
+	event string
+	text  string // .text field of the JSON payload, if present
+}
+
+// parseSSE parses an SSE byte stream into ordered events. Tolerant —
+// only extracts what the test needs.
+func parseSSE(t *testing.T, body string) []sseEventRec {
+	t.Helper()
+	var out []sseEventRec
+	for _, frame := range strings.Split(body, "\n\n") {
+		frame = strings.TrimSpace(frame)
+		if frame == "" {
+			continue
+		}
+		var e sseEventRec
+		for _, line := range strings.Split(frame, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				e.event = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				var payload struct {
+					Text string `json:"text"`
+				}
+				_ = json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &payload)
+				e.text = payload.Text
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// isHeartbeatFrame reports whether s matches a body the heartbeat
+// goroutine would emit: empty (the keepalive) or a "> _Thinking…_"
+// spinner frame.
+func isHeartbeatFrame(s string) bool {
+	if s == "" {
+		return true
+	}
+	return strings.HasPrefix(s, "> _Thinking") && strings.HasSuffix(s, "_")
 }
 
 // waitTicks wires heartbeatTickHook to a channel and returns a func

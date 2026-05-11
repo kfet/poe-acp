@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/kfet/poe-acp/internal/authbroker"
@@ -202,27 +201,158 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 // overwrites the previous one), since the user has opted out of seeing
 // the agent's actual thought stream and would otherwise stare at a
 // blank reply for the duration of the thinking phase.
+//
+// Concurrency model — single-writer invariant:
+//
+// The heartbeat goroutine is a SECOND writer to the SSE stream
+// concurrent with the router-driven chunk path. Earlier designs gave
+// each user-write method (Text, Replace, Error, Done) the obligation
+// to "stop the heartbeat first" — a footgun: any new write site that
+// forgot would let a stale heartbeat tick land AFTER the user content
+// and silently overwrite it with Replace("") (or a "Thinking…" frame),
+// leaving the user with garbled or missing output.
+//
+// The fix moves the gate INTO the writer. orderedWriter owns the
+// SSEWriter, a `realWritten` flag, and a single mutex; the
+// flag-check-and-write is atomic. Heartbeat frames go through
+// hbReplace, which is a no-op once any user write has landed; user
+// writes go through the user* methods, which set realWritten under the
+// same mutex. The heartbeat goroutine self-disarms (returns) the first
+// time hbReplace reports the gate has closed — no caller has to
+// remember to stop it. Done() / Error() additionally close hbDone so
+// the goroutine wakes immediately rather than waiting for the next tick.
+type orderedWriter struct {
+	w  *poeproto.SSEWriter
+	mu sync.Mutex
+	// realWritten flips true the first time a user-visible write lands.
+	// Once true, hbReplace becomes a no-op so heartbeat ticks can never
+	// appear after user content in the SSE event sequence.
+	realWritten bool
+	closed      bool // Done emitted; further writes are no-ops
+	// spinnerVisible is true if the last hbReplace wrote a non-empty
+	// body (i.e. a visible "Thinking…" frame is currently on screen).
+	// userText uses this to emit a Replace("") clear before its append,
+	// since Poe `text` events append to whatever the renderer thinks
+	// the body is — without the clear, "answer" would render as
+	// "> _Thinking._answer".
+	spinnerVisible bool
+}
+
+// userText writes a `text` SSE event and marks the stream as having
+// real content. Subsequent heartbeat ticks become no-ops. If a visible
+// spinner frame is on screen, it is cleared with Replace("") first.
+// The spinner-clear's IO error is intentionally swallowed: if the SSE
+// connection has dropped, the subsequent o.w.Text(s) will surface the
+// same failure.
+func (o *orderedWriter) userText(s string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil
+	}
+	o.clearSpinnerLocked()
+	o.realWritten = true
+	return o.w.Text(s)
+}
+
+// userReplace writes a user-driven `replace_response` event. The
+// replace itself overwrites any visible spinner, so no pre-clear is
+// needed.
+func (o *orderedWriter) userReplace(s string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil
+	}
+	o.realWritten = true
+	o.spinnerVisible = false
+	return o.w.Replace(s)
+}
+
+// userError writes an `error` SSE event. Pre-clears a visible spinner
+// so the error rendering isn't preceded by "Thinking…" in the body.
+func (o *orderedWriter) userError(text, et string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil
+	}
+	o.clearSpinnerLocked()
+	o.realWritten = true
+	return o.w.Error(text, et)
+}
+
+// userDone writes the terminal `done` event and seals the stream so
+// nothing else (heartbeat or stray user write) can be emitted after.
+// If a visible spinner is the only thing on screen, clear it first so
+// the user doesn't see a frozen "Thinking…" as their final content.
+func (o *orderedWriter) userDone() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil
+	}
+	o.clearSpinnerLocked()
+	o.closed = true
+	return o.w.Done()
+}
+
+// clearSpinnerLocked drops a visible spinner frame ahead of a user
+// write. Caller must hold o.mu. Errors are swallowed; see userText.
+func (o *orderedWriter) clearSpinnerLocked() {
+	if !o.realWritten && o.spinnerVisible {
+		_ = o.w.Replace("")
+		o.spinnerVisible = false
+	}
+}
+
+// hbReplace writes a heartbeat-driven `replace_response` event.
+// Returns gateOpen=true iff the frame actually went on the wire (i.e.,
+// the gate is still open — no user write has landed and the stream is
+// not closed). The heartbeat goroutine uses gateOpen=false as its
+// self-disarm signal.
+func (o *orderedWriter) hbReplace(s string) (gateOpen bool, err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.realWritten || o.closed {
+		return false, nil
+	}
+	o.spinnerVisible = s != ""
+	return true, o.w.Replace(s)
+}
+
 type sink struct {
-	w            *poeproto.SSEWriter
+	o            *orderedWriter
 	hideThinking bool
 
-	mu       sync.Mutex
-	started  bool
-	spinTick int  // number of spinner frames emitted so far
-	cleared  bool // spinner has been replaced with empty body
-	stopped  atomic.Bool
-	hbDone   chan struct{}
+	// hbDone is closed exactly once via hbStop to wake the heartbeat
+	// goroutine for prompt shutdown (Done / Error / FirstChunk). The
+	// heartbeat ALSO self-exits on its next tick when the orderedWriter
+	// gate has closed — so even if every explicit stop call were
+	// removed, the goroutine would terminate within one tick of the
+	// first user write (and produce no garbled output in the meantime).
+	hbDone chan struct{}
+	hbStop sync.Once
+	// hbExited is closed by the heartbeat goroutine on exit. Tests
+	// wait on this to read the SSE body race-free; production callers
+	// don't observe it. Pre-closed when no heartbeat goroutine is spawned.
+	hbExited chan struct{}
 }
 
 func newSink(w *poeproto.SSEWriter, hb time.Duration, hideThinking bool) *sink {
-	s := &sink{w: w, hideThinking: hideThinking, hbDone: make(chan struct{})}
+	s := &sink{
+		o:            &orderedWriter{w: w},
+		hideThinking: hideThinking,
+		hbDone:       make(chan struct{}),
+		hbExited:     make(chan struct{}),
+	}
 	if hb > 0 {
 		go s.heartbeat(hb)
 	} else {
-		// Heartbeat disabled: mark as already-stopped so stop()/FirstChunk()
-		// are no-ops and don't double-close the channel.
-		s.stopped.Store(true)
-		close(s.hbDone)
+		// Heartbeat disabled: pre-close so stop() is a no-op and tests
+		// that wait on hbExited don't block.
+		s.hbStop.Do(func() { close(s.hbDone) })
+		close(s.hbExited)
 	}
 	return s
 }
@@ -233,8 +363,11 @@ func newSink(w *poeproto.SSEWriter, hb time.Duration, hideThinking bool) *sink {
 var heartbeatTickHook func()
 
 func (s *sink) heartbeat(every time.Duration) {
+	defer close(s.hbExited)
 	t := time.NewTicker(every)
 	defer t.Stop()
+	// spinTick is owned solely by this goroutine; no synchronisation.
+	var spinTick int
 	for {
 		select {
 		case <-s.hbDone:
@@ -243,61 +376,50 @@ func (s *sink) heartbeat(every time.Duration) {
 			if heartbeatTickHook != nil {
 				heartbeatTickHook()
 			}
-			s.mu.Lock()
-			if s.started || s.stopped.Load() {
-				s.mu.Unlock()
-				return
-			}
+			var frame string
 			if s.hideThinking {
-				s.spinTick++
-				dots := strings.Repeat(".", 1+(s.spinTick-1)%3)
+				spinTick++
+				dots := strings.Repeat(".", 1+(spinTick-1)%3)
 				// replace_response overwrites the prior frame so the
 				// dots animate in place rather than accumulating.
-				_ = s.w.Replace("> _Thinking" + dots + "_")
-			} else {
-				// replace_response with empty body keeps the SSE
-				// stream alive without polluting the final rendered
-				// response. Using `text` events here would *append*
-				// each tick's payload (zero-width space or otherwise),
-				// which Poe's Markdown renderer then sees as leading
-				// content and can mis-parse subsequent headings, lists
-				// or fenced blocks emitted by the agent.
-				_ = s.w.Replace("")
+				frame = "> _Thinking" + dots + "_"
 			}
-			s.mu.Unlock()
+			// Empty frame in the !hideThinking case is intentional:
+			// replace_response with empty body keeps the SSE stream
+			// alive without polluting the final rendered response.
+			// (text events would *append* each tick's payload, which
+			// Poe's Markdown renderer then sees as leading content
+			// and can mis-parse subsequent headings, lists or fenced
+			// blocks emitted by the agent.)
+			gateOpen, _ := s.o.hbReplace(frame)
+			if !gateOpen {
+				// A user write has landed (or the stream is closed):
+				// any further tick would be a wasted mutex acquire.
+				// Self-disarm.
+				return
+			}
 		}
 	}
 }
 
-// stop halts the heartbeat goroutine. If a thinking spinner was emitted,
-// it is cleared with an empty replace_response so the upcoming real
-// content (or error/done) starts from a blank slate.
+// stop wakes the heartbeat goroutine for prompt shutdown. Idempotent.
+// Safe to call any number of times from any goroutine. Even if never
+// called, the heartbeat self-disarms via the orderedWriter gate on its
+// next tick after the first user write.
 func (s *sink) stop() {
-	if !s.stopped.CompareAndSwap(false, true) {
-		return
-	}
-	close(s.hbDone)
-	s.mu.Lock()
-	wasSpinning := s.hideThinking && s.spinTick > 0 && !s.cleared
-	s.cleared = true
-	s.mu.Unlock()
-	if wasSpinning {
-		_ = s.w.Replace("")
-	}
+	s.hbStop.Do(func() { close(s.hbDone) })
 }
 
 // FirstChunk — router calls this on the first real agent chunk.
-func (s *sink) FirstChunk() {
-	s.mu.Lock()
-	s.started = true
-	s.mu.Unlock()
-	s.stop()
-}
+// Optimisation only: prompts heartbeat shutdown so the goroutine
+// doesn't sit until the next tick before exiting. Correctness comes
+// from orderedWriter, not from this call.
+func (s *sink) FirstChunk() { s.stop() }
 
-func (s *sink) Text(t string) error      { return s.w.Text(t) }
-func (s *sink) Replace(t string) error   { return s.w.Replace(t) }
-func (s *sink) Error(t, et string) error { s.stop(); return s.w.Error(t, et) }
-func (s *sink) Done() error              { s.stop(); return s.w.Done() }
+func (s *sink) Text(t string) error      { return s.o.userText(t) }
+func (s *sink) Replace(t string) error   { return s.o.userReplace(t) }
+func (s *sink) Error(t, et string) error { s.stop(); return s.o.userError(t, et) }
+func (s *sink) Done() error              { s.stop(); return s.o.userDone() }
 
 // handleAuth runs an auth-flow turn end-to-end on the SSE stream. Always
 // emits a single text payload + done, regardless of broker outcome.
