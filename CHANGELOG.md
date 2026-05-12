@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-05-11
+
+
 ### Changed
 
 - Bumped `github.com/coder/acp-go-sdk` from v0.6.3 to v0.12.2. Upstream now serialises notification dispatch via a sequence-numbered `notificationQueue`, fixing out-of-order `session/update` delivery that previously caused garbled assistant text in Poe (chunk reordering across adjacent text deltas). API renames absorbed: `FileSystemCapability` → `FileSystemCapabilities`; `SetSessionModel{Request,Response}` / `ModelId` (for `session/set_model`) → `UnstableSetSessionModel{Request,Response}` / `UnstableModelId`; `RequestPermissionToolCall` → `ToolCallUpdate`.
