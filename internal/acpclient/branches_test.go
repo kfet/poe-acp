@@ -85,7 +85,7 @@ func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMe
 		}
 		return nil, nil
 	case acp.AgentMethodSessionSetModel:
-		var p acp.SetSessionModelRequest
+		var p acp.UnstableSetSessionModelRequest
 		_ = json.Unmarshal(params, &p)
 		f.mu.Lock()
 		f.gotSetModelArg = string(p.ModelId)
@@ -93,7 +93,7 @@ func (f *fakeAgent) handle(ctx context.Context, method string, params json.RawMe
 		if f.setModelErr != nil {
 			return nil, f.setModelErr
 		}
-		return acp.SetSessionModelResponse{}, nil
+		return acp.UnstableSetSessionModelResponse{}, nil
 	case "session/set_config_option":
 		if f.setConfigErr != nil {
 			return nil, f.setConfigErr
