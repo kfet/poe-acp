@@ -24,7 +24,7 @@ func opts(items ...string) []acp.PermissionOption {
 
 func decide(p Policy, title string, names ...string) string {
 	r := p.Decide(context.Background(), acp.RequestPermissionRequest{
-		ToolCall: acp.RequestPermissionToolCall{Title: ptr(title)},
+		ToolCall: acp.ToolCallUpdate{Title: ptr(title)},
 		Options:  opts(names...),
 	})
 	if r.Outcome.Selected == nil {

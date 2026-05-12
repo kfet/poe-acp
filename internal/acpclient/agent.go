@@ -179,7 +179,7 @@ func connect(ctx context.Context, cfg Config, cmd *exec.Cmd, stdin io.WriteClose
 	initParams := acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
-			Fs:       acp.FileSystemCapability{ReadTextFile: true, WriteTextFile: true},
+			Fs:       acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true},
 			Terminal: false,
 			Meta: map[string]any{
 				"session.systemPrompt": map[string]any{"version": 1},
@@ -271,9 +271,9 @@ func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpda
 
 // SetModel calls the unstable session/set_model RPC.
 func (a *AgentProc) SetModel(ctx context.Context, sid acp.SessionId, modelID string) error {
-	_, err := acp.SendRequest[acp.SetSessionModelResponse](a.conn, ctx, acp.AgentMethodSessionSetModel, acp.SetSessionModelRequest{
+	_, err := acp.SendRequest[acp.UnstableSetSessionModelResponse](a.conn, ctx, acp.AgentMethodSessionSetModel, acp.UnstableSetSessionModelRequest{
 		SessionId: sid,
-		ModelId:   acp.ModelId(modelID),
+		ModelId:   acp.UnstableModelId(modelID),
 	})
 	return err
 }
