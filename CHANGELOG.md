@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`report_reaction` forwarded as out-of-band turn.** Poe reaction events (👍/👎 add or remove on an assistant message) now reach the agent as a synthetic prompt prefixed with `[poe-acp:out-of-band reaction]`, sharing the conversation's ACP session so memory/preference updates stick. Decoder handles two plausible wire shapes — single `reaction` field with optional `+`/`-` prefix, or split `reaction`+`action:added|removed` — and normalises them to `(kind, added|removed)`. Response is discarded (Poe has no SSE channel for the reaction reply); HTTP returns 200 OK as soon as the turn is queued. Raw payloads are logged via debuglog so the actual shape stays visible in prod.
+
+### Changed
+
+- **Per-session turn queue.** Replaced the per-conv `turnMu` + `inUse` counter in `internal/router` with a per-session FIFO queue (`sessionQueue`) consumed by a single `runTurns` goroutine that owns all `Agent.Prompt` calls for the session. Callers submit a `turnReq` and wait on `req.done`. Reactions and user prompts share the queue; on overflow the oldest reaction is shed, never a user prompt; reactions older than 60s at dequeue are dropped as a liveness safeguard. Preserves the existing `endTurn`-ack invariant — the runner only finalises the sink after the chunk drain has processed every chunk emitted before `Agent.Prompt` returned. GC eviction now checks `queue.idle()` instead of an in-use counter.
+
+- **System-prompt out-of-band contract clause.** Router prepends a short clause to the operator's `SystemPrompt` explaining the `[poe-acp:out-of-band ...]` marker so the agent recognises synthetic turns, replies tersely, and doesn't address the user (the reply is discarded).
+
 ## [0.13.2] - 2026-05-11
 
 

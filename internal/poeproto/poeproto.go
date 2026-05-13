@@ -46,6 +46,17 @@ type Attachment struct {
 	ParsedContent string `json:"parsed_content,omitempty"`
 }
 
+// ReactionAction is the normalised add/remove polarity of a reaction
+// event. Empty string is treated as "added" by default — Poe's earliest
+// payload shape only had a single `reaction` field with no explicit
+// action and represented adds.
+type ReactionAction string
+
+const (
+	ReactionAdded   ReactionAction = "added"
+	ReactionRemoved ReactionAction = "removed"
+)
+
 // Request is the shape of an inbound Poe POST.
 type Request struct {
 	Type           string    `json:"type"`
@@ -53,6 +64,22 @@ type Request struct {
 	MessageID      string    `json:"message_id,omitempty"`
 	UserID         string    `json:"user_id,omitempty"`
 	ConversationID string    `json:"conversation_id,omitempty"`
+
+	// Reaction fields populated only when Type == TypeReportReaction.
+	// Poe has shipped at least two payload shapes for this event:
+	//
+	//   (a) single field, prefix-encoded sign:
+	//         {"reaction":"like"} | {"reaction":"+👍"} | {"reaction":"-👍"}
+	//
+	//   (b) split fields:
+	//         {"reaction":"👍","action":"added"|"removed"}
+	//
+	// Decode() normalises both into Reaction (emoji/kind, with any
+	// '+'/'-' prefix stripped) + ReactionAction (added|removed). The
+	// raw bytes are logged via debuglog so the wire shape stays
+	// visible in prod even after normalisation.
+	Reaction       string         `json:"reaction,omitempty"`
+	ReactionAction ReactionAction `json:"action,omitempty"`
 }
 
 // LatestUserText returns the content of the last `user` message in the query.
@@ -91,7 +118,30 @@ func Decode(body io.Reader) (*Request, error) {
 	if debuglog.Enabled() {
 		debuglog.Logf("raw poe body (%d bytes, type=%s): %s", len(raw), req.Type, string(raw))
 	}
+	if req.Type == TypeReportReaction {
+		req.Reaction, req.ReactionAction = normaliseReaction(req.Reaction, req.ReactionAction)
+	}
 	return &req, nil
+}
+
+// normaliseReaction collapses the two known Poe reaction payload shapes
+// into (kind, added|removed). When action is non-empty, it wins. When
+// action is empty, a leading '+' / '-' on the reaction string encodes
+// the polarity; otherwise the event is treated as an add.
+func normaliseReaction(reaction string, action ReactionAction) (string, ReactionAction) {
+	switch action {
+	case ReactionAdded, ReactionRemoved:
+		return reaction, action
+	}
+	if len(reaction) > 0 {
+		switch reaction[0] {
+		case '+':
+			return reaction[1:], ReactionAdded
+		case '-':
+			return reaction[1:], ReactionRemoved
+		}
+	}
+	return reaction, ReactionAdded
 }
 
 // SettingsResponse is the JSON returned for a `settings` request.

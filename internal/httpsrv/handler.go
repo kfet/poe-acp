@@ -81,7 +81,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case poeproto.TypeQuery:
 		h.handleQuery(r.Context(), w, req)
 
-	case poeproto.TypeReportFeedback, poeproto.TypeReportReaction, poeproto.TypeReportError:
+	case poeproto.TypeReportReaction:
+		h.handleReaction(r.Context(), req)
+		w.WriteHeader(http.StatusOK)
+
+	case poeproto.TypeReportFeedback, poeproto.TypeReportError:
 		w.WriteHeader(http.StatusOK)
 
 	default:
@@ -431,6 +435,29 @@ func (h *Handler) handleAuth(ctx context.Context, sse *poeproto.SSEWriter, convI
 		_ = sse.Text(out.Text)
 	}
 	_ = sse.Done()
+}
+
+// handleReaction queues an out-of-band reaction turn against the
+// session. Returns immediately; the agent's response is discarded
+// because Poe gives us no channel to deliver it on. Queue overflow is
+// logged inside the router but the HTTP response is always 200 OK.
+func (h *Handler) handleReaction(ctx context.Context, req *poeproto.Request) {
+	if debuglog.Enabled() {
+		debuglog.Logf("report_reaction: conv=%q user=%q msg=%q reaction=%q action=%q",
+			req.ConversationID, req.UserID, req.MessageID, req.Reaction, req.ReactionAction)
+	}
+	if req.Reaction == "" {
+		// Malformed payload: nothing to forward. Log and ack.
+		log.Printf("report_reaction (conv=%s): missing reaction kind; dropping",
+			req.ConversationID)
+		return
+	}
+	if err := h.cfg.Router.ReportReaction(
+		ctx, req.ConversationID, req.UserID, req.MessageID,
+		req.Reaction, string(req.ReactionAction),
+	); err != nil {
+		log.Printf("report_reaction (conv=%s): %v", req.ConversationID, err)
+	}
 }
 
 // latestUserTurn returns the content of the most recent user turn, or ""
