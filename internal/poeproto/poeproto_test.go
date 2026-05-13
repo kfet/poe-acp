@@ -88,3 +88,34 @@ func TestRequest_DecodesAttachments(t *testing.T) {
 		t.Fatalf("att[1].ParsedContent=%q", atts[1].ParsedContent)
 	}
 }
+
+func TestRequest_DecodesReaction(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		body       string
+		wantKind   string
+		wantAction ReactionAction
+	}{
+		{"split-added", `{"type":"report_reaction","reaction":"👍","action":"added","message_id":"m1"}`, "👍", ReactionAdded},
+		{"split-removed", `{"type":"report_reaction","reaction":"👎","action":"removed","message_id":"m1"}`, "👎", ReactionRemoved},
+		{"plus-prefix", `{"type":"report_reaction","reaction":"+👍","message_id":"m1"}`, "👍", ReactionAdded},
+		{"minus-prefix", `{"type":"report_reaction","reaction":"-👍","message_id":"m1"}`, "👍", ReactionRemoved},
+		{"bare-like", `{"type":"report_reaction","reaction":"like","message_id":"m1"}`, "like", ReactionAdded},
+		{"bare-dislike", `{"type":"report_reaction","reaction":"dislike","message_id":"m1"}`, "dislike", ReactionAdded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := Decode(strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if req.Reaction != tc.wantKind {
+				t.Errorf("Reaction=%q want %q", req.Reaction, tc.wantKind)
+			}
+			if req.ReactionAction != tc.wantAction {
+				t.Errorf("ReactionAction=%q want %q", req.ReactionAction, tc.wantAction)
+			}
+		})
+	}
+}
