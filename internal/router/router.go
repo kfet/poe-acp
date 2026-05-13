@@ -156,12 +156,13 @@ type sessionState struct {
 	sessionID acp.SessionId
 	cwd       string
 
-	// turnMu serialises prompts for this conv. Held for the whole turn.
-	turnMu sync.Mutex
-	// inUse is non-zero while a prompt is in flight; GC skips such
-	// sessions so a long generation isn't evicted out from under itself.
-	// Protected by Router.mu (read by gcOnce, written by Prompt).
-	inUse int
+	// queue holds pending turnReqs. A single runTurns goroutine
+	// (spawned in getOrCreate) consumes from it and owns all
+	// Agent.Prompt calls for this session, serialising turns FIFO.
+	queue *sessionQueue
+	// runStop is closed by gcOnce when the session is evicted; the
+	// runTurns goroutine exits on its next wait iteration.
+	runStop chan struct{}
 
 	// chunkCh is session-lifetime: created once in getOrCreate, never
 	// reassigned. OnUpdate sends to it from any goroutine without any
@@ -174,24 +175,184 @@ type sessionState struct {
 
 	// applied tracks the last successfully-applied agent options, so
 	// we only call set_model / set_config_option when values change.
-	// Protected by turnMu.
+	// Read/written only by the runTurns goroutine; no lock needed.
 	applied Options
 
 	lastUsedNs int64 // protected by Router.mu
 
-	// pendingSystemPromptInline, when true, causes the next Prompt to
-	// prepend the router's SystemPrompt text to the first content
-	// block. Used on the fallback path (agent didn't advertise the
-	// session.systemPrompt cap) for fresh sessions and on resume.
-	// Protected by turnMu.
+	// pendingSystemPromptInline, when true, causes the next user-kind
+	// Prompt to prepend the router's SystemPrompt text to the first
+	// content block. Used on the fallback path (agent didn't advertise
+	// the session.systemPrompt cap) for fresh sessions and on resume.
+	// Read/written only by the runTurns goroutine; no lock needed.
 	pendingSystemPromptInline bool
+}
+
+// turnKind classifies a queued turnReq.
+type turnKind int
+
+const (
+	turnUser     turnKind = iota // a real Poe user query — never shed on overflow
+	turnReaction                 // out-of-band reaction event — may be shed
+)
+
+// turnReq is one queued turn for a session. The session's runTurns
+// goroutine pops these FIFO and owns the Agent.Prompt call.
+//
+// Concurrency: the submitter writes all fields before pushing onto the
+// queue, then waits on req.done vs req.ctx.Done(). runTurns reads them
+// after popping. No locking needed — handoff via the queue's mutex.
+type turnReq struct {
+	kind         turnKind
+	ctx          context.Context
+	sink         ChunkSink
+	opts         Options            // user turns only
+	blocks       []acp.ContentBlock // prompt content blocks
+	hideThinking bool               // forwarded to drain via beginTurn
+
+	enqueuedAt time.Time
+	// done is closed by runTurns AFTER endTurn ack AND sink.Done /
+	// Error / Replace has been called. Submitters wait on it for
+	// turn completion. Always closed (never sent on) so multiple
+	// readers can observe completion.
+	done chan struct{}
+	// err is set by the runner before closing done. Submitters that
+	// care (Prompt) read it after <-done.
+	err error
+	// shed, when true at the moment done is closed, signals the
+	// request was dropped by the queue (overflow shed, stop, or
+	// age-drop). For reactions the difference is logged but the HTTP
+	// response is the same; for user prompts shedding is never
+	// silent — push() returns false instead.
+	shed bool
+}
+
+// reactionMaxAge is the liveness safeguard: reactions older than this
+// at dequeue time are dropped without dispatching to the agent. Stops
+// a burst of reactions from blocking real prompts indefinitely if the
+// agent has stalled.
+const reactionMaxAge = 60 * time.Second
+
+// sessionQueueCap bounds the per-session pending queue. Exceeding the
+// cap triggers oldest-reaction shedding; real user prompts never shed
+// (the queue grows past the cap if it has to).
+const sessionQueueCap = 32
+
+// sessionQueue is the per-session FIFO of pending turnReqs. Push and
+// pop are mutex-guarded; runTurns blocks on notify when empty.
+type sessionQueue struct {
+	mu       sync.Mutex
+	q        []*turnReq
+	inFlight bool
+	stopped  bool
+	notify   chan struct{} // buffered cap 1; signals "queue non-empty or stopped"
+}
+
+func newSessionQueue() *sessionQueue {
+	return &sessionQueue{notify: make(chan struct{}, 1)}
+}
+
+// push appends req. On overflow it sheds the oldest reaction in the
+// queue; if the new req is itself a reaction and no older reaction is
+// present to shed, the new reaction is dropped (returned shed=true so
+// the caller can log + ack). User prompts always accept, even if the
+// queue grows past the soft cap. Returns shed=true when req itself
+// was rejected; in that case req.done is NOT closed by push (the
+// caller may handle it).
+func (sq *sessionQueue) push(req *turnReq) (accepted bool) {
+	sq.mu.Lock()
+	defer sq.mu.Unlock()
+	if sq.stopped {
+		return false
+	}
+	if len(sq.q) >= sessionQueueCap {
+		shed := -1
+		for i, r := range sq.q {
+			if r.kind == turnReaction {
+				shed = i
+				break
+			}
+		}
+		if shed >= 0 {
+			dropped := sq.q[shed]
+			sq.q = append(sq.q[:shed], sq.q[shed+1:]...)
+			dropped.shed = true
+			close(dropped.done)
+			debuglog.Logf("sessionQueue: shed oldest reaction (age=%s) to make room",
+				time.Since(dropped.enqueuedAt))
+		} else if req.kind == turnReaction {
+			// No older reaction to shed, and incoming is a reaction.
+			// Drop the incoming.
+			debuglog.Logf("sessionQueue: dropping new reaction (queue full of user turns)")
+			return false
+		}
+		// else: incoming is a user turn, no reaction to shed — grow past cap.
+	}
+	sq.q = append(sq.q, req)
+	select {
+	case sq.notify <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+// popOrWait blocks until a req is available or stop fires. Sets
+// inFlight=true on a successful pop. Returns nil when stop fires.
+func (sq *sessionQueue) popOrWait(stop <-chan struct{}) *turnReq {
+	for {
+		sq.mu.Lock()
+		if len(sq.q) > 0 {
+			r := sq.q[0]
+			sq.q = sq.q[1:]
+			sq.inFlight = true
+			sq.mu.Unlock()
+			return r
+		}
+		sq.mu.Unlock()
+		select {
+		case <-stop:
+			return nil
+		case <-sq.notify:
+		}
+	}
+}
+
+// finishInFlight marks the runner as idle again. Called by runTurns
+// after every turn (success, error, or skipped-too-old).
+func (sq *sessionQueue) finishInFlight() {
+	sq.mu.Lock()
+	sq.inFlight = false
+	sq.mu.Unlock()
+}
+
+// idle reports whether the queue is empty AND no turn is currently in
+// flight. Used by gcOnce to gate eviction.
+func (sq *sessionQueue) idle() bool {
+	sq.mu.Lock()
+	defer sq.mu.Unlock()
+	return !sq.inFlight && len(sq.q) == 0
+}
+
+// stop marks the queue closed and drains any pending reqs, closing
+// their done channels with shed=true. Called by gcOnce on eviction.
+// idle() must be true before calling stop — gcOnce enforces this.
+func (sq *sessionQueue) stop() {
+	sq.mu.Lock()
+	sq.stopped = true
+	pending := sq.q
+	sq.q = nil
+	sq.mu.Unlock()
+	for _, r := range pending {
+		r.shed = true
+		close(r.done)
+	}
 }
 
 // chunkMsg is a message on the session-lifetime chunkCh. Exactly one
 // field is meaningful per message kind:
 //
-//	beginTurn != nil  — Prompt is starting; sink and options are attached.
-//	endTurn   != nil  — Prompt is ending; drain closes the channel to ack.
+//	beginTurn != nil  — turn is starting; sink and options are attached.
+//	endTurn   != nil  — turn is ending; drain closes the channel to ack.
 //	otherwise         — a streaming chunk notification from OnUpdate.
 type chunkMsg struct {
 	notif     acp.SessionNotification // chunk (when beginTurn == nil && endTurn == nil)
@@ -240,8 +401,31 @@ func New(cfg Config) (*Router, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "convs"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir state: %w", err)
 	}
+	if cfg.SystemPrompt != "" {
+		cfg.SystemPrompt = reactionContractClause + "\n\n" + cfg.SystemPrompt
+	}
 	return &Router{cfg: cfg, sessions: make(map[string]*sessionState)}, nil
 }
+
+// reactionContractClause is prepended to the operator's SystemPrompt so
+// the agent recognises out-of-band synthetic turns delivered by the
+// relay. Reaction turns are queued FIFO with real user prompts and
+// share the same session history, but their responses are discarded.
+const reactionContractClause = `Out-of-band turn contract:
+
+Some user messages you receive will begin with the line "[poe-acp:out-of-band ...]".
+These are synthetic turns injected by the relay (poe-acp), NOT typed by
+the user. The most common kind is a reaction event ("[poe-acp:out-of-band reaction]")
+telling you that the user added or removed a reaction (👍, 👎, etc.) on
+one of your earlier messages.
+
+Rules for out-of-band turns:
+  - Do not address the user. Your reply will NOT be shown to them.
+  - Keep the reply terse — a one-line acknowledgement is fine. The
+    relay discards the response; it exists only so your in-session
+    memory / preference notes reflect the new information.
+  - Do not invoke tools that have user-visible side effects unless
+    the marker explicitly requests it.`
 
 // OnUpdate implements acpclient.SessionUpdateSink. It enqueues the
 // notification on the session-lifetime chunkCh. No lock is needed:
@@ -337,10 +521,12 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 	_ = td.sink.Text(prefix + text)
 }
 
-// Prompt handles one Poe query end-to-end. Serialises per-conv. The query
-// slice is the full Poe-supplied conversation (including prior turns); the
-// router uses only the latest user turn on the hot path, but seeds the
-// agent with the full transcript on a cold path that can't resume.
+// Prompt handles one Poe query end-to-end. Submits the turn onto the
+// session's queue and waits for the per-session runTurns goroutine to
+// drive it to completion (FIFO with any other queued turns, including
+// out-of-band reactions). The query slice is the full Poe-supplied
+// conversation; on a cold-path new session with prior turns, the
+// transcript is flattened so the agent has context.
 func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn, opts Options, sink ChunkSink) error {
 	if convID == "" {
 		convID = "default"
@@ -359,83 +545,192 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 		return err
 	}
 
-	st.turnMu.Lock()
-	defer st.turnMu.Unlock()
-
-	// Mark in-use so GC doesn't evict mid-prompt for long generations.
-	r.mu.Lock()
-	st.inUse++
-	r.mu.Unlock()
-	defer func() {
-		r.mu.Lock()
-		st.inUse--
-		r.mu.Unlock()
-	}()
-
-	// Apply per-prompt option diffs before issuing the prompt.
-	if err := r.applyOptions(ctx, st, opts); err != nil {
-		// Surface the failure to the user but continue the prompt with
-		// whatever options the agent currently has applied. Call
-		// FirstChunk so the heartbeat stops before the error text.
-		sink.FirstChunk()
-		_ = sink.Text(fmt.Sprintf("_(option not applied: %v)_\n\n", err))
-	}
-
-	// Announce the turn to the session-lifetime drain goroutine.
-	// All chunks arriving via OnUpdate during Agent.Prompt() will be
-	// processed in order before the matching endTurn message is drained.
-	st.chunkCh <- chunkMsg{beginTurn: &turnDef{
-		sink:         sink,
-		hideThinking: opts.HideThinking,
-	}}
-
-	defer r.touch(convID)
-
+	// Build the prompt content blocks now (attachment download uses the
+	// HTTP request ctx; doing it here keeps the runner thin and the
+	// disk/network IO interruptible by the caller).
 	promptText := latest
 	if freshSeed {
-		// Cold path with no resume and prior turns: flatten the full
-		// transcript so the agent has context for the latest user turn.
 		promptText = flattenTranscript(query)
 	}
-	if st.pendingSystemPromptInline && r.cfg.SystemPrompt != "" {
-		// Fallback path: agent didn't advertise session.systemPrompt
-		// (or this is a resume of a fallback-path session). Prepend
-		// the catalog as a self-preserving header on the first prompt
-		// of this hot path. Cleared after use; if compaction loses it,
-		// that is the documented fallback limitation (see
-		// acp-spec/rfd-system-prompt.md).
-		promptText = r.cfg.SystemPrompt + "\n" +
-			"The block above is durable system context. Preserve it verbatim across any summarisation of this conversation.\n\n" +
-			promptText
-		st.pendingSystemPromptInline = false
-	}
-
 	blocks := []acp.ContentBlock{acp.TextBlock(promptText)}
 	embedded := r.cfg.Agent.Caps().EmbeddedContext
-	if latest, ok := latestUserTurnRef(query); ok {
-		msgID := latest.MessageID
+	if latestTurn, ok := latestUserTurnRef(query); ok {
+		msgID := latestTurn.MessageID
 		if msgID == "" {
-			// Fallback: hash the latest user content so retries land in
-			// the same dir but distinct messages don't collide.
-			h := sha256.Sum256([]byte(latest.Content))
+			h := sha256.Sum256([]byte(latestTurn.Content))
 			msgID = "anon-" + hex.EncodeToString(h[:4])
 		}
 		used := map[string]struct{}{}
-		for _, a := range latest.Attachments {
+		for _, a := range latestTurn.Attachments {
 			if a.URL == "" {
-				// Defensive: empty URL would be useless to the agent.
 				continue
 			}
 			blocks = append(blocks, r.attachmentBlocks(ctx, st.cwd, msgID, used, a, embedded)...)
 		}
 	}
 
+	req := &turnReq{
+		kind:         turnUser,
+		ctx:          ctx,
+		sink:         sink,
+		opts:         opts,
+		blocks:       blocks,
+		hideThinking: opts.HideThinking,
+		enqueuedAt:   r.cfg.Now(),
+		done:         make(chan struct{}),
+	}
+	if !st.queue.push(req) {
+		// Session was being torn down between getOrCreate and push.
+		// Treat as a transient error to the caller.
+		_ = sink.Error("relay: session unavailable", "user_caused_error")
+		_ = sink.Done()
+		return fmt.Errorf("session queue stopped")
+	}
+
+	select {
+	case <-req.done:
+		// Runner has finished — sink.Done/Error/Replace already fired.
+		return req.err
+	case <-ctx.Done():
+		// Caller-side bail: wait for the runner to finish anyway so the
+		// shared sink isn't written to after the HTTP response goroutine
+		// has returned. The handler's external Cancel path will have
+		// already issued session/cancel, so the agent (and runner) will
+		// unwind promptly.
+		<-req.done
+		if req.err != nil {
+			return req.err
+		}
+		return ctx.Err()
+	}
+}
+
+// ReportReaction queues an out-of-band reaction turn. Returns as soon
+// as the turn is accepted onto the session queue (or immediately if
+// shed) — the caller does NOT wait for the agent to finish. Poe has
+// no SSE channel for the reaction response, so the agent's reply is
+// discarded.
+func (r *Router) ReportReaction(ctx context.Context, convID, userID, messageID, kind string, action string) error {
+	if convID == "" {
+		convID = "default"
+	}
+	st, _, err := r.getOrCreate(ctx, convID, userID, nil)
+	if err != nil {
+		return fmt.Errorf("reaction: getOrCreate: %w", err)
+	}
+	if action == "" {
+		action = "added"
+	}
+	promptText := fmt.Sprintf(
+		"[poe-acp:out-of-band reaction]\n"+
+			"The user reacted %q (%s) to your message %s.\n"+
+			"Acknowledge silently — your reply will NOT be shown to the user.\n"+
+			"Update any in-memory/preference notes if relevant.",
+		kind, action, messageID)
+	req := &turnReq{
+		kind:       turnReaction,
+		ctx:        ctx,
+		sink:       discardSink{convID: convID},
+		blocks:     []acp.ContentBlock{acp.TextBlock(promptText)},
+		enqueuedAt: r.cfg.Now(),
+		done:       make(chan struct{}),
+	}
+	if !st.queue.push(req) {
+		log.Printf("router: dropped reaction (conv=%s msg=%s kind=%s action=%s): queue full / stopped",
+			convID, messageID, kind, action)
+		return nil
+	}
+	debuglog.Logf("router: queued reaction conv=%s msg=%s kind=%s action=%s",
+		convID, messageID, kind, action)
+	return nil
+}
+
+// discardSink is the no-op ChunkSink used for reaction turns: the
+// agent's response is not surfaced to Poe. Streamed text is logged
+// via debuglog so operators can observe how the agent reacted.
+type discardSink struct{ convID string }
+
+func (d discardSink) Text(s string) error {
+	debuglog.Logf("reaction sink (conv=%s) text: %q", d.convID, s)
+	return nil
+}
+func (d discardSink) Replace(s string) error {
+	debuglog.Logf("reaction sink (conv=%s) replace: %q", d.convID, s)
+	return nil
+}
+func (d discardSink) Error(text, et string) error {
+	debuglog.Logf("reaction sink (conv=%s) error[%s]: %s", d.convID, et, text)
+	return nil
+}
+func (d discardSink) Done() error { return nil }
+func (d discardSink) FirstChunk() {}
+
+// runTurns is the single goroutine that owns Agent.Prompt for one
+// session. It pops turnReqs from the queue in FIFO order and runs
+// them to completion. Exits when runStop is closed.
+func (r *Router) runTurns(st *sessionState) {
+	for {
+		req := st.queue.popOrWait(st.runStop)
+		if req == nil {
+			return
+		}
+		r.runOneTurn(st, req)
+		st.queue.finishInFlight()
+	}
+}
+
+// runOneTurn executes a single turn end-to-end: applyOptions (user
+// turns), inline-system-prompt injection (user turns), beginTurn,
+// Agent.Prompt, endTurn ack, sink finalisation. Closes req.done at
+// the end.
+func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
+	defer close(req.done)
+	defer r.touch(st.convID)
+
+	// Liveness safeguard: reactions older than reactionMaxAge are
+	// dropped on dequeue. Real prompts are never skipped — better to
+	// run a stale prompt than silently lose the user's query.
+	if req.kind == turnReaction && r.cfg.Now().Sub(req.enqueuedAt) > reactionMaxAge {
+		debuglog.Logf("runOneTurn: dropping stale reaction (age=%s) conv=%s",
+			r.cfg.Now().Sub(req.enqueuedAt), st.convID)
+		req.shed = true
+		return
+	}
+
+	ctx := req.ctx
+	sink := req.sink
+
+	if req.kind == turnUser {
+		if err := r.applyOptions(ctx, st, req.opts); err != nil {
+			sink.FirstChunk()
+			_ = sink.Text(fmt.Sprintf("_(option not applied: %v)_\n\n", err))
+		}
+	}
+
+	blocks := req.blocks
+	if req.kind == turnUser && st.pendingSystemPromptInline && r.cfg.SystemPrompt != "" {
+		// Fallback path: agent didn't advertise session.systemPrompt
+		// (or this is a resume). Prepend the catalog inline so the
+		// agent picks it up on the first user turn of the hot path.
+		if len(blocks) > 0 && blocks[0].Text != nil {
+			prefix := r.cfg.SystemPrompt + "\n" +
+				"The block above is durable system context. Preserve it verbatim across any summarisation of this conversation.\n\n"
+			blocks = append([]acp.ContentBlock(nil), blocks...)
+			blocks[0] = acp.TextBlock(prefix + blocks[0].Text.Text)
+		}
+		st.pendingSystemPromptInline = false
+	}
+
+	st.chunkCh <- chunkMsg{beginTurn: &turnDef{
+		sink:         sink,
+		hideThinking: req.hideThinking,
+	}}
+
 	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, blocks)
 
-	// Drain all queued chunks before touching the sink with Done/Error/Replace.
-	// endTurn is behind every chunk that was sent before Agent.Prompt returned
-	// (FIFO channel order), so <-endDone guarantees the drain goroutine has
-	// finished processing everything for this turn.
+	// endTurn ack: drain processes every chunk emitted before
+	// Agent.Prompt returned, then closes endDone. Only after that do
+	// we touch the sink with terminal events.
 	endDone := make(chan struct{})
 	st.chunkCh <- chunkMsg{endTurn: endDone}
 	<-endDone
@@ -443,9 +738,9 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	if err != nil {
 		_ = sink.Error(fmt.Sprintf("acp prompt: %v", err), "user_caused_error")
 		_ = sink.Done()
-		return err
+		req.err = err
+		return
 	}
-
 	switch stop {
 	case acp.StopReasonEndTurn:
 		// normal
@@ -458,7 +753,7 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	case acp.StopReasonCancelled:
 		_ = sink.Replace("_(cancelled)_")
 	}
-	return sink.Done()
+	_ = sink.Done()
 }
 
 // applyOptions diffs incoming opts vs the session's last-applied options
@@ -939,8 +1234,11 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		lastUsedNs: r.cfg.Now().UnixNano(),
 		chunkCh:    make(chan chunkMsg, 256),
 		drainStop:  make(chan struct{}),
+		queue:      newSessionQueue(),
+		runStop:    make(chan struct{}),
 	}
 	go st.drainChunks()
+	go r.runTurns(st)
 
 	// Tier 1: try resume if the agent supports list+resume.
 	caps := r.cfg.Agent.Caps()
@@ -1006,8 +1304,16 @@ func (r *Router) install(convID string, st *sessionState) (*sessionState, bool) 
 	if existing, ok := r.sessions[convID]; ok {
 		// Lost the race; the session we just created/resumed leaks on the
 		// agent side but that is cheap and rare. Stop the loser's drain
-		// goroutine so it doesn't run for the session's lifetime unchecked.
-		close(st.drainStop)
+		// and run goroutines so they don't run unchecked.
+		if st.drainStop != nil {
+			close(st.drainStop)
+		}
+		if st.runStop != nil {
+			close(st.runStop)
+		}
+		if st.queue != nil {
+			st.queue.stop()
+		}
 		return existing, false
 	}
 	r.sessions[convID] = st
@@ -1053,8 +1359,10 @@ func (r *Router) gcOnce() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, st := range r.sessions {
-		if st.inUse == 0 && st.lastUsedNs < cutoff {
+		if st.queue.idle() && st.lastUsedNs < cutoff {
 			close(st.drainStop) // stop the session-lifetime drain goroutine
+			close(st.runStop)
+			st.queue.stop()
 			delete(r.sessions, id)
 		}
 	}

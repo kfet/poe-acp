@@ -737,3 +737,146 @@ func waitTicks(t *testing.T, n int) func() {
 
 // Ensure the fmt import is used to satisfy goimports.
 var _ = fmt.Sprintf
+
+// TestHandler_ReportReactionForwards verifies a report_reaction POST
+// gets decoded, normalised, and queued onto the router (visible via
+// agent.lastPrompt after the runner drains it).
+func TestHandler_ReportReactionForwards(t *testing.T) {
+	a := &fakeAgent{}
+	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr})
+
+	body := mustJSON(map[string]any{
+		"type":            "report_reaction",
+		"conversation_id": "c-rx",
+		"user_id":         "u",
+		"message_id":      "msg-7",
+		"reaction":        "👍",
+		"action":          "added",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+
+	// Wait for the runner to deliver the synthetic turn to the agent.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		a.mu.Lock()
+		got := a.lastPrompt
+		a.mu.Unlock()
+		if len(got) > 0 && got[0].Text != nil &&
+			strings.Contains(got[0].Text.Text, "[poe-acp:out-of-band reaction]") &&
+			strings.Contains(got[0].Text.Text, "msg-7") &&
+			strings.Contains(got[0].Text.Text, "👍") &&
+			strings.Contains(got[0].Text.Text, "added") {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t.Fatalf("agent never received reaction turn; lastPrompt=%+v", a.lastPrompt)
+}
+
+// TestHandler_ReportReactionMinusPrefix verifies the '-emoji' shape is
+// normalised to (kind, removed) end-to-end.
+func TestHandler_ReportReactionMinusPrefix(t *testing.T) {
+	a := &fakeAgent{}
+	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr})
+
+	body := mustJSON(map[string]any{
+		"type":            "report_reaction",
+		"conversation_id": "c-rx2",
+		"user_id":         "u",
+		"message_id":      "msg-8",
+		"reaction":        "-👍",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		a.mu.Lock()
+		got := a.lastPrompt
+		a.mu.Unlock()
+		if len(got) > 0 && got[0].Text != nil &&
+			strings.Contains(got[0].Text.Text, "removed") &&
+			strings.Contains(got[0].Text.Text, "👍") {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t.Fatalf("removed-action not propagated; lastPrompt=%+v", a.lastPrompt)
+}
+
+// TestHandler_ReportReactionDebugLog enables debuglog so the
+// debug-branch in handleReaction is exercised.
+func TestHandler_ReportReactionDebugLog(t *testing.T) {
+	prev := debuglog.Enabled()
+	debuglog.SetEnabled(true)
+	t.Cleanup(func() { debuglog.SetEnabled(prev) })
+
+	a := &fakeAgent{}
+	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr})
+
+	body := mustJSON(map[string]any{
+		"type": "report_reaction", "conversation_id": "c", "user_id": "u",
+		"message_id": "m", "reaction": "👍", "action": "added",
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("status=%d", rec.Code)
+	}
+}
+
+// TestHandler_ReportReactionRouterError covers the error-log branch
+// when Router.ReportReaction returns a non-nil error (getOrCreate /
+// NewSession fails).
+func TestHandler_ReportReactionRouterError(t *testing.T) {
+	a := &fakeAgent{}
+	// Use the failing-agent variant: trigger NewSession error path by
+	// stubbing a router whose Agent returns an error from NewSession.
+	rtr, err := router.New(router.Config{
+		Agent:    &errNewSessionAgent{fakeAgent: a},
+		StateDir: t.TempDir(), SessionTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr})
+	body := mustJSON(map[string]any{
+		"type": "report_reaction", "conversation_id": "c", "user_id": "u",
+		"message_id": "m", "reaction": "👍", "action": "added",
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("status=%d", rec.Code)
+	}
+}
+
+type errNewSessionAgent struct{ *fakeAgent }
+
+func (e *errNewSessionAgent) NewSession(_ context.Context, _ string, _ acpclient.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
+	return "", errors.New("new session boom")
+}
