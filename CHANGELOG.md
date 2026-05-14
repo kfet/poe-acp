@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-05-13
+
 ### Added
 
 - **`report_reaction` forwarded as out-of-band turn.** Poe reaction events (👍/👎 add or remove on an assistant message) now reach the agent as a synthetic prompt prefixed with `[poe-acp:out-of-band reaction]`, sharing the conversation's ACP session so memory/preference updates stick. Decoder handles two plausible wire shapes — single `reaction` field with optional `+`/`-` prefix, or split `reaction`+`action:added|removed` — and normalises them to `(kind, added|removed)`. Response is discarded (Poe has no SSE channel for the reaction reply); HTTP returns 200 OK as soon as the turn is queued. Raw payloads are logged via debuglog so the actual shape stays visible in prod.
