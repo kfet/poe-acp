@@ -50,7 +50,9 @@ func TestLoadBuiltin_BundleHashError(t *testing.T) {
 		t.Fatal("expected ReadFile error")
 	}
 
-	// Force LoadBuiltin to fail at hash by swapping bundleHash.
+	// Force LoadBuiltin to fail at hash by swapping bundleHash. No
+	// bundleSrc swap needed: the hash error short-circuits before walk,
+	// so the real bundleFS is never touched.
 	defer swap(&bundleHashFn, func() (string, error) { return "", errors.New("hash-fail") })()
 	if _, err := LoadBuiltin(); err == nil || !strings.Contains(err.Error(), "hash-fail") {
 		t.Fatalf("LoadBuiltin: expected hash error, got %v", err)
@@ -119,6 +121,7 @@ func (d dirEntry) Info() (fs.FileInfo, error) {
 
 func TestLoadBuiltin_WalkReadFileError(t *testing.T) {
 	defer swap[fs.FS](&bundleSrc, readFileErrFS{})()
+	defer swap(&bundleHashFn, func() (string, error) { return "testreadfile", nil })()
 	if _, err := LoadBuiltin(); err == nil {
 		t.Fatal("expected ReadFile error")
 	}
@@ -177,6 +180,7 @@ func (b brokenEntry) Info() (fs.FileInfo, error) {
 
 func TestLoadBuiltin_WalkError(t *testing.T) {
 	defer swap[fs.FS](&bundleSrc, brokenFS{})()
+	defer swap(&bundleHashFn, func() (string, error) { return "testwalkerrr", nil })()
 	_, err := LoadBuiltin()
 	if err == nil {
 		t.Fatal("expected walk error")
@@ -192,6 +196,11 @@ func TestLoadBuiltin_FSErrorPaths(t *testing.T) {
 		"bundle/other/foo.txt": &fstest.MapFile{Data: []byte("nope")},                                // not a SKILL.md
 	}
 	defer swap[fs.FS](&bundleSrc, mfs)()
+	// Hash the *fixture* FS rather than the real bundleFS so the
+	// extracted tmp dir is isolated from the production binary's
+	// extraction dir (otherwise test runs leak fixture files into
+	// $TMPDIR/poe-acp-<production-hash>/skills/).
+	defer swap(&bundleHashFn, func() (string, error) { return bundleHashFS(mfs) })()
 
 	// MkdirAll fails first.
 	restore := swap(&osMkdirAll, func(string, os.FileMode) error { return errors.New("mkdir-fail") })
@@ -217,6 +226,24 @@ func TestLoadBuiltin_FSErrorPaths(t *testing.T) {
 	if !contains(got, "x") || !contains(got, "none") {
 		t.Errorf("names = %+v", got)
 	}
+	// Test isolation: the extracted dst path must incorporate a hash
+	// derived from the *fixture* FS, not the real bundleFS — otherwise
+	// running tests pollutes the production binary's extraction dir.
+	wantHash, err := bundleHashFS(mfs)
+	if err != nil {
+		t.Fatalf("bundleHashFS(mfs): %v", err)
+	}
+	wantPrefix := "poe-acp-" + wantHash[:hashPrefixLen]
+	for _, s := range got {
+		if !strings.Contains(s.Path, wantPrefix) {
+			t.Errorf("skill %q path %q does not contain fixture hash prefix %q (leaks into production binary's dir)", s.Name, s.Path, wantPrefix)
+		}
+	}
+	// Clean up the extraction dir this test created so we don't leave
+	// fixture SKILL.md files lying around under $TMPDIR forever.
+	t.Cleanup(func() {
+		_ = os.RemoveAll(filepath.Join(os.TempDir(), "poe-acp-"+wantHash[:hashPrefixLen]))
+	})
 	// Run again — exercises the "content matches → skip write" branch.
 	if _, err := LoadBuiltin(); err != nil {
 		t.Fatalf("idempotent: %v", err)
