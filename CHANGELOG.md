@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`internal/skills` test isolation.** `TestLoadBuiltin_FSErrorPaths` now swaps `bundleHashFn` alongside `bundleSrc` so the extracted tmp dir is keyed off the fixture FS's content hash instead of the production binary's. Without this, test runs wrote fixture `SKILL.md` files into `$TMPDIR/poe-acp-<production-hash>/skills/`, polluting the same directory the real binary reads from. Added an assertion that every returned `Skill.Path` contains the fixture hash prefix, a `t.Cleanup` that removes the per-test extraction dir, and a `hashPrefixLen` constant in `skills.go` so the test and production code can't drift. Sibling tests `TestLoadBuiltin_WalkReadFileError` and `TestLoadBuiltin_WalkError` also swap `bundleHashFn` for defense-in-depth (they fail at walk before mkdir, so no actual file leak existed, but the swap keeps the policy consistent).
+
 ## [0.14.0] - 2026-05-13
 
 ### Added

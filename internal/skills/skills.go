@@ -51,6 +51,11 @@ var (
 	filepathAbs       = filepath.Abs
 )
 
+// hashPrefixLen is how many hex chars of the bundle content hash are
+// used in the per-bundle extraction tmp dir name. Kept in sync with
+// the assertion in TestLoadBuiltin_FSErrorPaths.
+const hashPrefixLen = 12
+
 // Skill is one entry in the catalog.
 type Skill struct {
 	Name        string
@@ -76,7 +81,7 @@ func LoadBuiltin() ([]Skill, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hash bundle: %w", err)
 	}
-	root := filepath.Join(os.TempDir(), "poe-acp-"+hash[:12], "skills")
+	root := filepath.Join(os.TempDir(), "poe-acp-"+hash[:hashPrefixLen], "skills")
 
 	var skills []Skill
 	err = fs.WalkDir(bundleSrc, "bundle", func(p string, d fs.DirEntry, walkErr error) error {
