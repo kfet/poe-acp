@@ -804,10 +804,21 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 // otherwise leave the agent on its own internal default while the UI
 // promises something else. Overlaying onto defaults keeps UI and agent
 // in sync from turn 1.
+//
+// Model resolution order (first non-empty wins):
+//
+//  1. `model` — legacy/back-compat single dropdown shape, still
+//     honoured if any caller sends it.
+//  2. `provider` + `model_<sanitised(provider)>` — cascading shape.
+//     The sanitiser matches paramctl.ProviderParamName: lowercase
+//     letters/digits/underscore, other bytes → '_'. Empty provider
+//     buckets to "other".
+//  3. defaults.Model — left in place if neither of the above
+//     resolved to a non-empty string.
 func ParseOptions(params map[string]any, defaults Options) Options {
 	o := defaults
-	if v, ok := params["model"].(string); ok {
-		o.Model = v
+	if m, ok := resolveModel(params); ok {
+		o.Model = m
 	}
 	if v, ok := params["thinking"].(string); ok {
 		switch v {
@@ -819,6 +830,50 @@ func ParseOptions(params map[string]any, defaults Options) Options {
 		o.HideThinking = v
 	}
 	return o
+}
+
+// resolveModel implements the model-selection precedence documented on
+// ParseOptions. ok=false signals "no model-related key in params" so
+// the caller leaves defaults.Model untouched.
+func resolveModel(params map[string]any) (string, bool) {
+	if v, ok := params["model"].(string); ok {
+		return v, true
+	}
+	provider, ok := params["provider"].(string)
+	if !ok {
+		return "", false
+	}
+	key := "model_" + sanitiseProviderForParam(provider)
+	if v, ok := params[key].(string); ok && v != "" {
+		return v, true
+	}
+	// Provider was selected but no usable model_<provider> value was
+	// supplied. Treat as "no override" so the caller's default (which
+	// may not belong to this provider, but is the best we have)
+	// survives. The relay will SetModel to whatever defaults.Model is.
+	return "", false
+}
+
+// sanitiseProviderForParam is the inverse-of-mapping side of
+// paramctl.ProviderParamName. Kept in this package to avoid an import
+// cycle (paramctl already depends on router).
+func sanitiseProviderForParam(p string) string {
+	if p == "" {
+		return "other"
+	}
+	b := make([]byte, 0, len(p))
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_':
+			b = append(b, c)
+		case c >= 'A' && c <= 'Z':
+			b = append(b, c+('a'-'A'))
+		default:
+			b = append(b, '_')
+		}
+	}
+	return string(b)
 }
 
 // Defaults returns the per-conversation option defaults configured on

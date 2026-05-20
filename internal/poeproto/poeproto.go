@@ -198,20 +198,57 @@ type Section struct {
 }
 
 // Control is one renderable UI element. It is a tagged union over the
-// `control` field; we only emit `drop_down` and `toggle_switch` in v1.
+// `control` field; we emit `drop_down`, `toggle_switch`, and
+// `condition` (ConditionallyRenderControls).
 //
 // Wire values for Control.Control match fastapi_poe.types literals
-// exactly: "drop_down" (NOT "dropdown") and "toggle_switch". Poe's
-// validator runs Pydantic with extra="forbid" and silently drops the
-// whole parameter_controls object on any mismatch.
+// exactly: "drop_down" (NOT "dropdown"), "toggle_switch", and
+// "condition". Poe's validator runs Pydantic with extra="forbid" and
+// silently drops the whole parameter_controls object on any mismatch.
+//
+// Field applicability by control kind (all extra fields are
+// json:"omitempty" so a single Go struct covers every kind without
+// emitting forbidden keys):
+//
+//	drop_down      : Label, ParameterName, Options, DefaultValue
+//	toggle_switch  : Label, ParameterName, DefaultValue
+//	condition      : Condition, Controls
 type Control struct {
-	Control       string          `json:"control"` // "drop_down" | "toggle_switch"
-	Label         string          `json:"label"`
-	ParameterName string          `json:"parameter_name"`
+	Control       string          `json:"control"`
+	Label         string          `json:"label,omitempty"`
+	ParameterName string          `json:"parameter_name,omitempty"`
 	Description   string          `json:"description,omitempty"`
 	DefaultValue  any             `json:"default_value,omitempty"`
 	Options       []ValueNamePair `json:"options,omitempty"` // drop_down only
+
+	// condition (ConditionallyRenderControls) only.
+	Condition *Condition `json:"condition,omitempty"`
+	Controls  []Control  `json:"controls,omitempty"`
 }
+
+// Condition is the per-`condition`-control comparator block. Matches
+// fastapi_poe.types.ComparatorCondition.
+type Condition struct {
+	Comparator string           `json:"comparator"` // "eq" | "ne" | "gt" | "ge" | "lt" | "le"
+	Left       ConditionOperand `json:"left"`
+	Right      ConditionOperand `json:"right"`
+}
+
+// ConditionOperand is the LiteralValue|ParameterValue anyOf. Exactly
+// one of Literal or ParameterName must be set on the wire; both are
+// omitempty so the chosen variant matches the upstream schema's
+// additionalProperties:false discriminator.
+type ConditionOperand struct {
+	Literal       any    `json:"literal,omitempty"`
+	ParameterName string `json:"parameter_name,omitempty"`
+}
+
+// LiteralOperand builds a LiteralValue operand.
+func LiteralOperand(v any) ConditionOperand { return ConditionOperand{Literal: v} }
+
+// ParamOperand builds a ParameterValue operand referencing another
+// control's parameter_name.
+func ParamOperand(name string) ConditionOperand { return ConditionOperand{ParameterName: name} }
 
 // ValueNamePair is a dropdown option: `value` is what arrives in
 // `parameters`, `name` is the user-facing label.
