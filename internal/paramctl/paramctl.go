@@ -5,10 +5,29 @@
 // — one is what the UI shows, the other is what the relay applies on
 // the first turn of every conversation. They are produced from a
 // single Resolve() call so they cannot drift.
+//
+// Model selection is presented as cascading dropdowns:
+//
+//	Provider          — top-level drop_down, options derived from the
+//	                    prefix-before-first-slash of each model ID
+//	                    (e.g. "anthropic", "openai"). Models with no
+//	                    slash are grouped under "other".
+//	Model (per-prov)  — one drop_down per provider, gated by a
+//	                    `condition` control on `provider == <P>`.
+//	                    parameter_name is `model_<sanitised provider>`
+//	                    so each provider can carry its own remembered
+//	                    selection independently.
+//
+// The relay reconciles the user-visible state back to a single agent
+// model id in router.ParseOptions: bare `model` (legacy/back-compat)
+// wins; otherwise `model_<provider>` (looked up by the chosen
+// `provider` value) is used. Empty parameters fall back to the
+// resolved Defaults().
 package paramctl
 
 import (
 	"log"
+	"strings"
 
 	"github.com/kfet/poe-acp/internal/acpclient"
 	"github.com/kfet/poe-acp/internal/config"
@@ -38,6 +57,10 @@ const DefaultThinking = "medium"
 // DefaultHideThinking is the built-in fallback when the operator has not
 // configured `defaults.hide_thinking` in config.json.
 const DefaultHideThinking = true
+
+// OtherProvider is the bucket label for models whose ID has no '/'
+// prefix. Kept stable so config defaults and tests can target it.
+const OtherProvider = "other"
 
 // Resolve picks the operator-facing defaults.
 //
@@ -89,34 +112,153 @@ func hasModel(models []acpclient.ModelInfo, id string) bool {
 	return false
 }
 
+// ProviderOf returns the prefix-before-first-slash of a model id. An
+// id with no '/' (or an empty id) is bucketed under OtherProvider.
+func ProviderOf(modelID string) string {
+	i := strings.IndexByte(modelID, '/')
+	if i <= 0 {
+		return OtherProvider
+	}
+	return modelID[:i]
+}
+
+// ProviderParamName is the parameter_name used for the per-provider
+// Model dropdown. The provider id is sanitised so the result is a
+// stable identifier (letters/digits/underscore only); the unsanitised
+// provider id is still what's compared against in the `condition`
+// block.
+func ProviderParamName(provider string) string {
+	return "model_" + sanitiseProvider(provider)
+}
+
+// sanitiseProvider folds the provider id into [a-z0-9_], lowercased.
+// Any other byte becomes '_'. Used only to derive parameter_name; the
+// human-facing provider value remains the original string.
+func sanitiseProvider(p string) string {
+	if p == "" {
+		return OtherProvider
+	}
+	b := make([]byte, 0, len(p))
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_':
+			b = append(b, c)
+		case c >= 'A' && c <= 'Z':
+			b = append(b, c+('a'-'A'))
+		default:
+			b = append(b, '_')
+		}
+	}
+	return string(b)
+}
+
+// providerGroup is a single provider's bucket of models. Order within
+// each group is the order models appeared in the agent's list.
+type providerGroup struct {
+	id     string // raw provider id (option `value`)
+	models []acpclient.ModelInfo
+}
+
+// groupByProvider buckets models by ProviderOf(id), preserving both
+// the first-seen provider order and the order of models within each
+// provider.
+func groupByProvider(models []acpclient.ModelInfo) []providerGroup {
+	idx := make(map[string]int, 8)
+	var out []providerGroup
+	for _, m := range models {
+		p := ProviderOf(m.ID)
+		if i, ok := idx[p]; ok {
+			out[i].models = append(out[i].models, m)
+			continue
+		}
+		idx[p] = len(out)
+		out = append(out, providerGroup{id: p, models: []acpclient.ModelInfo{m}})
+	}
+	return out
+}
+
+// Providers returns the first-seen-ordered provider ids derived from
+// the given model list. Exported for tests and HTTP introspection.
+func Providers(models []acpclient.ModelInfo) []string {
+	groups := groupByProvider(models)
+	out := make([]string, len(groups))
+	for i, g := range groups {
+		out[i] = g.id
+	}
+	return out
+}
+
 // Build assembles the parameter_controls schema. Callers MUST pass the
 // same `defaults` they configured on the router (via Resolve), so the
 // UI's `default_value`s match what the relay applies at runtime.
 //
-// If models is empty (probe failed or agent is unauthed) the model
-// dropdown is omitted entirely.
+// If models is empty (probe failed or agent is unauthed) the
+// provider+model dropdowns are omitted entirely; only Thinking and
+// Hide thinking remain.
 //
 // Model order is preserved as received from the agent: the agent owns
 // priority semantics (capability score, cost tier) that the relay
 // can't see, so re-sorting here would clobber a meaningful order.
+// Providers are listed in first-seen order for the same reason.
 func Build(models []acpclient.ModelInfo, defaults router.Options) *poeproto.ParameterControls {
 	var controls []poeproto.Control
 
 	if len(models) > 0 {
-		opts := make([]poeproto.ValueNamePair, 0, len(models))
-		for _, m := range models {
-			opts = append(opts, poeproto.ValueNamePair{Value: m.ID, Name: m.Name})
-		}
-		ctl := poeproto.Control{
-			Control:       "drop_down",
-			Label:         "Model",
-			ParameterName: "model",
-			Options:       opts,
-		}
+		groups := groupByProvider(models)
+		defaultProvider := ""
 		if defaults.Model != "" {
-			ctl.DefaultValue = defaults.Model
+			defaultProvider = ProviderOf(defaults.Model)
 		}
-		controls = append(controls, ctl)
+
+		// Provider dropdown.
+		provOpts := make([]poeproto.ValueNamePair, 0, len(groups))
+		for _, g := range groups {
+			provOpts = append(provOpts, poeproto.ValueNamePair{Value: g.id, Name: g.id})
+		}
+		provCtl := poeproto.Control{
+			Control:       "drop_down",
+			Label:         "Provider",
+			ParameterName: "provider",
+			Options:       provOpts,
+		}
+		if defaultProvider != "" && hasProvider(groups, defaultProvider) {
+			provCtl.DefaultValue = defaultProvider
+		}
+		controls = append(controls, provCtl)
+
+		// One conditional Model dropdown per provider.
+		for _, g := range groups {
+			modelOpts := make([]poeproto.ValueNamePair, 0, len(g.models))
+			for _, m := range g.models {
+				modelOpts = append(modelOpts, poeproto.ValueNamePair{Value: m.ID, Name: m.Name})
+			}
+			modelCtl := poeproto.Control{
+				Control:       "drop_down",
+				Label:         "Model",
+				ParameterName: ProviderParamName(g.id),
+				Options:       modelOpts,
+			}
+			// Per-provider default: defaults.Model wins if it lives in
+			// this provider; otherwise default to the first model so
+			// the UI never lands on an empty selection when the user
+			// switches providers.
+			switch {
+			case g.id == defaultProvider && defaults.Model != "":
+				modelCtl.DefaultValue = defaults.Model
+			case len(g.models) > 0:
+				modelCtl.DefaultValue = g.models[0].ID
+			}
+			controls = append(controls, poeproto.Control{
+				Control: "condition",
+				Condition: &poeproto.Condition{
+					Comparator: "eq",
+					Left:       poeproto.ParamOperand("provider"),
+					Right:      poeproto.LiteralOperand(g.id),
+				},
+				Controls: []poeproto.Control{modelCtl},
+			})
+		}
 	}
 
 	controls = append(controls,
@@ -142,4 +284,13 @@ func Build(models []acpclient.ModelInfo, defaults router.Options) *poeproto.Para
 			Controls: controls,
 		}},
 	}
+}
+
+func hasProvider(groups []providerGroup, id string) bool {
+	for _, g := range groups {
+		if g.id == id {
+			return true
+		}
+	}
+	return false
 }

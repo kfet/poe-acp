@@ -77,6 +77,46 @@ func TestParseOptions(t *testing.T) {
 			Options{Model: "anth/sonnet", Thinking: "medium"},
 			Options{Model: "anth/sonnet", Thinking: "medium"},
 		},
+		// --- Cascading provider+model_<provider> shape ----------------
+		{
+			"provider + model_<provider> resolves",
+			map[string]any{"provider": "anthropic", "model_anthropic": "anthropic/sonnet"},
+			Options{Model: "openai/old"},
+			Options{Model: "anthropic/sonnet"},
+		},
+		{
+			"bare model wins over provider+model_<provider>",
+			map[string]any{
+				"model":    "openai/gpt-5",
+				"provider": "anthropic", "model_anthropic": "anthropic/sonnet",
+			},
+			Options{},
+			Options{Model: "openai/gpt-5"},
+		},
+		{
+			"provider with no matching model_<provider> → defaults survive",
+			map[string]any{"provider": "anthropic", "model_openai": "openai/gpt-5"},
+			Options{Model: "anth/sonnet"},
+			Options{Model: "anth/sonnet"},
+		},
+		{
+			"provider sanitisation — Foo.Bar → foo_bar",
+			map[string]any{"provider": "Foo.Bar", "model_foo_bar": "Foo.Bar/x"},
+			Options{},
+			Options{Model: "Foo.Bar/x"},
+		},
+		{
+			"empty provider value → 'other' bucket",
+			map[string]any{"provider": "", "model_other": "kimi-k2"},
+			Options{},
+			Options{Model: "kimi-k2"},
+		},
+		{
+			"provider wrong type → no override",
+			map[string]any{"provider": 42, "model_anthropic": "x"},
+			Options{Model: "anth/sonnet"},
+			Options{Model: "anth/sonnet"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
