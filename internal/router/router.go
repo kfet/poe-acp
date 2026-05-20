@@ -402,16 +402,16 @@ func New(cfg Config) (*Router, error) {
 		return nil, fmt.Errorf("mkdir state: %w", err)
 	}
 	if cfg.SystemPrompt != "" {
-		cfg.SystemPrompt = reactionContractClause + "\n\n" + cfg.SystemPrompt
+		cfg.SystemPrompt = transportContractClause + "\n\n" + cfg.SystemPrompt
 	}
 	return &Router{cfg: cfg, sessions: make(map[string]*sessionState)}, nil
 }
 
-// reactionContractClause is prepended to the operator's SystemPrompt so
-// the agent recognises out-of-band synthetic turns delivered by the
-// relay. Reaction turns are queued FIFO with real user prompts and
-// share the same session history, but their responses are discarded.
-const reactionContractClause = `Out-of-band turn contract:
+// transportContractClause is prepended to the operator's SystemPrompt so
+// the agent understands the relay's I/O contract: how synthetic
+// out-of-band turns are marked, and that the user is only reachable as
+// the response to one of their own turns (no back-channel exists).
+const transportContractClause = `Out-of-band turn contract:
 
 Some user messages you receive will begin with the line "[poe-acp:out-of-band ...]".
 These are synthetic turns injected by the relay (poe-acp), NOT typed by
@@ -425,7 +425,14 @@ Rules for out-of-band turns:
     relay discards the response; it exists only so your in-session
     memory / preference notes reflect the new information.
   - Do not invoke tools that have user-visible side effects unless
-    the marker explicitly requests it.`
+    the marker explicitly requests it.
+
+Communication model:
+
+You reach the user only as the response to one of their turns. There is
+no back-channel: no proactive notifications, no "I'll check back later",
+no follow-ups once the turn ends. Finish the work — or surface what's
+outstanding and why — before yielding.`
 
 // OnUpdate implements acpclient.SessionUpdateSink. It enqueues the
 // notification on the session-lifetime chunkCh. No lock is needed:
