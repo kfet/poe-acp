@@ -106,6 +106,28 @@ func TestBuildSkillsCatalog(t *testing.T) {
 	}
 }
 
+func TestSkillsCatalogProviderSeesHostSkillsAddedAfterStartup(t *testing.T) {
+	dir := t.TempDir()
+	provider := skillsCatalogProvider(filepath.Join(dir, "config.json"))
+	if got := provider(); strings.Contains(got, "host later") {
+		t.Fatalf("host skill appeared before it existed: %s", got)
+	}
+
+	host := filepath.Join(dir, "skills", "later")
+	if err := os.MkdirAll(host, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("---\nname: later\ndescription: host later\n---\n")
+	if err := os.WriteFile(filepath.Join(host, "SKILL.md"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := provider()
+	if !strings.Contains(got, "later") || !strings.Contains(got, "host later") {
+		t.Fatalf("provider did not pick up new host skill: %s", got)
+	}
+}
+
 func TestMaybeRefetchSettings_DefaultEndpoint(t *testing.T) {
 	// Empty endpointBase → uses api.poe.com. Make Do fail to short-circuit.
 	defer swap(&httpClient, &http.Client{Transport: errTransport{}})()

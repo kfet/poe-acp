@@ -11,7 +11,7 @@ Pattern is copied from fir's `<available_skills>` block (see `~/dev/ai/fir/pkg/r
 
 ## Design (settled)
 
-1. **Skill bundle** — markdown files embedded in the relay binary via `go:embed`. On startup, extracted to a per-install tmp dir (`os.TempDir()/poe-acp-<version>-<hash>/skills/`). Idempotent.
+1. **Skill bundle** — markdown files embedded in the relay binary via `go:embed`. When a catalog is built, built-ins are extracted to a content-hashed tmp dir (`os.TempDir()/poe-acp-<hash>/skills/`). Extraction is idempotent.
 2. **Injected payload = catalog only**, not skill bodies. fir-style XML:
    ```
    <available_skills>
@@ -27,7 +27,8 @@ Pattern is copied from fir's `<available_skills>` block (see `~/dev/ai/fir/pkg/r
    - Capability: `_meta["session.systemPrompt"]` (generic, version 1), advertised in `initialize` by both client and agent.
    - **If agent advertises**: relay sends catalog as `session/new._meta["session.systemPrompt"].blocks = [{type:"text", text:"..."}]`. Agent treats it as durable system context.
    - **Fallback**: prepend the catalog as a `text` content block on the **first** `session/prompt`, with a "preserve verbatim across summarisation" instruction. Re-inject on `session/load`.
-4. **Out of scope**: MCP, `resource_link`/`fs/read_text_file` reliance, override paths, v2 cap fields. Keep it minimal.
+4. **Catalog lifetime**: the relay rebuilds the catalog when creating/resuming a router session. Existing hot conversations keep their injected snapshot; new conversations/sessions pick up host skill files copied into `<dirname(config)>/skills/` without a poe-acp restart.
+5. **Out of scope**: MCP, `resource_link`/`fs/read_text_file` reliance, v2 cap fields. Keep it minimal.
 
 ## Initial skill set (v1)
 
@@ -85,7 +86,7 @@ In addition to the embedded built-in bundle, the relay loads skills from a host 
 
 Layers are merged in order: embedded built-ins first, host directory second. **Last-wins by name.** A host SKILL.md whose `name:` matches a built-in (e.g. `deploy`) replaces the built-in entry in the catalog. This is the override-and-disable mechanism — write your own one-liner SKILL.md with the same name to silence or replace any built-in.
 
-The merged catalog is sorted by name for deterministic output. Use `poe-acp --print-catalog` to see exactly what would be injected for a given config.
+The merged catalog is sorted by name for deterministic output. Runtime injection rebuilds this catalog for each newly-created/resumed router session, so new conversations see host-skill changes without a restart. Use `poe-acp --print-catalog` to see the catalog that would be injected at the moment you run the command for a given config.
 
 ### Why no `skills` key in `config.json`
 

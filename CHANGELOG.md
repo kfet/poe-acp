@@ -9,6 +9,7 @@
 ### Changed
 
 - **System-prompt contract clause expanded.** The clause router prepends to `SystemPrompt` now also states the communication model: the agent reaches the user only as the response to one of their turns — no back-channel, no proactive notifications, no "I'll check back later" follow-ups. Const renamed `reactionContractClause` → `transportContractClause` to reflect the broader scope (both facets describe the relay's I/O contract).
+- **Skills catalog rebuilt per session, not once at startup.** `cmd/poe-acp` now hands the router a `SystemPromptProvider` callback that re-merges built-in and host skills (`<dirname(config)>/skills/`) every time a new conversation/session is created or resumed. Host skills dropped into the directory are picked up by the next new conversation without restarting the relay; built-in extraction stays content-hashed and idempotent, host-overrides-builtin-by-name semantics are preserved. `internal/router.Config.SystemPrompt` (static text) is gone — replaced by `SystemPromptProvider func() string`; internal-only API, no operator-visible flag change.
 
 ### Fixed
 
