@@ -303,4 +303,4 @@ Logs: `journalctl --user -u poe-acp-foo -f`.
 …
 ```
 
-To override a built-in (e.g. replace `deploy` with a foo-specific procedure), drop a `SKILL.md` under `skills/deploy/` with `name: deploy` — last-wins by name silences the built-in. Verify with `poe-acp --print-catalog --config <path>`.
+To override a built-in (e.g. replace `deploy` with a foo-specific procedure), drop a `SKILL.md` under `skills/deploy/` with `name: deploy` — last-wins by name silences the built-in. New conversations pick up the change without restarting poe-acp. Verify the current catalog with `poe-acp --print-catalog --config <path>`.

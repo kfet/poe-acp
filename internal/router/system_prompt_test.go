@@ -33,6 +33,9 @@ func TestSystemPrompt_CapPath(t *testing.T) {
 		!strings.Contains(agent.lastSysBlocks[0].Text.Text, "DURABLE-CATALOG-XYZ") {
 		t.Fatalf("system prompt not delivered via _meta: %+v", agent.lastSysBlocks)
 	}
+	if !strings.Contains(agent.lastSysBlocks[0].Text.Text, "Out-of-band turn contract") {
+		t.Fatalf("static system prompt missing reaction contract clause: %+v", agent.lastSysBlocks)
+	}
 	if strings.Contains(agent.lastPromptTxt, "DURABLE-CATALOG-XYZ") {
 		t.Fatalf("cap path must NOT inline catalog on prompt; got %q", agent.lastPromptTxt)
 	}
@@ -126,16 +129,154 @@ func TestSystemPrompt_ResumeCapPathTrustsAgent(t *testing.T) {
 	}
 }
 
+func TestSystemPromptProvider_CalledPerNewSession(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	agent.caps = acpclient.Caps{SystemPrompt: true}
+
+	catalogs := []string{"CATALOG-ONE", "CATALOG-TWO"}
+	calls := 0
+	rtr := mustRouterWithSPProvider(t, agent, func() string {
+		if calls >= len(catalogs) {
+			t.Fatalf("system prompt provider called too many times: %d", calls+1)
+		}
+		out := catalogs[calls]
+		calls++
+		return out
+	})
+
+	if err := rtr.Prompt(context.Background(), "c-one", "u",
+		[]Turn{{Role: "user", Content: "first"}}, Options{}, newCollector()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls after first session=%d want 1", calls)
+	}
+	if len(agent.lastSysBlocks) != 1 || agent.lastSysBlocks[0].Text == nil ||
+		!strings.Contains(agent.lastSysBlocks[0].Text.Text, "CATALOG-ONE") {
+		t.Fatalf("first session got wrong system prompt: %+v", agent.lastSysBlocks)
+	}
+
+	// Existing hot session keeps its original injected prompt; provider is
+	// not polled on every turn.
+	if err := rtr.Prompt(context.Background(), "c-one", "u",
+		[]Turn{{Role: "user", Content: "same session"}}, Options{}, newCollector()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider called for hot session turn: calls=%d", calls)
+	}
+
+	if err := rtr.Prompt(context.Background(), "c-two", "u",
+		[]Turn{{Role: "user", Content: "second"}}, Options{}, newCollector()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("provider calls after second session=%d want 2", calls)
+	}
+	if len(agent.lastSysBlocks) != 1 || agent.lastSysBlocks[0].Text == nil ||
+		!strings.Contains(agent.lastSysBlocks[0].Text.Text, "CATALOG-TWO") {
+		t.Fatalf("second session got wrong system prompt: %+v", agent.lastSysBlocks)
+	}
+}
+
+func TestSystemPromptProvider_CalledAgainAfterGCEviction(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	agent.caps = acpclient.Caps{SystemPrompt: true}
+
+	clock := time.Unix(0, 0)
+	catalogs := []string{"CATALOG-BEFORE-GC", "CATALOG-AFTER-GC"}
+	calls := 0
+	rtr := mustRouterWithConfig(t, agent, Config{
+		SessionTTL: time.Second,
+		Now:        func() time.Time { return clock },
+		SystemPromptProvider: func() string {
+			if calls >= len(catalogs) {
+				t.Fatalf("system prompt provider called too many times: %d", calls+1)
+			}
+			out := catalogs[calls]
+			calls++
+			return out
+		},
+	})
+
+	if err := rtr.Prompt(context.Background(), "c-gc", "u",
+		[]Turn{{Role: "user", Content: "before"}}, Options{}, newCollector()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls before gc=%d want 1", calls)
+	}
+
+	clock = clock.Add(2 * time.Second)
+	rtr.gcOnce()
+	if rtr.Len() != 0 {
+		t.Fatalf("session was not evicted")
+	}
+
+	if err := rtr.Prompt(context.Background(), "c-gc", "u",
+		[]Turn{{Role: "user", Content: "after"}}, Options{}, newCollector()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("provider calls after gc=%d want 2", calls)
+	}
+	if len(agent.lastSysBlocks) != 1 || agent.lastSysBlocks[0].Text == nil ||
+		!strings.Contains(agent.lastSysBlocks[0].Text.Text, "CATALOG-AFTER-GC") {
+		t.Fatalf("post-gc session got wrong system prompt: %+v", agent.lastSysBlocks)
+	}
+}
+
+func TestSystemPromptProvider_EmptyDisablesInjection(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	agent.caps = acpclient.Caps{SystemPrompt: true}
+
+	rtr := mustRouterWithSPProvider(t, agent, func() string { return "" })
+	if err := rtr.Prompt(context.Background(), "c-empty", "u",
+		[]Turn{{Role: "user", Content: "hi"}}, Options{}, newCollector()); err != nil {
+		t.Fatal(err)
+	}
+	if agent.lastSysBlocks != nil {
+		t.Fatalf("empty provider must not deliver _meta blocks; got %+v", agent.lastSysBlocks)
+	}
+	if strings.Contains(agent.lastPromptTxt, "Out-of-band turn contract") {
+		t.Fatalf("empty provider must not prepend reaction contract; got %q", agent.lastPromptTxt)
+	}
+	if agent.lastPromptTxt != "hi" {
+		t.Fatalf("user prompt mangled: %q", agent.lastPromptTxt)
+	}
+}
+
 func newCollector() *captureSink { return &captureSink{} }
 
 func mustRouterWithSP(t *testing.T, a Agent, sp string) *Router {
 	t.Helper()
-	rtr, err := New(Config{
-		Agent:        a,
-		StateDir:     t.TempDir(),
-		SessionTTL:   time.Hour,
-		SystemPrompt: sp,
-	})
+	return mustRouterWithSPProvider(t, a, func() string { return sp })
+}
+
+func mustRouterWithSPProvider(t *testing.T, a Agent, provider func() string) *Router {
+	t.Helper()
+	return mustRouterWithConfig(t, a, Config{SystemPromptProvider: provider})
+}
+
+func mustRouterWithConfig(t *testing.T, a Agent, cfg Config) *Router {
+	t.Helper()
+	cfg.Agent = a
+	if cfg.StateDir == "" {
+		cfg.StateDir = t.TempDir()
+	}
+	if cfg.SessionTTL == 0 {
+		cfg.SessionTTL = time.Hour
+	}
+	rtr, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
