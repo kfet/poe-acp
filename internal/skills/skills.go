@@ -1,6 +1,6 @@
 // Package skills embeds the relay's curated skill bundle, extracts the
-// subset marked builtin to a per-version dir at startup, and formats a
-// fir-style <available_skills> catalog for injection into ACP agents.
+// subset marked builtin to a per-content-hash dir on demand, and formats
+// a fir-style <available_skills> catalog for injection into ACP agents.
 //
 // Design (see docs/skill-injection-plan.md):
 //   - Bundle = a small set of Markdown SKILL.md files describing
@@ -12,10 +12,10 @@
 //     are surfaced to ACP agents at runtime — others are project-only
 //     and stay out of the catalog. This mirrors fir's own
 //     pkg/resources/builtin_skills loader.
-//   - At startup the relay extracts the selected bundle to
-//     $TMPDIR/poe-acp-<hash>/skills/<name>/SKILL.md once. The hash
-//     covers the embedded content so a new binary uses a new dir and
-//     never reads stale skill text.
+//   - When the catalog is built, the relay extracts the selected bundle
+//     to $TMPDIR/poe-acp-<hash>/skills/<name>/SKILL.md. Extraction is
+//     idempotent; the hash covers the embedded content so a new binary
+//     uses a new dir and never reads stale skill text.
 //   - The relay then formats a fir-style catalog (name + description +
 //     absolute path) and hands it to the agent either via the
 //     session.systemPrompt _meta capability or as an inline prefix on

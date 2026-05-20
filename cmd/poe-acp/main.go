@@ -161,13 +161,12 @@ func main() {
 		defaults.Model, defaults.Thinking, defaults.HideThinking)
 
 	// Router
-	catalog := buildSkillsCatalog(cfgPath)
 	rtr, err := router.New(router.Config{
-		Agent:        agent,
-		StateDir:     stateDir,
-		SessionTTL:   *ttl,
-		Defaults:     defaults,
-		SystemPrompt: catalog,
+		Agent:                agent,
+		StateDir:             stateDir,
+		SessionTTL:           *ttl,
+		Defaults:             defaults,
+		SystemPromptProvider: skillsCatalogProvider(cfgPath),
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)

@@ -107,14 +107,19 @@ type Config struct {
 	// UI-promised state, even on the first turn when Poe sends an
 	// empty `parameters` dict.
 	Defaults Options
-	// SystemPrompt, if non-empty, is the durable system-prompt text the
-	// router injects into every new session. When the agent advertises
-	// the session.systemPrompt capability the text is sent via
-	// session/new._meta as a single text ContentBlock; otherwise it is
-	// prepended to the first session/prompt with a "preserve verbatim"
-	// instruction. See acp-spec/rfd-system-prompt.md and
-	// docs/skill-injection-plan.md.
-	SystemPrompt string
+	// SystemPromptProvider, when set, produces durable system-prompt
+	// text. It is called once per newly-created (or resumed) router
+	// session — never per turn — so callers can rebuild from mutable
+	// host state (e.g. an on-disk skills directory) without restarting
+	// the relay. Called outside Router.mu; must be safe for concurrent
+	// calls. Return "" to disable injection for that session.
+	//
+	// When the agent advertises the session.systemPrompt capability the
+	// text is sent via session/new._meta as one text ContentBlock;
+	// otherwise it is prepended to the first session/prompt with a
+	// "preserve verbatim" instruction. See acp-spec/rfd-system-prompt.md
+	// and docs/skill-injection-plan.md.
+	SystemPromptProvider func() string
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
 	// HTTPClient is used to fetch attachment bytes (download-to-disk
@@ -180,10 +185,15 @@ type sessionState struct {
 
 	lastUsedNs int64 // protected by Router.mu
 
+	// systemPrompt is the durable system prompt snapshot selected when
+	// this router session was created/resumed. Hot sessions keep their
+	// snapshot; new sessions call Config.SystemPromptProvider again.
+	systemPrompt string
+
 	// pendingSystemPromptInline, when true, causes the next user-kind
-	// Prompt to prepend the router's SystemPrompt text to the first
-	// content block. Used on the fallback path (agent didn't advertise
-	// the session.systemPrompt cap) for fresh sessions and on resume.
+	// Prompt to prepend systemPrompt text to the first content block.
+	// Used on the fallback path (agent didn't advertise the
+	// session.systemPrompt cap) for fresh sessions and on resume.
 	// Read/written only by the runTurns goroutine; no lock needed.
 	pendingSystemPromptInline bool
 }
@@ -398,19 +408,35 @@ func New(cfg Config) (*Router, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.SystemPromptProvider == nil {
+		cfg.SystemPromptProvider = func() string { return "" }
+	}
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "convs"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir state: %w", err)
-	}
-	if cfg.SystemPrompt != "" {
-		cfg.SystemPrompt = transportContractClause + "\n\n" + cfg.SystemPrompt
 	}
 	return &Router{cfg: cfg, sessions: make(map[string]*sessionState)}, nil
 }
 
-// transportContractClause is prepended to the operator's SystemPrompt so
-// the agent understands the relay's I/O contract: how synthetic
-// out-of-band turns are marked, and that the user is only reachable as
-// the response to one of their own turns (no back-channel exists).
+// systemPromptForSession asks the configured provider for the system
+// prompt to attach to a fresh session and, when non-empty, prepends the
+// transport contract clause. Called from getOrCreate per new/resumed
+// session — never per turn — so providers backed by mutable host state
+// (e.g. an on-disk skills directory) yield fresh content for each new
+// conversation without restarting the relay.
+func (r *Router) systemPromptForSession() string {
+	text := r.cfg.SystemPromptProvider()
+	if text == "" {
+		return ""
+	}
+	return transportContractClause + "\n\n" + text
+}
+
+// transportContractClause is prepended to the provider-supplied system
+// prompt so the agent understands the relay's I/O contract: how
+// synthetic out-of-band turns are marked, and that the user is only
+// reachable as the response to one of their own turns (no back-channel
+// exists). Reaction turns are queued FIFO with real user prompts and
+// share the same session history, but their responses are discarded.
 const transportContractClause = `Out-of-band turn contract:
 
 Some user messages you receive will begin with the line "[poe-acp:out-of-band ...]".
@@ -715,12 +741,12 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	}
 
 	blocks := req.blocks
-	if req.kind == turnUser && st.pendingSystemPromptInline && r.cfg.SystemPrompt != "" {
+	if req.kind == turnUser && st.pendingSystemPromptInline && st.systemPrompt != "" {
 		// Fallback path: agent didn't advertise session.systemPrompt
 		// (or this is a resume). Prepend the catalog inline so the
 		// agent picks it up on the first user turn of the hot path.
 		if len(blocks) > 0 && blocks[0].Text != nil {
-			prefix := r.cfg.SystemPrompt + "\n" +
+			prefix := st.systemPrompt + "\n" +
 				"The block above is durable system context. Preserve it verbatim across any summarisation of this conversation.\n\n"
 			blocks = append([]acp.ContentBlock(nil), blocks...)
 			blocks[0] = acp.TextBlock(prefix + blocks[0].Text.Text)
@@ -1290,14 +1316,15 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	}
 
 	st = &sessionState{
-		convID:     convID,
-		userID:     userID,
-		cwd:        cwd,
-		lastUsedNs: r.cfg.Now().UnixNano(),
-		chunkCh:    make(chan chunkMsg, 256),
-		drainStop:  make(chan struct{}),
-		queue:      newSessionQueue(),
-		runStop:    make(chan struct{}),
+		convID:       convID,
+		userID:       userID,
+		cwd:          cwd,
+		systemPrompt: r.systemPromptForSession(),
+		lastUsedNs:   r.cfg.Now().UnixNano(),
+		chunkCh:      make(chan chunkMsg, 256),
+		drainStop:    make(chan struct{}),
+		queue:        newSessionQueue(),
+		runStop:      make(chan struct{}),
 	}
 	go st.drainChunks()
 	go r.runTurns(st)
@@ -1316,7 +1343,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 				// restore it on session/load — trust that. On the
 				// fallback path, re-inject inline on the next prompt
 				// (the RFD's stated mitigation).
-				if r.cfg.SystemPrompt != "" && !caps.SystemPrompt {
+				if st.systemPrompt != "" && !caps.SystemPrompt {
 					st.pendingSystemPromptInline = true
 				}
 				winner, _ := r.install(convID, st)
@@ -1332,8 +1359,8 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 
 	// Tier 2: new session. If we have prior turns, the caller will seed.
 	var sysBlocks []acp.ContentBlock
-	if r.cfg.SystemPrompt != "" && caps.SystemPrompt {
-		sysBlocks = []acp.ContentBlock{acp.TextBlock(r.cfg.SystemPrompt)}
+	if st.systemPrompt != "" && caps.SystemPrompt {
+		sysBlocks = []acp.ContentBlock{acp.TextBlock(st.systemPrompt)}
 	}
 	sid, nerr := r.cfg.Agent.NewSession(ctx, cwd, st, sysBlocks)
 	if nerr != nil {
@@ -1342,7 +1369,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	st.sessionID = sid
 	// Fallback path for new sessions: agent didn't advertise the cap,
 	// so inline the system prompt on the first user prompt.
-	if r.cfg.SystemPrompt != "" && !caps.SystemPrompt {
+	if st.systemPrompt != "" && !caps.SystemPrompt {
 		st.pendingSystemPromptInline = true
 	}
 	freshSeed = len(query) > 1

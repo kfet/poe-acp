@@ -151,6 +151,10 @@ var (
 	loadDirSkills     = skills.LoadDir
 )
 
+func skillsCatalogProvider(cfgPath string) func() string {
+	return func() string { return buildSkillsCatalog(cfgPath) }
+}
+
 // buildSkillsCatalog merges embedded built-in skills with optional
 // host-supplied skills from <dirname(cfgPath)>/skills/ and returns a
 // fir-style <available_skills> block ready for injection. Best-effort:
