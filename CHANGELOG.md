@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-05-21
+
 ### Added
 
 - **`refresh-models` builtin skill.** New ops skill explaining how to make a newly added agent model appear in the Poe model dropdown after editing the agent's model catalog: restart the supervisor, verify the relay's startup log shows the new probe count and a schema-hash change, optionally update `defaults.model` in the relay config. Auto-discovered by the bundle walker; no code wiring needed.
