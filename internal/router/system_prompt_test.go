@@ -33,8 +33,8 @@ func TestSystemPrompt_CapPath(t *testing.T) {
 		!strings.Contains(agent.lastSysBlocks[0].Text.Text, "DURABLE-CATALOG-XYZ") {
 		t.Fatalf("system prompt not delivered via _meta: %+v", agent.lastSysBlocks)
 	}
-	if !strings.Contains(agent.lastSysBlocks[0].Text.Text, "Out-of-band turn contract") {
-		t.Fatalf("static system prompt missing reaction contract clause: %+v", agent.lastSysBlocks)
+	if !strings.Contains(agent.lastSysBlocks[0].Text.Text, "Relay & Transport Contract") {
+		t.Fatalf("static system prompt missing relay/transport contract clause: %+v", agent.lastSysBlocks)
 	}
 	if strings.Contains(agent.lastPromptTxt, "DURABLE-CATALOG-XYZ") {
 		t.Fatalf("cap path must NOT inline catalog on prompt; got %q", agent.lastPromptTxt)
@@ -247,8 +247,8 @@ func TestSystemPromptProvider_EmptyDisablesInjection(t *testing.T) {
 	if agent.lastSysBlocks != nil {
 		t.Fatalf("empty provider must not deliver _meta blocks; got %+v", agent.lastSysBlocks)
 	}
-	if strings.Contains(agent.lastPromptTxt, "Out-of-band turn contract") {
-		t.Fatalf("empty provider must not prepend reaction contract; got %q", agent.lastPromptTxt)
+	if strings.Contains(agent.lastPromptTxt, "Relay & Transport Contract") {
+		t.Fatalf("empty provider must not prepend transport contract; got %q", agent.lastPromptTxt)
 	}
 	if agent.lastPromptTxt != "hi" {
 		t.Fatalf("user prompt mangled: %q", agent.lastPromptTxt)
