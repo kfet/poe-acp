@@ -573,8 +573,13 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	if convID == "" {
 		convID = "default"
 	}
-	latest := latestUserText(query)
-	if latest == "" {
+	// Effective text for the latest user turn: Poe content if non-empty,
+	// else a synthesised attachment placeholder, else "" (rejected). When
+	// query has no user turn, latestUserTurnRef returns the zero Turn and
+	// userTurnText returns "" — same rejection path, no special case.
+	latestTurn, _ := latestUserTurnRef(query)
+	latestText := userTurnText(latestTurn)
+	if latestText == "" {
 		_ = sink.Error("empty user message", "user_caused_error")
 		_ = sink.Done()
 		return fmt.Errorf("empty user message")
@@ -590,25 +595,21 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	// Build the prompt content blocks now (attachment download uses the
 	// HTTP request ctx; doing it here keeps the runner thin and the
 	// disk/network IO interruptible by the caller).
-	promptText := latest
+	promptText := latestText
 	if freshSeed {
 		promptText = flattenTranscript(query)
 	}
 	blocks := []acp.ContentBlock{acp.TextBlock(promptText)}
 	embedded := r.cfg.Agent.Caps().EmbeddedContext
-	if latestTurn, ok := latestUserTurnRef(query); ok {
-		msgID := latestTurn.MessageID
-		if msgID == "" {
-			h := sha256.Sum256([]byte(latestTurn.Content))
-			msgID = "anon-" + hex.EncodeToString(h[:4])
+	// latestTurn is non-zero here: latestText is only non-empty when
+	// the query had a user turn, and we short-circuited otherwise.
+	msgID := turnMsgID(latestTurn)
+	used := map[string]struct{}{}
+	for _, a := range latestTurn.Attachments {
+		if a.URL == "" {
+			continue
 		}
-		used := map[string]struct{}{}
-		for _, a := range latestTurn.Attachments {
-			if a.URL == "" {
-				continue
-			}
-			blocks = append(blocks, r.attachmentBlocks(ctx, st.cwd, msgID, used, a, embedded)...)
-		}
+		blocks = append(blocks, r.attachmentBlocks(ctx, st.cwd, msgID, used, a, embedded)...)
 	}
 
 	req := &turnReq{
@@ -931,14 +932,76 @@ func (r *Router) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-// latestUserText returns the content of the last user message in the query.
-func latestUserText(q []Turn) string {
-	for i := len(q) - 1; i >= 0; i-- {
-		if q[i].Role == "user" {
-			return q[i].Content
+// userTurnText returns the effective text for a user turn: the Poe
+// content if non-empty, otherwise the synthesised attachment
+// placeholder, otherwise "". The "" case means the turn carries
+// neither real text nor any usable attachment — the caller treats it
+// as the "empty user message" rejection case.
+func userTurnText(t Turn) string {
+	if t.Content != "" {
+		return t.Content
+	}
+	return attachmentPlaceholder(t.Attachments)
+}
+
+// turnMsgID returns the directory key for one user turn's attachment
+// downloads. Prefers the Poe MessageID; on the no-id path (tests, weird
+// shapes) it falls back to a hash of the turn's content — or the first
+// usable attachment URL when content is also empty, so two anon
+// attachment-only turns don't collide on the same .poe-attachments/
+// <msgID>/ directory.
+func turnMsgID(t Turn) string {
+	if t.MessageID != "" {
+		return t.MessageID
+	}
+	seed := t.Content
+	if seed == "" {
+		for _, a := range t.Attachments {
+			if a.URL != "" {
+				seed = a.URL
+				break
+			}
 		}
 	}
-	return ""
+	h := sha256.Sum256([]byte(seed))
+	return "anon-" + hex.EncodeToString(h[:4])
+}
+
+// attachmentPlaceholder returns a short synthetic text describing the
+// usable attachments on a user turn whose Poe Content is empty. This
+// lets downstream agents that branch on text presence still receive
+// something meaningful when the user sends an image-only or file-only
+// turn. Only attachments with a non-empty URL are counted (empty-URL
+// entries are dropped elsewhere in the prompt path, so they shouldn't
+// influence the placeholder either). Returns "" when there is nothing
+// usable to describe — caller treats that as the "truly empty user
+// turn" case.
+func attachmentPlaceholder(atts []Attachment) string {
+	n := 0
+	allImages := true
+	for _, a := range atts {
+		if a.URL == "" {
+			continue
+		}
+		n++
+		if !strings.HasPrefix(a.ContentType, "image/") {
+			allImages = false
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	if n == 1 {
+		if allImages {
+			return "[User attached an image]"
+		}
+		return "[User attached a file]"
+	}
+	kind := "files"
+	if allImages {
+		kind = "images"
+	}
+	return fmt.Sprintf("[User attached %d %s]", n, kind)
 }
 
 // Image inline policy and attachment-disk constants.
@@ -1285,9 +1348,19 @@ func flattenTranscript(q []Turn) string {
 		default:
 			label = t.Role
 		}
+		content := t.Content
+		if t.Role == "user" {
+			// Substitute the same synthesised placeholder we use on
+			// the hot path so the agent sees "User: [User attached
+			// an image]" rather than a bare "User: " line with no
+			// context. Prior turns' attachment URLs are not re-fetched
+			// here, so the placeholder is the only signal the agent
+			// gets that something was attached at that point.
+			content = userTurnText(t)
+		}
 		b.WriteString(label)
 		b.WriteString(": ")
-		b.WriteString(t.Content)
+		b.WriteString(content)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("[End of prior transcript. Respond to the latest User message above.]")
