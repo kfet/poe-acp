@@ -433,32 +433,41 @@ func (r *Router) systemPromptForSession() string {
 
 // transportContractClause is prepended to the provider-supplied system
 // prompt so the agent understands the relay's I/O contract: how
-// synthetic out-of-band turns are marked, and that the user is only
+// synthetic out-of-band turns are marked, that the user is only
 // reachable as the response to one of their own turns (no back-channel
-// exists). Reaction turns are queued FIFO with real user prompts and
-// share the same session history, but their responses are discarded.
-const transportContractClause = `Out-of-band turn contract:
+// exists), and that the user may not be co-located on this host —
+// they may be on mobile or a browser with no shell, tmux, or local
+// file access. Reaction turns are queued FIFO with real user prompts
+// and share the same session history, but their responses are
+// discarded.
+const transportContractClause = `[SYS_EXT] Relay & Transport Contract:
 
-Some user messages you receive will begin with the line "[poe-acp:out-of-band ...]".
-These are synthetic turns injected by the relay (poe-acp), NOT typed by
-the user. The most common kind is a reaction event ("[poe-acp:out-of-band reaction]")
-telling you that the user added or removed a reaction (👍, 👎, etc.) on
-one of your earlier messages.
+You are reached via poe-acp, a chat relay that forwards a Poe
+conversation to you over ACP. Two things follow.
 
-Rules for out-of-band turns:
-  - Do not address the user. Your reply will NOT be shown to them.
-  - Keep the reply terse — a one-line acknowledgement is fine. The
-    relay discards the response; it exists only so your in-session
-    memory / preference notes reflect the new information.
-  - Do not invoke tools that have user-visible side effects unless
-    the marker explicitly requests it.
+1. Out-of-band turns. Some user messages begin with
+   "[poe-acp:out-of-band ...]" — these are synthetic turns injected by
+   the relay, NOT typed by the user. The most common kind is a
+   reaction event ("[poe-acp:out-of-band reaction]") telling you the
+   user added or removed a reaction (👍, 👎, etc.) on one of your
+   earlier messages. Your reply to an out-of-band turn is NOT shown to
+   the user — ack tersely (a one-liner is fine), and do not invoke
+   tools with user-visible side effects unless the marker explicitly
+   requests it. The relay discards the response; it exists only so
+   your in-session memory / preference notes reflect the new
+   information.
 
-Communication model:
-
-You reach the user only as the response to one of their turns. There is
-no back-channel: no proactive notifications, no "I'll check back later",
-no follow-ups once the turn ends. Finish the work — or surface what's
-outstanding and why — before yielding.`
+2. Surface & back-channel. The chat is your only channel to the user,
+   and you reach them only as the response to one of their turns —
+   there is no proactive back-channel, no "I'll check back later", no
+   follow-ups once the turn ends. Finish the work, or surface what's
+   outstanding and why, before yielding. The user may not be on this
+   host: they could be on mobile, in a browser, with no shell, tmux,
+   or local file access. Do not punt observation to their terminal —
+   you own the observation loop. Manage background work yourself
+   (poll, summarise, report back in chat), keep output mobile-friendly
+   (compact, narrow, summary first), and follow their lead if they
+   signal local access.`
 
 // OnUpdate implements acpclient.SessionUpdateSink. It enqueues the
 // notification on the session-lifetime chunkCh. No lock is needed:
