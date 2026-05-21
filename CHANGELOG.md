@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Attachment-only Poe user turns no longer rejected as empty.** `router.Prompt` now accepts turns with usable attachments but no text, adds a concise placeholder text block before attachment blocks, preserves the existing truly-empty error, and avoids anonymous message-dir collisions for attachment-only turns.
+
 ## [0.15.0] - 2026-05-21
 
 ### Added

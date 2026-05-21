@@ -686,6 +686,219 @@ func TestRouter_DropsAttachmentsWithEmptyURL(t *testing.T) {
 	}
 }
 
+func TestRouter_AcceptsAttachmentOnlyUserTurn(t *testing.T) {
+	// Image-only Poe turn (Content=="") must not be rejected as "empty
+	// user message". The relay should synthesize a placeholder text
+	// block AND emit the attachment block so the agent sees the file.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("png-bytes"))
+	}))
+	defer srv.Close()
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	dir := t.TempDir()
+	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	turns := []Turn{{
+		Role:        "user",
+		MessageID:   "m-img",
+		Content:     "",
+		Attachments: []Attachment{{URL: srv.URL + "/cat.png", ContentType: "image/png", Name: "cat.png"}},
+	}}
+	sink := &captureSink{}
+	if err := r.Prompt(context.Background(), "conv-img-only", "u", turns, Options{}, sink); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if sink.errText != "" {
+		t.Fatalf("unexpected sink error: %q (%s)", sink.errText, sink.errType)
+	}
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	if len(agent.lastPromptBlocks) < 2 {
+		t.Fatalf("blocks=%d want >=2 (placeholder text + link); blocks=%+v", len(agent.lastPromptBlocks), agent.lastPromptBlocks)
+	}
+	tb := agent.lastPromptBlocks[0].Text
+	if tb == nil {
+		t.Fatalf("block[0] not Text: %+v", agent.lastPromptBlocks[0])
+	}
+	if tb.Text != "[User attached an image]" {
+		t.Fatalf("placeholder=%q want %q", tb.Text, "[User attached an image]")
+	}
+	rl := agent.lastPromptBlocks[1].ResourceLink
+	if rl == nil {
+		t.Fatalf("block[1] not ResourceLink: %+v", agent.lastPromptBlocks[1])
+	}
+	if !strings.HasPrefix(rl.Uri, "file://") || !strings.Contains(rl.Uri, "cat.png") {
+		t.Fatalf("uri=%q want file:// path containing cat.png", rl.Uri)
+	}
+	// Confirm the attachment dir was actually created on disk — the
+	// original bug short-circuited before attachment IO ran.
+	attDir := filepath.Join(dir, "convs", "conv-img-only", ".poe-attachments", "m-img")
+	if _, err := os.Stat(attDir); err != nil {
+		t.Fatalf("expected attachment dir %s: %v", attDir, err)
+	}
+}
+
+func TestAttachmentPlaceholder(t *testing.T) {
+	mkPNG := func(name string) Attachment {
+		return Attachment{URL: "https://example/" + name, ContentType: "image/png", Name: name}
+	}
+	mkBin := func(name string) Attachment {
+		return Attachment{URL: "https://example/" + name, ContentType: "application/octet-stream", Name: name}
+	}
+	cases := []struct {
+		name string
+		atts []Attachment
+		want string
+	}{
+		{"nil", nil, ""},
+		{"empty_slice", []Attachment{}, ""},
+		{"all_empty_url", []Attachment{{URL: "", Name: "ghost"}}, ""},
+		{"one_image", []Attachment{mkPNG("a.png")}, "[User attached an image]"},
+		{"two_images", []Attachment{mkPNG("a.png"), mkPNG("b.png")}, "[User attached 2 images]"},
+		{"one_file", []Attachment{mkBin("a.bin")}, "[User attached a file]"},
+		{"two_files", []Attachment{mkBin("a.bin"), mkBin("b.bin")}, "[User attached 2 files]"},
+		{"mixed_kinds", []Attachment{mkPNG("a.png"), mkBin("b.bin")}, "[User attached 2 files]"},
+		// Empty-URL attachments don't count toward the placeholder.
+		{"one_image_plus_ghost", []Attachment{mkPNG("a.png"), {URL: "", Name: "ghost"}}, "[User attached an image]"},
+		// Unknown content-type bucketed as file, not image.
+		{"unknown_ct", []Attachment{{URL: "https://example/x", ContentType: "", Name: "x"}}, "[User attached a file]"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := attachmentPlaceholder(c.atts); got != c.want {
+				t.Fatalf("attachmentPlaceholder=%q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestRouter_RejectsTrulyEmptyUserTurn(t *testing.T) {
+	// Regression guard: no text, no attachments, no user turn at all —
+	// all three shapes must still produce "empty user message" without
+	// reaching the agent.
+	cases := map[string][]Turn{
+		"empty_no_attachments": {{Role: "user", MessageID: "m1", Content: ""}},
+		"only_empty_url_atts":  {{Role: "user", MessageID: "m1", Content: "", Attachments: []Attachment{{URL: "", Name: "ghost"}}}},
+		"no_user_turn":         {{Role: "bot", Content: "hi"}, {Role: "system", Content: "sys"}},
+		"empty_query":          nil,
+	}
+	for name, turns := range cases {
+		t.Run(name, func(t *testing.T) {
+			agent := newFakeAgent(func(_ context.Context, _ *fakeAgent, _ acp.SessionId, _ string) (acp.StopReason, error) {
+				// Reached from a worker goroutine; use Errorf (not
+				// Fatalf) — testing.T.Fatal is documented as safe
+				// only on the goroutine that ran the test func.
+				t.Errorf("agent.Prompt should not be called for empty user turn")
+				return acp.StopReasonEndTurn, nil
+			})
+			dir := t.TempDir()
+			r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			sink := &captureSink{}
+			err = r.Prompt(context.Background(), "conv-"+name, "u", turns, Options{}, sink)
+			if err == nil || err.Error() != "empty user message" {
+				t.Fatalf("err=%v want 'empty user message'", err)
+			}
+			if sink.errText != "empty user message" {
+				t.Fatalf("sink.errText=%q want 'empty user message'", sink.errText)
+			}
+			if sink.errType != "user_caused_error" {
+				t.Fatalf("sink.errType=%q want 'user_caused_error'", sink.errType)
+			}
+			if !sink.done {
+				t.Fatal("sink.Done not called")
+			}
+			if atomic.LoadInt32(&agent.prompts) != 0 {
+				t.Fatalf("agent.prompts=%d want 0", agent.prompts)
+			}
+		})
+	}
+}
+
+func TestTurnMsgID(t *testing.T) {
+	cases := []struct {
+		name      string
+		turn      Turn
+		wantPlain string // exact match when set
+		wantPfx   string // prefix match when set (anon-)
+	}{
+		{
+			name:      "prefers_message_id",
+			turn:      Turn{MessageID: "m1", Content: "hi"},
+			wantPlain: "m1",
+		},
+		{
+			name:    "anon_from_content",
+			turn:    Turn{Content: "hi"},
+			wantPfx: "anon-",
+		},
+		{
+			name: "anon_from_first_attachment_url_when_content_empty",
+			turn: Turn{Attachments: []Attachment{
+				{URL: "", Name: "ghost"},
+				{URL: "https://poe.example/a.png", ContentType: "image/png", Name: "a.png"},
+			}},
+			wantPfx: "anon-",
+		},
+		{
+			name:    "anon_zero_value_when_all_empty",
+			turn:    Turn{},
+			wantPfx: "anon-",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := turnMsgID(c.turn)
+			switch {
+			case c.wantPlain != "" && got != c.wantPlain:
+				t.Fatalf("turnMsgID=%q want %q", got, c.wantPlain)
+			case c.wantPfx != "" && !strings.HasPrefix(got, c.wantPfx):
+				t.Fatalf("turnMsgID=%q want prefix %q", got, c.wantPfx)
+			}
+		})
+	}
+
+	// Regression: distinct attachment-only turns must hash to distinct
+	// msgIDs so their .poe-attachments/<msgID>/ dirs don't collide.
+	t1 := Turn{Attachments: []Attachment{{URL: "https://poe.example/a.png"}}}
+	t2 := Turn{Attachments: []Attachment{{URL: "https://poe.example/b.png"}}}
+	if got1, got2 := turnMsgID(t1), turnMsgID(t2); got1 == got2 {
+		t.Fatalf("distinct URLs collapsed to same anon msgID %q", got1)
+	}
+}
+
+func TestFlattenTranscript_SubstitutesAttachmentPlaceholderForEmptyUserTurns(t *testing.T) {
+	// A user turn whose Poe Content is "" but which carried attachments
+	// should appear in the flattened transcript with the synthesised
+	// placeholder rather than a bare "User: " line. Non-empty user
+	// content passes through unchanged.
+	got := flattenTranscript([]Turn{
+		{Role: "user", MessageID: "m1", Content: "",
+			Attachments: []Attachment{{URL: "https://poe.example/a.png", ContentType: "image/png", Name: "a.png"}}},
+		{Role: "bot", Content: "ok"},
+		{Role: "user", MessageID: "m2", Content: "real text"},
+	})
+	if !strings.Contains(got, "User: [User attached an image]") {
+		t.Fatalf("missing placeholder substitution:\n%s", got)
+	}
+	if !strings.Contains(got, "User: real text") {
+		t.Fatalf("real user text didn't pass through:\n%s", got)
+	}
+	// No bare "User: " lines (empty content + no usable attachments
+	// would degrade to that — we shouldn't see it for this fixture).
+	if strings.Contains(got, "User: \n") {
+		t.Fatalf("bare empty User line present:\n%s", got)
+	}
+}
+
 func TestRouter_ParsedContentEmittedAsResourceWhenCapable(t *testing.T) {
 	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
 		a.emit(sid, "ok")
