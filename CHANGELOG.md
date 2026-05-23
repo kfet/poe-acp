@@ -2,9 +2,16 @@
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-05-23
+
+### Added
+
+- **Operator-configurable durable system prompt via external file (`system_prompt_file` / `disable_system_prompt`).** Two new top-level keys in `~/.config/poe-acp/config.json` (or per-bot `<dir>/config.json`). `system_prompt_file` names a file whose trimmed contents are prepended to the skills catalog and injected into the authoritative system slot of every new ACP session — relative paths resolve against the config's directory, absolute paths are used as-is. `disable_system_prompt: true` suppresses the prompt file, the skills catalog, *and* the relay's transport-contract clause (full opt-out, wins over a configured file). The file is read per new conversation, so edits take effect on the next new chat without a relay restart; at startup a fail-fast read surfaces typos and missing files immediately (`log.Fatalf`), while per-session re-read errors are logged and treated as empty so live conversations stay up. The file-based shape (no inline alternative) keeps substantial Markdown prompts editable, diff-friendly, and free of JSON's no-multiline-strings escape tax. Composition uses `acp-kit/sysprompt.Compose`; matches `slack-acp`'s `disable_system_prompt` key for a shared operator mental model. `internal/config.Config` grows `SystemPromptFile` and `DisableSystemPrompt`; `cmd/poe-acp/helpers.go` swaps `skillsCatalogProvider` for `systemPromptProvider` + `readSystemPromptFile` (router-facing API unchanged). Existing conversations keep their snapshot — only new ones pick up edits.
+
 ### Changed
 
 - **Migrated shared ACP relay primitives to `acp-kit`.** The relay now imports `github.com/kfet/acp-kit/{client,log,skills}` v0.1.0 in place of the old `internal/{acpclient,debuglog,policy}` packages, deleting ~2.7k lines of locally maintained code. The same primitives back `slack-acp`, so wire-level bugs and capability-parsing tweaks get fixed once. Behaviour preserved across the swap: same initialize handshake, same `_meta` parsing, same set of permission policies (`allow-all` / `read-only` / `deny-all` — `read-only`'s heuristic is unchanged), same `POEACP_DEBUG=1` env activation, same `--debug` flag, same auth-method shape, same model-probe semantics. `internal/skills` is now a thin wrapper that owns the embedded `bundle` FS and the `"poe-acp"` tmp-dir prefix; everything else lives in `acp-kit/skills`.
+- **`custom-bots` and `update` skills: prescribe `launchctl kickstart -k` for routine restarts.** Both bundled skill bodies now explicitly call out that config-only or binary-only changes should restart the existing launchd job via `launchctl kickstart -k gui/$UID/<label>` rather than scheduling a delayed reloader or running `bootout` + `bootstrap` (which has an async registration race that can leave the service stopped). `custom-bots` also grows an "Update an existing bot" section pointing operators at `~/.config/poe-acp/<bot>/config.json` as the relay source of truth for model/thinking/default changes.
 
 ### Fixed
 
