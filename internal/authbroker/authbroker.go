@@ -17,14 +17,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 )
 
 // Authenticator is the agent-side surface the broker depends on. The full
-// *acpclient.AgentProc satisfies it.
+// *client.AgentProc satisfies it.
 type Authenticator interface {
-	AuthMethods() []acpclient.AuthMethod
-	Authenticate(ctx context.Context, methodID, id, redirect string, cancel bool) (acpclient.AuthResult, error)
+	AuthMethods() []client.AuthMethod
+	Authenticate(ctx context.Context, methodID, id, redirect string, cancel bool) (client.AuthResult, error)
 }
 
 // Broker tracks per-conversation pending logins.
@@ -252,7 +252,7 @@ func (b *Broker) resolveMethodID(provider string) (string, error) {
 
 // filterLoginable returns only OAuth/agent-typed methods we can actually
 // drive over Poe (env_var and terminal methods aren't usable here).
-func filterLoginable(methods []acpclient.AuthMethod) []acpclient.AuthMethod {
+func filterLoginable(methods []client.AuthMethod) []client.AuthMethod {
 	out := methods[:0:0]
 	for _, m := range methods {
 		// type=="" defaults to "agent" per the RFD.

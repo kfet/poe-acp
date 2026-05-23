@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kfet/poe-acp/internal/debuglog"
+	kitlog "github.com/kfet/acp-kit/log"
 )
 
 func TestLatestUserText(t *testing.T) {
@@ -48,9 +48,9 @@ func TestDecode_Errors(t *testing.T) {
 }
 
 func TestDecode_DebugPath(t *testing.T) {
-	prev := debuglog.Enabled()
-	debuglog.SetEnabled(true)
-	defer debuglog.SetEnabled(prev)
+	prev := kitlog.Enabled()
+	kitlog.SetEnabled(true)
+	defer kitlog.SetEnabled(prev)
 
 	body := `{"type":"query","query":[{"role":"user","content":"hi"}]}`
 	r, err := Decode(strings.NewReader(body))

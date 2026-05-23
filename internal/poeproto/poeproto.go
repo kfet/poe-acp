@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/kfet/poe-acp/internal/debuglog"
+	kitlog "github.com/kfet/acp-kit/log"
 )
 
 // RequestType values Poe sends.
@@ -76,7 +76,7 @@ type Request struct {
 	//
 	// Decode() normalises both into Reaction (emoji/kind, with any
 	// '+'/'-' prefix stripped) + ReactionAction (added|removed). The
-	// raw bytes are logged via debuglog so the wire shape stays
+	// raw bytes are logged at debug level so the wire shape stays
 	// visible in prod even after normalisation.
 	Reaction       string         `json:"reaction,omitempty"`
 	ReactionAction ReactionAction `json:"action,omitempty"`
@@ -98,7 +98,7 @@ func Decode(body io.Reader) (*Request, error) {
 		req Request
 		raw []byte
 	)
-	if debuglog.Enabled() {
+	if kitlog.Enabled() {
 		// Tee the body so we can log the raw JSON exactly as Poe sent
 		// it. Capped at 16 KiB to avoid allocating huge buffers on
 		// requests with large parsed_content attachment payloads.
@@ -115,8 +115,8 @@ func Decode(body io.Reader) (*Request, error) {
 	if req.Type == "" {
 		return nil, fmt.Errorf("poe request missing type")
 	}
-	if debuglog.Enabled() {
-		debuglog.Logf("raw poe body (%d bytes, type=%s): %s", len(raw), req.Type, string(raw))
+	if kitlog.Enabled() {
+		kitlog.Debugf("raw poe body (%d bytes, type=%s): %s", len(raw), req.Type, string(raw))
 	}
 	if req.Type == TypeReportReaction {
 		req.Reaction, req.ReactionAction = normaliseReaction(req.Reaction, req.ReactionAction)

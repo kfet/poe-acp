@@ -15,9 +15,9 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
+	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/authbroker"
-	"github.com/kfet/poe-acp/internal/debuglog"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 )
@@ -138,9 +138,9 @@ func TestHandler_HandleQuery_MetaError(t *testing.T) {
 }
 
 func TestHandler_DebugLogPath(t *testing.T) {
-	prev := debuglog.Enabled()
-	debuglog.SetEnabled(true)
-	defer debuglog.SetEnabled(prev)
+	prev := kitlog.Enabled()
+	kitlog.SetEnabled(true)
+	defer kitlog.SetEnabled(prev)
 
 	rtr, err := router.New(router.Config{Agent: &fakeAgent{}, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err != nil {
@@ -235,15 +235,15 @@ func TestHandler_AuthBrokerError(t *testing.T) {
 }
 
 type errAuth struct {
-	methods []acpclient.AuthMethod
+	methods []client.AuthMethod
 	err     error
 }
 
-func (e *errAuth) AuthMethods() []acpclient.AuthMethod {
-	return []acpclient.AuthMethod{{ID: "oauth-anthropic", Type: "agent"}}
+func (e *errAuth) AuthMethods() []client.AuthMethod {
+	return []client.AuthMethod{{ID: "oauth-anthropic", Type: "agent"}}
 }
-func (e *errAuth) Authenticate(_ context.Context, _, _, _ string, _ bool) (acpclient.AuthResult, error) {
-	return acpclient.AuthResult{}, e.err
+func (e *errAuth) Authenticate(_ context.Context, _, _, _ string, _ bool) (client.AuthResult, error) {
+	return client.AuthResult{}, e.err
 }
 
 func TestLatestUserTurn(t *testing.T) {
@@ -824,12 +824,12 @@ func TestHandler_ReportReactionMinusPrefix(t *testing.T) {
 	t.Fatalf("removed-action not propagated; lastPrompt=%+v", a.lastPrompt)
 }
 
-// TestHandler_ReportReactionDebugLog enables debuglog so the
+// TestHandler_ReportReactionDebugLog enables the debug logger so the
 // debug-branch in handleReaction is exercised.
 func TestHandler_ReportReactionDebugLog(t *testing.T) {
-	prev := debuglog.Enabled()
-	debuglog.SetEnabled(true)
-	t.Cleanup(func() { debuglog.SetEnabled(prev) })
+	prev := kitlog.Enabled()
+	kitlog.SetEnabled(true)
+	t.Cleanup(func() { kitlog.SetEnabled(prev) })
 
 	a := &fakeAgent{}
 	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
@@ -877,6 +877,6 @@ func TestHandler_ReportReactionRouterError(t *testing.T) {
 
 type errNewSessionAgent struct{ *fakeAgent }
 
-func (e *errNewSessionAgent) NewSession(_ context.Context, _ string, _ acpclient.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
+func (e *errNewSessionAgent) NewSession(_ context.Context, _ string, _ client.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
 	return "", errors.New("new session boom")
 }

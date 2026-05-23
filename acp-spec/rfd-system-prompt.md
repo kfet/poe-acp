@@ -110,7 +110,7 @@ agents that want correct behaviour should implement the capability.
 
 ## Implementation notes
 
-- Reference client: poe-acp (`internal/router`, `internal/acpclient`).
+- Reference client: poe-acp (`internal/router`) + acp-kit (`client`).
 - Reference agent: pending — fir is the first target.
 - The capability namespace `_meta["session.systemPrompt"]` is intentionally
   generic (not vendor-prefixed) so that any ACP client/agent pair may adopt

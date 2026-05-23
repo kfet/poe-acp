@@ -25,8 +25,8 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
-	"github.com/kfet/poe-acp/internal/debuglog"
+	"github.com/kfet/acp-kit/client"
+	kitlog "github.com/kfet/acp-kit/log"
 )
 
 // ChunkSink is the interface the HTTP/SSE layer implements to receive
@@ -71,13 +71,13 @@ type Attachment struct {
 	ParsedContent string
 }
 
-// Agent is the subset of acpclient.AgentProc the router needs. Exposed
+// Agent is the subset of client.AgentProc the router needs. Exposed
 // as an interface for testability.
 type Agent interface {
-	Caps() acpclient.Caps
-	NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error)
-	ListSessions(ctx context.Context, cwd string) ([]acpclient.SessionInfo, error)
-	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error
+	Caps() client.Caps
+	NewSession(ctx context.Context, cwd string, sink client.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error)
+	ListSessions(ctx context.Context, cwd string) ([]client.SessionInfo, error)
+	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink client.SessionUpdateSink) error
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
 	Cancel(ctx context.Context, sid acp.SessionId) error
 	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
@@ -94,7 +94,7 @@ type Options struct {
 
 // Config configures a Router.
 type Config struct {
-	// Agent drives sessions. *acpclient.AgentProc satisfies this.
+	// Agent drives sessions. *client.AgentProc satisfies this.
 	Agent Agent
 	// StateDir is the root for per-conv working dirs. Each conv gets
 	// StateDir/convs/<conv_id>/ as its cwd.
@@ -288,12 +288,12 @@ func (sq *sessionQueue) push(req *turnReq) (accepted bool) {
 			sq.q = append(sq.q[:shed], sq.q[shed+1:]...)
 			dropped.shed = true
 			close(dropped.done)
-			debuglog.Logf("sessionQueue: shed oldest reaction (age=%s) to make room",
+			kitlog.Debugf("sessionQueue: shed oldest reaction (age=%s) to make room",
 				time.Since(dropped.enqueuedAt))
 		} else if req.kind == turnReaction {
 			// No older reaction to shed, and incoming is a reaction.
 			// Drop the incoming.
-			debuglog.Logf("sessionQueue: dropping new reaction (queue full of user turns)")
+			kitlog.Debugf("sessionQueue: dropping new reaction (queue full of user turns)")
 			return false
 		}
 		// else: incoming is a user turn, no reaction to shed — grow past cap.
@@ -469,7 +469,7 @@ conversation to you over ACP. Two things follow.
    (compact, narrow, summary first), and follow their lead if they
    signal local access.`
 
-// OnUpdate implements acpclient.SessionUpdateSink. It enqueues the
+// OnUpdate implements client.SessionUpdateSink. It enqueues the
 // notification on the session-lifetime chunkCh. No lock is needed:
 // chunkCh is set once at session creation and never reassigned; the
 // channel itself serialises concurrent senders.
@@ -683,26 +683,26 @@ func (r *Router) ReportReaction(ctx context.Context, convID, userID, messageID, 
 			convID, messageID, kind, action)
 		return nil
 	}
-	debuglog.Logf("router: queued reaction conv=%s msg=%s kind=%s action=%s",
+	kitlog.Debugf("router: queued reaction conv=%s msg=%s kind=%s action=%s",
 		convID, messageID, kind, action)
 	return nil
 }
 
 // discardSink is the no-op ChunkSink used for reaction turns: the
 // agent's response is not surfaced to Poe. Streamed text is logged
-// via debuglog so operators can observe how the agent reacted.
+// via debug logger so operators can observe how the agent reacted.
 type discardSink struct{ convID string }
 
 func (d discardSink) Text(s string) error {
-	debuglog.Logf("reaction sink (conv=%s) text: %q", d.convID, s)
+	kitlog.Debugf("reaction sink (conv=%s) text: %q", d.convID, s)
 	return nil
 }
 func (d discardSink) Replace(s string) error {
-	debuglog.Logf("reaction sink (conv=%s) replace: %q", d.convID, s)
+	kitlog.Debugf("reaction sink (conv=%s) replace: %q", d.convID, s)
 	return nil
 }
 func (d discardSink) Error(text, et string) error {
-	debuglog.Logf("reaction sink (conv=%s) error[%s]: %s", d.convID, et, text)
+	kitlog.Debugf("reaction sink (conv=%s) error[%s]: %s", d.convID, et, text)
 	return nil
 }
 func (d discardSink) Done() error { return nil }
@@ -734,7 +734,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	// dropped on dequeue. Real prompts are never skipped — better to
 	// run a stale prompt than silently lose the user's query.
 	if req.kind == turnReaction && r.cfg.Now().Sub(req.enqueuedAt) > reactionMaxAge {
-		debuglog.Logf("runOneTurn: dropping stale reaction (age=%s) conv=%s",
+		kitlog.Debugf("runOneTurn: dropping stale reaction (age=%s) conv=%s",
 			r.cfg.Now().Sub(req.enqueuedAt), st.convID)
 		req.shed = true
 		return
@@ -803,18 +803,18 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 // and issues set_model / set_config_option to the agent for each changed
 // agent-facing field. Updates st.applied only on success.
 func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Options) error {
-	debuglog.Logf("applyOptions conv=%s sid=%s incoming={model=%q thinking=%q hide=%v} applied={model=%q thinking=%q}",
+	kitlog.Debugf("applyOptions conv=%s sid=%s incoming={model=%q thinking=%q hide=%v} applied={model=%q thinking=%q}",
 		st.convID, string(st.sessionID), opts.Model, opts.Thinking, opts.HideThinking,
 		st.applied.Model, st.applied.Thinking)
 	if opts.Model != "" && opts.Model != st.applied.Model {
-		debuglog.Logf("  -> set_model %q (was %q)", opts.Model, st.applied.Model)
+		kitlog.Debugf("  -> set_model %q (was %q)", opts.Model, st.applied.Model)
 		if err := r.cfg.Agent.SetModel(ctx, st.sessionID, opts.Model); err != nil {
 			return fmt.Errorf("set_model %s: %w", opts.Model, err)
 		}
 		st.applied.Model = opts.Model
 	}
 	if opts.Thinking != "" && opts.Thinking != st.applied.Thinking {
-		debuglog.Logf("  -> set_config thinking_level=%q (was %q)", opts.Thinking, st.applied.Thinking)
+		kitlog.Debugf("  -> set_config thinking_level=%q (was %q)", opts.Thinking, st.applied.Thinking)
 		if err := r.cfg.Agent.SetConfigOption(ctx, st.sessionID, "thinking_level", opts.Thinking); err != nil {
 			// Common case: the current model doesn't support the
 			// requested thinking level (e.g. non-reasoning models
@@ -823,7 +823,7 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 			// Mark applied anyway to avoid re-attempting (and
 			// re-nagging) on every subsequent prompt of this
 			// session, and don't surface a user-visible notice.
-			debuglog.Logf("  -> set_config thinking_level=%q rejected by agent: %v (suppressed)", opts.Thinking, err)
+			kitlog.Debugf("  -> set_config thinking_level=%q rejected by agent: %v (suppressed)", opts.Thinking, err)
 			st.applied.Thinking = opts.Thinking
 		} else {
 			st.applied.Thinking = opts.Thinking
@@ -1074,7 +1074,7 @@ var imageInlineAllowedMimeTypes = map[string]bool{
 //     file path for tool work, pixels for the LLM directly.
 //
 // Download failures degrade to a plain https ResourceLink so the agent
-// at least learns the URL existed. Logged via debuglog. A prompt is
+// at least learns the URL existed. Logged via debug logger. A prompt is
 // never failed because of attachment IO.
 //
 // `used` is a per-prompt set tracking already-claimed filenames inside
@@ -1095,7 +1095,7 @@ func (r *Router) attachmentBlocks(
 	// followed by an inline ImageBlock.
 	absPath, name, size, err := r.downloadAttachment(ctx, cwd, msgID, used, a)
 	if err != nil {
-		debuglog.Logf("attachmentBlocks: download failed url=%s err=%v; emitting bare ResourceLink", a.URL, err)
+		kitlog.Debugf("attachmentBlocks: download failed url=%s err=%v; emitting bare ResourceLink", a.URL, err)
 		// Last-resort: tell the agent about the URL so a vision-capable
 		// agent that can fetch directly still has a chance.
 		return []acp.ContentBlock{resourceLinkBlockHTTPS(a)}
@@ -1107,7 +1107,7 @@ func (r *Router) attachmentBlocks(
 	if imageInlineAllowedMimeTypes[a.ContentType] && size <= r.maxInlineImageBytes() {
 		data, rerr := osReadFile(absPath)
 		if rerr != nil {
-			debuglog.Logf("attachmentBlocks: inline read failed path=%s err=%v; link-only", absPath, rerr)
+			kitlog.Debugf("attachmentBlocks: inline read failed path=%s err=%v; link-only", absPath, rerr)
 		} else {
 			out = append(out, acp.ImageBlock(base64.StdEncoding.EncodeToString(data), a.ContentType))
 		}
@@ -1172,7 +1172,7 @@ func (r *Router) downloadAttachment(
 		// os.Root rejects ".." components and absolute paths. Retry
 		// once with a hash-derived fallback so a hostile a.Name can't
 		// kill the attachment.
-		debuglog.Logf("downloadAttachment: Root rejected name=%q err=%v; using fallback", finalName, perr)
+		kitlog.Debugf("downloadAttachment: Root rejected name=%q err=%v; using fallback", finalName, perr)
 		finalName = uniqueName(fallbackName(a), used)
 		f, perr = root.OpenFile(finalName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 		mustOpen(perr)
@@ -1386,11 +1386,11 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	r.mu.Lock()
 	if existing, ok := r.sessions[convID]; ok {
 		r.mu.Unlock()
-		debuglog.Logf("getOrCreate conv=%s -> hit (sid=%s)", convID, string(existing.sessionID))
+		kitlog.Debugf("getOrCreate conv=%s -> hit (sid=%s)", convID, string(existing.sessionID))
 		return existing, false, nil
 	}
 	r.mu.Unlock()
-	debuglog.Logf("getOrCreate conv=%s user=%s -> miss, query_len=%d", convID, userID, len(query))
+	kitlog.Debugf("getOrCreate conv=%s user=%s -> miss, query_len=%d", convID, userID, len(query))
 
 	cwd := filepath.Join(r.cfg.StateDir, "convs", convID)
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
@@ -1429,13 +1429,13 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 					st.pendingSystemPromptInline = true
 				}
 				winner, _ := r.install(convID, st)
-				debuglog.Logf("getOrCreate conv=%s -> resumed sid=%s", convID, string(sid))
+				kitlog.Debugf("getOrCreate conv=%s -> resumed sid=%s", convID, string(sid))
 				return winner, false, nil
 			} else {
-				debuglog.Logf("getOrCreate conv=%s resume failed: %v", convID, rerr)
+				kitlog.Debugf("getOrCreate conv=%s resume failed: %v", convID, rerr)
 			}
 		} else if lerr != nil {
-			debuglog.Logf("getOrCreate conv=%s list_sessions err: %v", convID, lerr)
+			kitlog.Debugf("getOrCreate conv=%s list_sessions err: %v", convID, lerr)
 		}
 	}
 
@@ -1461,7 +1461,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		// (or will have) its own history; do not double-seed it.
 		freshSeed = false
 	}
-	debuglog.Logf("getOrCreate conv=%s -> new sid=%s won_race=%v fresh_seed=%v",
+	kitlog.Debugf("getOrCreate conv=%s -> new sid=%s won_race=%v fresh_seed=%v",
 		convID, string(sid), won, freshSeed)
 	return winner, freshSeed, nil
 }
@@ -1555,7 +1555,7 @@ func (r *Router) sweepAttachmentsOnce() {
 	convDirs, err := osReadDirRouter(convsRoot)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			debuglog.Logf("sweepAttachmentsOnce: read %s: %v", convsRoot, err)
+			kitlog.Debugf("sweepAttachmentsOnce: read %s: %v", convsRoot, err)
 		}
 		return
 	}
@@ -1591,7 +1591,7 @@ func (r *Router) sweepAttachmentsOnce() {
 						removedFiles++
 					} else {
 						liveCount++
-						debuglog.Logf("sweepAttachmentsOnce: remove %s: %v", p, err)
+						kitlog.Debugf("sweepAttachmentsOnce: remove %s: %v", p, err)
 					}
 				} else {
 					liveCount++
@@ -1605,7 +1605,7 @@ func (r *Router) sweepAttachmentsOnce() {
 		}
 	}
 	if removedFiles > 0 || removedDirs > 0 {
-		debuglog.Logf("sweepAttachmentsOnce: removed %d files, %d empty dirs", removedFiles, removedDirs)
+		kitlog.Debugf("sweepAttachmentsOnce: removed %d files, %d empty dirs", removedFiles, removedDirs)
 	}
 }
 

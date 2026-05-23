@@ -55,9 +55,9 @@ Future skills (not in this branch): attachments, rendering quirks, conv-id seman
 
 3. ✅ `internal/skills/` — embed + extract logic, catalog formatter (XML, fir-style).
 4. ✅ `internal/router/` — capability negotiation; injection at `session/new` (cap path) or first `session/prompt` (fallback); re-inject on resume.
-5. ✅ `internal/acpclient/agent.go` — advertise `clientCapabilities._meta["session.systemPrompt"] = {version:1}` in `initialize`; surface agent's matching cap as `Caps.SystemPrompt`.
+5. ✅ `acp-kit/client/agent.go` (originally `internal/acpclient/agent.go` in this repo) — advertise `clientCapabilities._meta["session.systemPrompt"] = {version:1}` in `initialize`; surface agent's matching cap as `Caps.SystemPrompt`.
 6. ✅ Skill content: relocated `.fir/skills/{deploy,update,release}/SKILL.md` to `internal/skills/bundle/` and `go:embed`-ed from there. `.fir/skills` is now a symlink so fir-local dev still resolves. Only SKILL.md files whose frontmatter declares `builtin: true` are surfaced to ACP agents — others (e.g. `release`) live in the bundle tree for git/symlink coherence but stay out of the catalog. Mirrors fir's own `pkg/resources/builtin_skills` loader.
-7. ✅ Tests: catalog rendering (`internal/skills/skills_test.go`), capability parsing (`internal/acpclient/agent_test.go`), cap-path / fallback / resume injection (`internal/router/system_prompt_test.go`).
+7. ✅ Tests: catalog rendering (`acp-kit/skills/skills_test.go`), capability parsing (`acp-kit/client/agent_unit_test.go`), cap-path / fallback / resume injection (`internal/router/system_prompt_test.go`).
 
 ## Open questions deferred
 
@@ -67,7 +67,7 @@ Future skills (not in this branch): attachments, rendering quirks, conv-id seman
 
 ## Context for the next session
 
-- The relay already advertises `clientCapabilities.fs.{ReadTextFile,WriteTextFile}=true` (`internal/acpclient/agent.go:168`). We discussed but rejected relying on agents calling `fs/read_text_file` — too variable across agents. Inline catalog text is the contract.
+- The relay already advertises `clientCapabilities.fs.{ReadTextFile,WriteTextFile}=true` (`acp-kit/client/agent.go`). We discussed but rejected relying on agents calling `fs/read_text_file` — too variable across agents. Inline catalog text is the contract.
 - `_meta` extension pattern is established in this repo: see `_meta.auth.interactive` work (commit 81f6aeb) and `acp-spec/rfd-auth-methods.md` for the shape to mirror.
 - fir's skill bundling: `pkg/resources/skills.go:259` (`FormatSkillsForPrompt`) is the canonical reference for the XML format and preamble text.
 - User wants this *universal* — not fir-specific. The cap name and RFD must be agent-agnostic.

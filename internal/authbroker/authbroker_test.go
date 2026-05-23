@@ -6,14 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 )
 
 type fakeAuth struct {
-	methods []acpclient.AuthMethod
+	methods []client.AuthMethod
 	calls   []call
 	err     error
-	res     acpclient.AuthResult
+	res     client.AuthResult
 }
 
 type call struct {
@@ -21,15 +21,15 @@ type call struct {
 	cancel               bool
 }
 
-func (f *fakeAuth) AuthMethods() []acpclient.AuthMethod { return f.methods }
-func (f *fakeAuth) Authenticate(_ context.Context, methodID, id, redirect string, cancel bool) (acpclient.AuthResult, error) {
+func (f *fakeAuth) AuthMethods() []client.AuthMethod { return f.methods }
+func (f *fakeAuth) Authenticate(_ context.Context, methodID, id, redirect string, cancel bool) (client.AuthResult, error) {
 	f.calls = append(f.calls, call{methodID, id, redirect, cancel})
 	return f.res, f.err
 }
 
 func newFake() *fakeAuth {
 	return &fakeAuth{
-		methods: []acpclient.AuthMethod{
+		methods: []client.AuthMethod{
 			{ID: "oauth-anthropic", Name: "Anthropic", Type: "agent"},
 			{ID: "oauth-github-copilot", Name: "GitHub Copilot", Type: "agent"},
 			{ID: "env-openai", Name: "OpenAI key", Type: "env_var"},
@@ -62,7 +62,7 @@ func TestList_NoMethods(t *testing.T) {
 
 func TestStart_NeedsRedirectThenComplete(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x/auth"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x/auth"}
 	b := New(f)
 
 	out, err := b.Handle(context.Background(), "c1", "/login anthropic")
@@ -77,7 +77,7 @@ func TestStart_NeedsRedirectThenComplete(t *testing.T) {
 	}
 
 	// Now paste.
-	f.res = acpclient.AuthResult{State: "ok"}
+	f.res = client.AuthResult{State: "ok"}
 	out, err = b.Handle(context.Background(), "c1", "https://localhost/cb?code=abc&state=xyz")
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestStart_NeedsRedirectThenComplete(t *testing.T) {
 
 func TestStart_CachedCreds(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "ok"}
+	f.res = client.AuthResult{State: "ok"}
 	b := New(f)
 	out, _ := b.Handle(context.Background(), "c1", "/login anthropic")
 	if !strings.Contains(out.Text, "Already authenticated") {
@@ -119,7 +119,7 @@ func TestStart_UnknownProvider(t *testing.T) {
 
 func TestComplete_RedirectError(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
 	b := New(f)
 	if _, err := b.Handle(context.Background(), "c1", "/login anthropic"); err != nil {
 		t.Fatal(err)
@@ -140,11 +140,11 @@ func TestComplete_RedirectError(t *testing.T) {
 
 func TestCancel_WithPending(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
 	b := New(f)
 	_, _ = b.Handle(context.Background(), "c1", "/login anthropic")
 
-	f.res = acpclient.AuthResult{State: "cancelled"}
+	f.res = client.AuthResult{State: "cancelled"}
 	out, _ := b.Handle(context.Background(), "c1", "/cancel-login")
 	if !strings.Contains(out.Text, "cancelled") {
 		t.Fatalf("got %q", out.Text)
@@ -182,11 +182,11 @@ func TestPendingCapturesNextTurnAsPaste(t *testing.T) {
 	// as the paste? No — only non-/cancel-login text is treated as paste.
 	// Verify that a text that doesn't look like a command is the paste.
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
 	b := New(f)
 	_, _ = b.Handle(context.Background(), "c1", "/login anthropic")
 
-	f.res = acpclient.AuthResult{State: "ok"}
+	f.res = client.AuthResult{State: "ok"}
 	out, err := b.Handle(context.Background(), "c1", "anything-the-user-pastes")
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +201,7 @@ func TestPendingCapturesNextTurnAsPaste(t *testing.T) {
 
 func TestConcurrentLoginAttemptIsRejected(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
 	b := New(f)
 	_, _ = b.Handle(context.Background(), "c1", "/login anthropic")
 
@@ -228,17 +228,17 @@ func TestMultiConvIsolation(t *testing.T) {
 	// Conv A and conv B both /login anthropic. Each must get its own
 	// authID; pasting on B must call authenticate with B's id, not A's.
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x", ID: "id-A"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x", ID: "id-A"}
 	b := New(f)
 	if _, err := b.Handle(context.Background(), "convA", "/login anthropic"); err != nil {
 		t.Fatal(err)
 	}
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x", ID: "id-B"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x", ID: "id-B"}
 	if _, err := b.Handle(context.Background(), "convB", "/login anthropic"); err != nil {
 		t.Fatal(err)
 	}
 
-	f.res = acpclient.AuthResult{State: "ok"}
+	f.res = client.AuthResult{State: "ok"}
 	if _, err := b.Handle(context.Background(), "convB", "paste-B"); err != nil {
 		t.Fatal(err)
 	}
@@ -266,12 +266,12 @@ func TestMultiConvIsolation(t *testing.T) {
 
 func TestPendingPropagatesAuthID(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x", ID: "the-id"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x", ID: "the-id"}
 	b := New(f)
 	if _, err := b.Handle(context.Background(), "c1", "/login anthropic"); err != nil {
 		t.Fatal(err)
 	}
-	f.res = acpclient.AuthResult{State: "ok"}
+	f.res = client.AuthResult{State: "ok"}
 	if _, err := b.Handle(context.Background(), "c1", "paste"); err != nil {
 		t.Fatal(err)
 	}

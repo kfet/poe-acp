@@ -14,31 +14,31 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 )
 
 type fakeAgent struct {
 	mu         sync.Mutex
-	sinks      map[acp.SessionId]acpclient.SessionUpdateSink
+	sinks      map[acp.SessionId]client.SessionUpdateSink
 	lastPrompt []acp.ContentBlock
 	n          int
 }
 
-func (f *fakeAgent) Caps() acpclient.Caps { return acpclient.Caps{} }
-func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]acpclient.SessionInfo, error) {
+func (f *fakeAgent) Caps() client.Caps { return client.Caps{} }
+func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]client.SessionInfo, error) {
 	return nil, nil
 }
-func (f *fakeAgent) ResumeSession(_ context.Context, _ string, _ acp.SessionId, _ acpclient.SessionUpdateSink) error {
+func (f *fakeAgent) ResumeSession(_ context.Context, _ string, _ acp.SessionId, _ client.SessionUpdateSink) error {
 	return nil
 }
-func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
+func (f *fakeAgent) NewSession(_ context.Context, _ string, sink client.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.n++
 	if f.sinks == nil {
-		f.sinks = make(map[acp.SessionId]acpclient.SessionUpdateSink)
+		f.sinks = make(map[acp.SessionId]client.SessionUpdateSink)
 	}
 	id := acp.SessionId("s-1")
 	f.sinks[id] = sink
@@ -150,7 +150,7 @@ func TestHandler_BearerAuth(t *testing.T) {
 }
 
 func TestHandler_Settings_ParameterControls(t *testing.T) {
-	models := []acpclient.ModelInfo{
+	models := []client.ModelInfo{
 		{ID: "anthropic/claude-sonnet-4-5", Name: "Sonnet"},
 		{ID: "openai/gpt-5", Name: "GPT-5"},
 	}
@@ -448,7 +448,7 @@ func TestHandler_StripsAttachmentsWhenDisallowed(t *testing.T) {
 		{"disallowed", false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fa := &fakeAgent{sinks: make(map[acp.SessionId]acpclient.SessionUpdateSink)}
+			fa := &fakeAgent{sinks: make(map[acp.SessionId]client.SessionUpdateSink)}
 			rtr, err := router.New(router.Config{
 				Agent:      fa,
 				StateDir:   t.TempDir(),

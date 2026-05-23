@@ -14,7 +14,7 @@ left for review-and-fix.
   observed wire shapes into `(kind, added|removed)`:
   - single field with prefix: `+👍` / `-👍` / `like` / `dislike` (no prefix → added);
   - split fields: `{"reaction":"👍","action":"added"|"removed"}`.
-- Raw bodies stay logged via `debuglog` (cap 16 KiB tee), so production traces still show
+- Raw bodies stay logged via the debug logger (cap 16 KiB tee), so production traces still show
   the true Poe shape even after normalisation.
 - Tests: `TestRequest_DecodesReaction` (split-added/removed, ±prefix, bare like/dislike).
 
@@ -52,7 +52,7 @@ memory silently. Future out-of-band kinds (feedback?) can reuse the same prefix.
 ### 4. `internal/httpsrv` — wire-up
 
 `ServeHTTP` splits `report_reaction` out of the `accept+drop` group; it calls
-`Handler.handleReaction` which logs the decoded fields (debuglog), drops malformed payloads
+`Handler.handleReaction` which logs the decoded fields (debug log), drops malformed payloads
 with no `reaction` kind, and invokes `Router.ReportReaction`. HTTP returns 200 OK regardless
 of queue acceptance — Poe has no SSE channel for the reaction reply, so dropped reactions
 are logged but never user-visible.
@@ -65,7 +65,7 @@ are logged but never user-visible.
   invariant, `ReportReaction` fire-and-forget, queue.stop drains pending, torn-down session, default
   action="added", getOrCreate-error wrap, ctx+runner-err precedence.
 - `internal/httpsrv/branches_test.go` — `report_reaction` forwards a synthetic turn with the marker
-  prefix, `-emoji` prefix maps to `removed`, debuglog branch, router-error log branch.
+  prefix, `-emoji` prefix maps to `removed`, debug-log branch, router-error log branch.
 
 ### 6. Docs & changelog
 
@@ -84,7 +84,7 @@ are logged but never user-visible.
 3. **Synthetic prompt wording.** The prompt currently says `Acknowledge silently — your reply will NOT
    be shown to the user.` Some agents may still produce a chatty reply and waste tokens. Worth A/B'ing
    the wording once we have live runs.
-4. **Wire shape unknowns.** The two shapes documented in the spec are speculative. The raw-body debuglog
+4. **Wire shape unknowns.** The two shapes documented in the spec are speculative. The raw-body debug log
    means we'll see the real shape on first production hit; if Poe ships a third variant,
    `normaliseReaction` is a one-line addition.
 5. **Tests use a small amount of polling** (`for atomic.Load… && time.Now().Before(deadline)`) to wait
