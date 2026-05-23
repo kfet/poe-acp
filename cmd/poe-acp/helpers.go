@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	kitsysprompt "github.com/kfet/acp-kit/sysprompt"
+	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/skills"
 )
@@ -151,8 +153,54 @@ var (
 	loadDirSkills     = skills.LoadDir
 )
 
-func skillsCatalogProvider(cfgPath string) func() string {
-	return func() string { return buildSkillsCatalog(cfgPath) }
+// systemPromptProvider returns the per-session callback the router
+// uses to assemble durable system prompt text. It reads cfg.SystemPromptFile
+// each call so operator edits apply to the next new conversation without
+// a restart, prepends those contents to the skills catalog, and returns
+// "" when DisableSystemPrompt is set (which also makes the router skip
+// its transport-contract clause).
+//
+// Config-load and file-read errors here are logged and treated as empty
+// — startup already validated both via config.Load and a fail-fast file
+// read in main.go, so this per-session path only surfaces post-boot
+// edits and prefers to keep live conversations going.
+func systemPromptProvider(cfgPath string) func() string {
+	return func() string {
+		cfg, _, err := config.Load(cfgPath)
+		if err != nil {
+			log.Printf("system_prompt: re-read %s failed (continuing without operator prompt): %v", cfgPath, err)
+		}
+		if cfg.DisableSystemPrompt {
+			return ""
+		}
+		_, text, err := readSystemPromptFile(filepath.Dir(cfgPath), cfg.SystemPromptFile)
+		if err != nil {
+			log.Printf("system_prompt_file: read failed (continuing without operator prompt): %v", err)
+		}
+		return kitsysprompt.Compose("", text, buildSkillsCatalog(cfgPath))
+	}
+}
+
+// readSystemPromptFile resolves configuredPath against cfgDir (when
+// relative), reads the file, and returns the resolved absolute path
+// plus its trimmed contents. Returns ("", "", nil) when configuredPath
+// is empty so callers can use it unconditionally as a fail-fast probe
+// at boot and a best-effort read per session. Leading and trailing
+// whitespace are stripped so a trailing newline in the prompt file
+// doesn't bleed into the catalog separator.
+func readSystemPromptFile(cfgDir, configuredPath string) (resolved, contents string, err error) {
+	if configuredPath == "" {
+		return "", "", nil
+	}
+	resolved = configuredPath
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(cfgDir, resolved)
+	}
+	b, err := os.ReadFile(resolved)
+	if err != nil {
+		return resolved, "", fmt.Errorf("read %s: %w", resolved, err)
+	}
+	return resolved, strings.TrimSpace(string(b)), nil
 }
 
 // buildSkillsCatalog merges embedded built-in skills with optional

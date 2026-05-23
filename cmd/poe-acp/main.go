@@ -95,6 +95,19 @@ func main() {
 		log.Printf("config: %s not found, using built-in defaults", cfgPath)
 	}
 
+	// Fail-fast: a configured system_prompt_file that can't be read at
+	// boot is almost always a typo or missing-file mistake the operator
+	// wants to know about immediately, not silently at first
+	// conversation. The per-session re-read in systemPromptProvider
+	// degrades gracefully for edits made after boot.
+	if cfg.SystemPromptFile != "" {
+		resolved, text, err := readSystemPromptFile(filepath.Dir(cfgPath), cfg.SystemPromptFile)
+		if err != nil {
+			log.Fatalf("system_prompt_file: %v", err)
+		}
+		log.Printf("system_prompt_file: %s loaded (%d bytes)", resolved, len(text))
+	}
+
 	if *printCatalog {
 		fmt.Print(buildSkillsCatalog(cfgPath))
 		return
@@ -169,7 +182,7 @@ func main() {
 		StateDir:             stateDir,
 		SessionTTL:           *ttl,
 		Defaults:             defaults,
-		SystemPromptProvider: skillsCatalogProvider(cfgPath),
+		SystemPromptProvider: systemPromptProvider(cfgPath),
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
