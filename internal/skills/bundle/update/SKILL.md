@@ -51,6 +51,8 @@ launchctl kickstart -k gui/$UID/<label>
 ```
 Find `<label>` in `~/Library/LaunchAgents/dev.*.poe-acp.plist` (e.g. `dev.<user>.poe-acp`). On remote, use `gui/$(id -u)/<label>` inside the ssh command.
 
+Never schedule a delayed reloader and never use `launchctl bootout` + `bootstrap` for a routine restart. `kickstart -k` stops and immediately relaunches the already-registered job without changing the plist or racing launchd registration.
+
 **Brew + systemd (typical Linux):**
 ```bash
 brew update && brew upgrade poe-acp
@@ -95,6 +97,7 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 - **launchd label varies** — embeds the deploying user (`dev.<user>.poe-acp`). Read it from the plist, don't guess.
 - **Mixed install methods** — a host may have both `~/.local/bin/poe-acp` and a brew copy; the supervisor's `ExecStart` pins one. Upgrade whichever the unit/plist points at.
 - **Active conversations drop** — restart kills in-flight SSE; Poe will retry. Avoid during peak use if avoidable.
+- **Do not mutate launchd for config-only changes** — if only `config.json`, env, or the binary changed, restart with `launchctl kickstart -k gui/$UID/<label>`. Do not edit plist, create one-shot reloader jobs, or run bootout/bootstrap unless first installing/removing a service or intentionally changing the plist registration.
 
 ## Checklist
 
