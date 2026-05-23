@@ -34,6 +34,23 @@ type Config struct {
 	// Agent is reserved for per-agent profile selection and inline
 	// config-control overrides. Parsed today, used in a follow-up.
 	Agent Agent `json:"agent,omitempty"`
+
+	// SystemPromptFile, when non-empty, names a file whose contents
+	// are injected as a durable system prompt into every new ACP
+	// session (before the skills catalog). Relative paths are
+	// resolved against the directory of this config file; absolute
+	// paths are used as-is. The file is read per new conversation
+	// so edits take effect on the next new chat without a relay
+	// restart. Use this for substantial prompts — Markdown lives
+	// well in a file, escaped in JSON it doesn't. The result goes
+	// into the authoritative system slot.
+	SystemPromptFile string `json:"system_prompt_file,omitempty"`
+
+	// DisableSystemPrompt skips system-prompt injection entirely
+	// (both the operator prompt file and the skills catalog) and
+	// also suppresses the router's transport-contract clause. Use
+	// only if you have a reason to want raw, unguided agent output.
+	DisableSystemPrompt bool `json:"disable_system_prompt,omitempty"`
 }
 
 // Defaults pins per-conversation parameter defaults independently of

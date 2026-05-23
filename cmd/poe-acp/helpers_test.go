@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -108,7 +109,7 @@ func TestBuildSkillsCatalog(t *testing.T) {
 
 func TestSkillsCatalogProviderSeesHostSkillsAddedAfterStartup(t *testing.T) {
 	dir := t.TempDir()
-	provider := skillsCatalogProvider(filepath.Join(dir, "config.json"))
+	provider := systemPromptProvider(filepath.Join(dir, "config.json"))
 	if got := provider(); strings.Contains(got, "host later") {
 		t.Fatalf("host skill appeared before it existed: %s", got)
 	}
@@ -125,6 +126,160 @@ func TestSkillsCatalogProviderSeesHostSkillsAddedAfterStartup(t *testing.T) {
 	got := provider()
 	if !strings.Contains(got, "later") || !strings.Contains(got, "host later") {
 		t.Fatalf("provider did not pick up new host skill: %s", got)
+	}
+}
+
+func writeCfg(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// writeCfgWithPrompt creates a config.json + a prompt file in the same
+// dir and returns the config path. The configured system_prompt_file is
+// relative ("prompt.md") so the test also exercises path resolution.
+func writeCfgWithPrompt(t *testing.T, prompt string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"system_prompt_file":"prompt.md"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
+}
+
+func TestSystemPromptProviderPrependsPromptFile(t *testing.T) {
+	got := systemPromptProvider(writeCfgWithPrompt(t, "OP-INSTRUCTIONS"))()
+	op := strings.Index(got, "OP-INSTRUCTIONS")
+	cat := strings.Index(got, "<available_skills>")
+	if op < 0 || cat < 0 || op > cat {
+		t.Fatalf("operator prompt should precede catalog: op=%d cat=%d full=%s", op, cat, got)
+	}
+}
+
+func TestSystemPromptProviderDisableShortCircuits(t *testing.T) {
+	// disable wins even when a prompt file is configured.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "prompt.md"), []byte("X"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"system_prompt_file":"prompt.md","disable_system_prompt":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := systemPromptProvider(cfgPath)(); got != "" {
+		t.Fatalf("disabled should return empty, got %q", got)
+	}
+}
+
+func TestSystemPromptProviderRereadsPromptFilePerCall(t *testing.T) {
+	dir := t.TempDir()
+	promptPath := filepath.Join(dir, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("V1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"system_prompt_file":"prompt.md"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := systemPromptProvider(cfgPath)
+	if got := provider(); !strings.Contains(got, "V1") {
+		t.Fatalf("v1: %s", got)
+	}
+	if err := os.WriteFile(promptPath, []byte("V2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := provider(); !strings.Contains(got, "V2") || strings.Contains(got, "V1") {
+		t.Fatalf("v2: %s", got)
+	}
+}
+
+func TestSystemPromptProviderResolvesAbsolutePromptFile(t *testing.T) {
+	promptDir := t.TempDir()
+	promptPath := filepath.Join(promptDir, "abs.md")
+	if err := os.WriteFile(promptPath, []byte("ABS-PROMPT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeCfg(t, fmt.Sprintf(`{"system_prompt_file":%q}`, promptPath))
+	got := systemPromptProvider(cfgPath)()
+	if !strings.Contains(got, "ABS-PROMPT") {
+		t.Fatalf("absolute prompt path not honoured: %s", got)
+	}
+}
+
+func TestSystemPromptProviderMissingPromptFileFallsBackToCatalog(t *testing.T) {
+	// system_prompt_file points at a non-existent file → log + treat as
+	// empty; catalog still renders (boot already fails fast via main.go).
+	cfgPath := writeCfg(t, `{"system_prompt_file":"nope.md"}`)
+	got := systemPromptProvider(cfgPath)()
+	if !strings.Contains(got, "<available_skills>") {
+		t.Fatalf("catalog missing when prompt file absent: %s", got)
+	}
+}
+
+func TestSystemPromptProviderNoPromptFileStillReturnsCatalog(t *testing.T) {
+	// Bare config (no system_prompt_file at all) → just the catalog.
+	cfgPath := writeCfg(t, `{}`)
+	got := systemPromptProvider(cfgPath)()
+	if !strings.Contains(got, "<available_skills>") {
+		t.Fatalf("catalog missing on bare config: %s", got)
+	}
+}
+
+func TestSystemPromptProviderMissingConfigStillReturnsCatalog(t *testing.T) {
+	got := systemPromptProvider(filepath.Join(t.TempDir(), "nope.json"))()
+	if !strings.Contains(got, "<available_skills>") {
+		t.Fatalf("catalog missing when config absent: %s", got)
+	}
+}
+
+func TestSystemPromptProviderBrokenConfigStillReturnsCatalog(t *testing.T) {
+	got := systemPromptProvider(writeCfg(t, `{not json`))()
+	if !strings.Contains(got, "<available_skills>") {
+		t.Fatalf("catalog missing on broken config: %s", got)
+	}
+}
+
+func TestSystemPromptProviderDisableWinsOverMissingFile(t *testing.T) {
+	// disable=true + configured file that doesn't exist → empty, no
+	// fall-through to a file read whose error would be logged.
+	cfgPath := writeCfg(t, `{"system_prompt_file":"nope.md","disable_system_prompt":true}`)
+	if got := systemPromptProvider(cfgPath)(); got != "" {
+		t.Fatalf("disable should short-circuit before file read, got %q", got)
+	}
+}
+
+func TestReadSystemPromptFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "p.md"), []byte("  body \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Empty configured path → all-zero, no error.
+	resolved, contents, err := readSystemPromptFile(dir, "")
+	if resolved != "" || contents != "" || err != nil {
+		t.Fatalf("empty: resolved=%q contents=%q err=%v", resolved, contents, err)
+	}
+	// Relative path → trims contents, resolves against dir.
+	resolved, contents, err = readSystemPromptFile(dir, "p.md")
+	if err != nil || contents != "body" || resolved != filepath.Join(dir, "p.md") {
+		t.Fatalf("relative: resolved=%q contents=%q err=%v", resolved, contents, err)
+	}
+	// Absolute path → trims, used as-is.
+	abs := filepath.Join(dir, "p.md")
+	resolved, contents, err = readSystemPromptFile("/somewhere/else", abs)
+	if err != nil || contents != "body" || resolved != abs {
+		t.Fatalf("absolute: resolved=%q contents=%q err=%v", resolved, contents, err)
+	}
+	// Missing file → resolved path still reported (for error context).
+	resolved, _, err = readSystemPromptFile(dir, "nope.md")
+	if err == nil || resolved != filepath.Join(dir, "nope.md") {
+		t.Fatalf("missing: resolved=%q err=%v", resolved, err)
 	}
 }
 
