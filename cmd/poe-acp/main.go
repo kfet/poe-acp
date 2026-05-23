@@ -54,7 +54,9 @@ func main() {
 		return
 	}
 
-	// Pick up POEACP_DEBUG=1 before applying --debug (flag still wins).
+	// Enable debug logging if either source asks for it. Neither
+	// disables (--debug=false keeps env-set debug on); that matches
+	// the pre-acp-kit debuglog.init() + --debug behaviour.
 	kitlog.Register("POEACP_DEBUG")
 	if *debugFlag {
 		kitlog.SetEnabled(true)
