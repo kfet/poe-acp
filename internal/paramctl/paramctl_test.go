@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
@@ -14,7 +14,7 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
-var twoModels = []acpclient.ModelInfo{
+var twoModels = []client.ModelInfo{
 	{ID: "anthropic/sonnet", Name: "Sonnet"},
 	{ID: "openai/gpt-5", Name: "GPT-5"},
 }
@@ -184,7 +184,7 @@ func TestBuild_WithModels_CascadingProviderAndModelDropdowns(t *testing.T) {
 // into the "other" bucket.
 func TestBuild_ProviderGrouping(t *testing.T) {
 	t.Parallel()
-	models := []acpclient.ModelInfo{
+	models := []client.ModelInfo{
 		{ID: "openai/gpt-5", Name: "GPT-5"},
 		{ID: "anthropic/sonnet", Name: "Sonnet"},
 		{ID: "openai/gpt-4o", Name: "GPT-4o"},
@@ -232,7 +232,7 @@ func TestBuild_ProviderGrouping(t *testing.T) {
 // referencing the unsanitised provider id in the condition literal.
 func TestBuild_ProviderParamSanitisation(t *testing.T) {
 	t.Parallel()
-	models := []acpclient.ModelInfo{
+	models := []client.ModelInfo{
 		{ID: "Foo-Bar.Baz/model-x", Name: "X"},
 	}
 	pc := Build(models, router.Options{Thinking: DefaultThinking})
@@ -272,7 +272,7 @@ func TestProviderParamName_EmptyBucketsToOther(t *testing.T) {
 // per-provider defaults driven by the first model in each group.
 func TestBuild_DefaultModelProviderNotInList(t *testing.T) {
 	t.Parallel()
-	models := []acpclient.ModelInfo{{ID: "openai/gpt-5", Name: "GPT-5"}}
+	models := []client.ModelInfo{{ID: "openai/gpt-5", Name: "GPT-5"}}
 	defs := router.Options{Model: "anthropic/sonnet", Thinking: DefaultThinking}
 	pc := Build(models, defs)
 	prov := pc.Sections[0].Controls[0]
@@ -301,7 +301,7 @@ func TestBuildAndResolveAgree(t *testing.T) {
 	cases := []struct {
 		name    string
 		cfg     config.Defaults
-		models  []acpclient.ModelInfo
+		models  []client.ModelInfo
 		current string
 	}{
 		{"config wins",

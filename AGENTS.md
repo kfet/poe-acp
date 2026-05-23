@@ -19,28 +19,30 @@ See [docs/poe-acp-design.md](docs/poe-acp-design.md) for the full design, goals,
 ## Repository layout
 
 ```
-cmd/poe-acp/       entry point: flags + server wiring
+cmd/poe-acp/             entry point: flags + server wiring + --permission policy adapter
 docs/                    design doc + Poe protocol reference
-internal/acpclient/      acp.Client impl + stdio agent process wrapper
+internal/authbroker/     interactive OAuth login over Poe chat
 internal/config/         JSON config loader (DisallowUnknownFields)
 internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
 internal/paramctl/       parameter_controls schema builder + Resolve
 internal/poeproto/       minimal Poe HTTP+SSE
-internal/policy/         allow-all / read-only / deny-all permission gates
 internal/router/         conv_id → ACP session map + GC
+internal/skills/         embedded bundle + acp-kit/skills wrapper
 test/smoke.sh            black-box SSE smoke test
 ```
 
-The relay owns `conv_id → session` lifecycle. Agents are spawned via `--agent-cmd` (default `fir --mode acp`). Keep the split clean: HTTP + Poe framing in `httpsrv`/`poeproto`, agent + ACP in `acpclient`, session lifecycle in `router`, policy in `policy`.
+Shared ACP primitives — agent process wrapper, debug log, permission helpers, skill loader/formatter — live in `github.com/kfet/acp-kit` (sibling repo, MIT). The relay imports `acp-kit/client`, `acp-kit/log`, and `acp-kit/skills`.
+
+The relay owns `conv_id → session` lifecycle. Agents are spawned via `--agent-cmd` (default `fir --mode acp`). Keep the split clean: HTTP + Poe framing in `httpsrv`/`poeproto`, agent + ACP in `acp-kit/client`, session lifecycle in `router`, permission policy adapter in `cmd/poe-acp` (delegating to `acp-kit/client`'s `AllowAllPermissions`/`ReadOnlyPermissions`/`DenyAllPermissions`).
 
 ## Think before you specialise
 
 Before implementing a fix or feature inside a specific package, stop and ask: **is this actually unique to this layer, or does it belong elsewhere?**
 
 - Poe protocol concerns (event shape, SSE framing) → `poeproto`.
-- Agent-process concerns (spawn, stdio, ACP framing) → `acpclient`.
+- Agent-process concerns (spawn, stdio, ACP framing) → `acp-kit/client`.
 - Session lifecycle (cwd, GC, heartbeat, cancel) → `router` + `httpsrv`.
-- Policy (tool permission decisions) → `policy`.
+- Policy (tool permission decisions) → `acp-kit/client` (`AllowAll`/`ReadOnly`/`DenyAll`); adapter in `cmd/poe-acp/permission.go`.
 - Operator-facing config (defaults, bot identity) → `config` + `paramctl.Resolve`.
 - Schema building (parameter_controls) → `paramctl.Build`.
 - When fixing a bug, check whether the same bug exists in sibling code paths. Fix it at the root, not per-site.

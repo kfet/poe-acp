@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 )
 
 func TestStart_AuthenticateError(t *testing.T) {
@@ -21,7 +21,7 @@ func TestStart_AuthenticateError(t *testing.T) {
 
 func TestStart_CancelledState(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "cancelled"}
+	f.res = client.AuthResult{State: "cancelled"}
 	b := New(f)
 	out, _ := b.Handle(context.Background(), "c1", "/login anthropic")
 	if !strings.Contains(out.Text, "cancelled") {
@@ -31,7 +31,7 @@ func TestStart_CancelledState(t *testing.T) {
 
 func TestStart_UnexpectedState(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "weird"}
+	f.res = client.AuthResult{State: "weird"}
 	b := New(f)
 	out, _ := b.Handle(context.Background(), "c1", "/login anthropic")
 	if !strings.Contains(out.Text, "unexpected state") {
@@ -41,7 +41,7 @@ func TestStart_UnexpectedState(t *testing.T) {
 
 func TestStart_SecondConcurrentLogin(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
 	b := New(f)
 	_, _ = b.Handle(context.Background(), "c1", "/login anthropic")
 	// Force a /cancel-login? No - that would clear. Use a different conv? No we want same conv.
@@ -61,7 +61,7 @@ func TestStart_SecondConcurrentLogin(t *testing.T) {
 
 func TestStart_NeedsRedirectWithInstructions(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x", Instructions: "Do this"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x", Instructions: "Do this"}
 	b := New(f)
 	out, _ := b.Handle(context.Background(), "c1", "/login anthropic")
 	if !strings.Contains(out.Text, "Do this") {
@@ -74,7 +74,7 @@ func TestStart_NeedsRedirectWithInstructions(t *testing.T) {
 
 func TestComplete_EmptyPaste(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
 	b := New(f)
 	_, _ = b.Handle(context.Background(), "c1", "/login anthropic")
 	// Whitespace-only paste is trimmed to "".
@@ -93,10 +93,10 @@ func TestComplete_EmptyPaste(t *testing.T) {
 
 func TestComplete_CancelledState(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
 	b := New(f)
 	_, _ = b.Handle(context.Background(), "c1", "/login anthropic")
-	f.res = acpclient.AuthResult{State: "cancelled"}
+	f.res = client.AuthResult{State: "cancelled"}
 	out, _ := b.Handle(context.Background(), "c1", "paste")
 	if !strings.Contains(out.Text, "cancelled") {
 		t.Fatalf("got %q", out.Text)
@@ -105,10 +105,10 @@ func TestComplete_CancelledState(t *testing.T) {
 
 func TestComplete_UnexpectedState(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
 	b := New(f)
 	_, _ = b.Handle(context.Background(), "c1", "/login anthropic")
-	f.res = acpclient.AuthResult{State: "weird"}
+	f.res = client.AuthResult{State: "weird"}
 	out, _ := b.Handle(context.Background(), "c1", "paste")
 	if !strings.Contains(out.Text, "unexpected state") {
 		t.Fatalf("got %q", out.Text)
@@ -117,7 +117,7 @@ func TestComplete_UnexpectedState(t *testing.T) {
 
 func TestCancel_AgentError(t *testing.T) {
 	f := newFake()
-	f.res = acpclient.AuthResult{State: "needs_redirect", URL: "https://x"}
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
 	b := New(f)
 	_, _ = b.Handle(context.Background(), "c1", "/login anthropic")
 	f.err = errors.New("oops")
@@ -128,7 +128,7 @@ func TestCancel_AgentError(t *testing.T) {
 }
 
 func TestList_WithDescription(t *testing.T) {
-	f := &fakeAuth{methods: []acpclient.AuthMethod{
+	f := &fakeAuth{methods: []client.AuthMethod{
 		{ID: "oauth-x", Name: "X", Description: "the desc", Type: "agent"},
 	}}
 	b := New(f)

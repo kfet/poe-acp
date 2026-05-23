@@ -270,14 +270,17 @@ context and is fine.
 
 ```
 poe-acp/
-  cmd/poe-acp/       entry point
+  cmd/poe-acp/             entry point + flag wiring + --permission adapter
   docs/                    design doc + Poe protocol reference
-  internal/acpclient/      acp.Client impl + stdio agent proc wrapper
+  internal/authbroker/     interactive OAuth login over Poe chat
   internal/config/         JSON config loader (DisallowUnknownFields)
   internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
   internal/paramctl/       parameter_controls schema builder + Resolve
   internal/poeproto/       minimal Poe HTTP+SSE
-  internal/policy/         allow-all / read-only / deny-all
   internal/router/         conv_id → ACP session map + GC
+  internal/skills/         embedded skill bundle (delegates to acp-kit/skills)
   test/smoke.sh            black-box SSE smoke test
 ```
+
+Shared ACP primitives (agent process wrapper, debug log, permission
+helpers, skill loader) live in `github.com/kfet/acp-kit`.

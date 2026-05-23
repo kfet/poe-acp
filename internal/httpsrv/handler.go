@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
+	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/authbroker"
-	"github.com/kfet/poe-acp/internal/debuglog"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 )
@@ -147,21 +147,21 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 
 	opts := router.ParseOptions(req.LatestParameters(), h.cfg.Router.Defaults())
 
-	if debuglog.Enabled() {
-		debuglog.Logf("query: conv=%q user=%q msg=%q turns=%d",
+	if kitlog.Enabled() {
+		kitlog.Debugf("query: conv=%q user=%q msg=%q turns=%d",
 			req.ConversationID, req.UserID, req.MessageID, len(req.Query))
 		for i, m := range req.Query {
 			contentPreview := truncateRunes(m.Content, 80)
 			pj, _ := json.Marshal(m.Parameters)
-			debuglog.Logf("  turn[%d] role=%s msg_id=%q att=%d params=%s content=%q",
+			kitlog.Debugf("  turn[%d] role=%s msg_id=%q att=%d params=%s content=%q",
 				i, m.Role, m.MessageID, len(m.Attachments), string(pj), contentPreview)
 		}
 		latestPJ, _ := json.Marshal(req.LatestParameters())
 		defaults := h.cfg.Router.Defaults()
-		debuglog.Logf("  latest_params=%s", string(latestPJ))
-		debuglog.Logf("  defaults: model=%q thinking=%q hide_thinking=%v",
+		kitlog.Debugf("  latest_params=%s", string(latestPJ))
+		kitlog.Debugf("  defaults: model=%q thinking=%q hide_thinking=%v",
 			defaults.Model, defaults.Thinking, defaults.HideThinking)
-		debuglog.Logf("  parsed_opts: model=%q thinking=%q hide_thinking=%v",
+		kitlog.Debugf("  parsed_opts: model=%q thinking=%q hide_thinking=%v",
 			opts.Model, opts.Thinking, opts.HideThinking)
 	}
 
@@ -442,8 +442,8 @@ func (h *Handler) handleAuth(ctx context.Context, sse *poeproto.SSEWriter, convI
 // because Poe gives us no channel to deliver it on. Queue overflow is
 // logged inside the router but the HTTP response is always 200 OK.
 func (h *Handler) handleReaction(ctx context.Context, req *poeproto.Request) {
-	if debuglog.Enabled() {
-		debuglog.Logf("report_reaction: conv=%q user=%q msg=%q reaction=%q action=%q",
+	if kitlog.Enabled() {
+		kitlog.Debugf("report_reaction: conv=%q user=%q msg=%q reaction=%q action=%q",
 			req.ConversationID, req.UserID, req.MessageID, req.Reaction, req.ReactionAction)
 	}
 	if req.Reaction == "" {

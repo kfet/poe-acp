@@ -8,7 +8,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 )
 
 // TestSystemPrompt_CapPath: agent advertises session.systemPrompt cap,
@@ -20,7 +20,7 @@ func TestSystemPrompt_CapPath(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{SystemPrompt: true}
+	agent.caps = client.Caps{SystemPrompt: true}
 
 	rtr := mustRouterWithSP(t, agent, "DURABLE-CATALOG-XYZ")
 	sink := newCollector()
@@ -93,8 +93,8 @@ func TestSystemPrompt_ResumeReinjects(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
-	agent.listResult = []acpclient.SessionInfo{{SessionId: "prev-sess"}}
+	agent.caps = client.Caps{ListSessions: true, ResumeSession: true}
+	agent.listResult = []client.SessionInfo{{SessionId: "prev-sess"}}
 
 	rtr := mustRouterWithSP(t, agent, "DURABLE-CATALOG-XYZ")
 	sink := newCollector()
@@ -115,8 +115,8 @@ func TestSystemPrompt_ResumeCapPathTrustsAgent(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{ListSessions: true, ResumeSession: true, SystemPrompt: true}
-	agent.listResult = []acpclient.SessionInfo{{SessionId: "prev-sess"}}
+	agent.caps = client.Caps{ListSessions: true, ResumeSession: true, SystemPrompt: true}
+	agent.listResult = []client.SessionInfo{{SessionId: "prev-sess"}}
 
 	rtr := mustRouterWithSP(t, agent, "DURABLE-CATALOG-XYZ")
 	sink := newCollector()
@@ -134,7 +134,7 @@ func TestSystemPromptProvider_CalledPerNewSession(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{SystemPrompt: true}
+	agent.caps = client.Caps{SystemPrompt: true}
 
 	catalogs := []string{"CATALOG-ONE", "CATALOG-TWO"}
 	calls := 0
@@ -187,7 +187,7 @@ func TestSystemPromptProvider_CalledAgainAfterGCEviction(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{SystemPrompt: true}
+	agent.caps = client.Caps{SystemPrompt: true}
 
 	clock := time.Unix(0, 0)
 	catalogs := []string{"CATALOG-BEFORE-GC", "CATALOG-AFTER-GC"}
@@ -237,7 +237,7 @@ func TestSystemPromptProvider_EmptyDisablesInjection(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{SystemPrompt: true}
+	agent.caps = client.Caps{SystemPrompt: true}
 
 	rtr := mustRouterWithSPProvider(t, agent, func() string { return "" })
 	if err := rtr.Prompt(context.Background(), "c-empty", "u",

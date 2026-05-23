@@ -94,8 +94,8 @@ right thing with zero modifications.
                                         │  └──────────┬─────────────┘  │
                                         │             │                │
                                         │  ┌──────────▼─────────────┐  │
-                                        │  │ internal/acpclient     │  │
-                                        │  │  ClientSideConnection  │  │
+                                        │  │ acp-kit/client         │  │
+                                        │  │  *acp.Connection       │  │
                                         │  │  impl of acp.Client    │  │
                                         │  └──────────┬─────────────┘  │
                                         └─────────────┼────────────────┘
@@ -117,15 +117,20 @@ right thing with zero modifications.
 - `SettingsResponse`
 - `BearerAuth` middleware
 
-### `internal/acpclient` — ACP agent wrapper
+### `acp-kit/client` — ACP agent wrapper (sibling repo)
 
-- `AgentProc` = exec.Cmd + `acp.ClientSideConnection`; implements
+- Lives in `github.com/kfet/acp-kit` (MIT) so it can be shared with
+  sister relays such as `slack-acp`.
+- `AgentProc` = exec.Cmd + `acp.Connection`; implements
   `acp.Client` (SessionUpdate fan-out, RequestPermission → policy,
-  ReadTextFile / WriteTextFile, terminal no-ops)
-- `Start` launches child, calls `Initialize`
-- `NewSession(ctx, cwd, sink)` creates ACP session, registers sink
-- `Prompt(ctx, sid, text) → StopReason`
-- `Cancel(ctx, sid)`
+  ReadTextFile / WriteTextFile, terminal no-ops).
+- `Start` launches child, calls `Initialize`.
+- `NewSession(ctx, cwd, sink)` creates ACP session, registers sink.
+- `Prompt(ctx, sid, blocks) → StopReason`.
+- `Cancel(ctx, sid)`.
+- Built-in permission policies: `AllowAllPermissions`,
+  `ReadOnlyPermissions`, `DenyAllPermissions`. Selected per-process via
+  the relay's `--permission` flag (resolved in `cmd/poe-acp`).
 
 ### `internal/router` — conv_id router
 
@@ -187,9 +192,12 @@ never points at a swept file.
 turns' files are part of the agent's session history. Prior-turn
 attachments are *not* re-downloaded on resume.
 
-### `internal/policy` — permission policy
+### Permission policy
 
-`allow-all` / `read-only` / `deny-all`. Selected via `--permission`.
+`allow-all` / `read-only` / `deny-all`, selected via `--permission`.
+Implementations live in `acp-kit/client` (`AllowAllPermissions`,
+`ReadOnlyPermissions`, `DenyAllPermissions`); the flag-to-policy
+resolver is `cmd/poe-acp/permission.go`.
 
 ### `internal/httpsrv` — HTTP layer
 
