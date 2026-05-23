@@ -29,7 +29,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
@@ -74,7 +74,7 @@ const OtherProvider = "other"
 // The Model resolution validates against the probed list and logs a
 // warning on miss; the configured value is dropped on miss so the
 // relay does not call set_model with a phantom value.
-func Resolve(cfg config.Defaults, models []acpclient.ModelInfo, probeCurrent string) router.Options {
+func Resolve(cfg config.Defaults, models []client.ModelInfo, probeCurrent string) router.Options {
 	o := router.Options{
 		Thinking:     DefaultThinking,
 		HideThinking: DefaultHideThinking,
@@ -103,7 +103,7 @@ func Resolve(cfg config.Defaults, models []acpclient.ModelInfo, probeCurrent str
 	return o
 }
 
-func hasModel(models []acpclient.ModelInfo, id string) bool {
+func hasModel(models []client.ModelInfo, id string) bool {
 	for _, m := range models {
 		if m.ID == id {
 			return true
@@ -157,13 +157,13 @@ func sanitiseProvider(p string) string {
 // each group is the order models appeared in the agent's list.
 type providerGroup struct {
 	id     string // raw provider id (option `value`)
-	models []acpclient.ModelInfo
+	models []client.ModelInfo
 }
 
 // groupByProvider buckets models by ProviderOf(id), preserving both
 // the first-seen provider order and the order of models within each
 // provider.
-func groupByProvider(models []acpclient.ModelInfo) []providerGroup {
+func groupByProvider(models []client.ModelInfo) []providerGroup {
 	idx := make(map[string]int, 8)
 	var out []providerGroup
 	for _, m := range models {
@@ -173,14 +173,14 @@ func groupByProvider(models []acpclient.ModelInfo) []providerGroup {
 			continue
 		}
 		idx[p] = len(out)
-		out = append(out, providerGroup{id: p, models: []acpclient.ModelInfo{m}})
+		out = append(out, providerGroup{id: p, models: []client.ModelInfo{m}})
 	}
 	return out
 }
 
 // Providers returns the first-seen-ordered provider ids derived from
 // the given model list. Exported for tests and HTTP introspection.
-func Providers(models []acpclient.ModelInfo) []string {
+func Providers(models []client.ModelInfo) []string {
 	groups := groupByProvider(models)
 	out := make([]string, len(groups))
 	for i, g := range groups {
@@ -201,7 +201,7 @@ func Providers(models []acpclient.ModelInfo) []string {
 // priority semantics (capability score, cost tier) that the relay
 // can't see, so re-sorting here would clobber a meaningful order.
 // Providers are listed in first-seen order for the same reason.
-func Build(models []acpclient.ModelInfo, defaults router.Options) *poeproto.ParameterControls {
+func Build(models []client.ModelInfo, defaults router.Options) *poeproto.ParameterControls {
 	var controls []poeproto.Control
 
 	if len(models) > 0 {

@@ -9,25 +9,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/authbroker"
 	"github.com/kfet/poe-acp/internal/router"
 )
 
 type stubAuth struct {
-	methods []acpclient.AuthMethod
-	res     acpclient.AuthResult
+	methods []client.AuthMethod
+	res     client.AuthResult
 }
 
-func (s *stubAuth) AuthMethods() []acpclient.AuthMethod { return s.methods }
-func (s *stubAuth) Authenticate(_ context.Context, _, _, _ string, _ bool) (acpclient.AuthResult, error) {
+func (s *stubAuth) AuthMethods() []client.AuthMethod { return s.methods }
+func (s *stubAuth) Authenticate(_ context.Context, _, _, _ string, _ bool) (client.AuthResult, error) {
 	return s.res, nil
 }
 
 func TestHandler_LoginIntercept(t *testing.T) {
 	stub := &stubAuth{
-		methods: []acpclient.AuthMethod{{ID: "oauth-anthropic", Name: "Anthropic", Type: "agent"}},
-		res:     acpclient.AuthResult{State: "needs_redirect", URL: "https://example/auth"},
+		methods: []client.AuthMethod{{ID: "oauth-anthropic", Name: "Anthropic", Type: "agent"}},
+		res:     client.AuthResult{State: "needs_redirect", URL: "https://example/auth"},
 	}
 	broker := authbroker.New(stub)
 
@@ -75,8 +75,8 @@ func TestHandler_LoginIntercept(t *testing.T) {
 
 func TestHandler_LoginPaste(t *testing.T) {
 	stub := &stubAuth{
-		methods: []acpclient.AuthMethod{{ID: "oauth-anthropic", Name: "Anthropic", Type: "agent"}},
-		res:     acpclient.AuthResult{State: "needs_redirect", URL: "https://example/auth"},
+		methods: []client.AuthMethod{{ID: "oauth-anthropic", Name: "Anthropic", Type: "agent"}},
+		res:     client.AuthResult{State: "needs_redirect", URL: "https://example/auth"},
 	}
 	broker := authbroker.New(stub)
 	// Prime with a /login.
@@ -86,7 +86,7 @@ func TestHandler_LoginPaste(t *testing.T) {
 	if !broker.HasPending("c1") {
 		t.Fatal("setup: expected pending")
 	}
-	stub.res = acpclient.AuthResult{State: "ok"}
+	stub.res = client.AuthResult{State: "ok"}
 
 	rtr, err := router.New(router.Config{
 		Agent:      &fakeAgent{},
@@ -121,7 +121,7 @@ func TestHandler_LoginPaste(t *testing.T) {
 
 func TestHandler_NormalPromptUnaffectedByAuthBroker(t *testing.T) {
 	// Wire a broker but send a non-auth prompt; must reach the agent.
-	stub := &stubAuth{methods: []acpclient.AuthMethod{{ID: "oauth-anthropic", Type: "agent"}}}
+	stub := &stubAuth{methods: []client.AuthMethod{{ID: "oauth-anthropic", Type: "agent"}}}
 	broker := authbroker.New(stub)
 	rtr, err := router.New(router.Config{
 		Agent:      &fakeAgent{},

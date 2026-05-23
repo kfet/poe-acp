@@ -9,7 +9,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poeproto"
@@ -75,13 +75,13 @@ func TestParameterControls_MatchesPoeSchema(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		models []acpclient.ModelInfo
+		models []client.ModelInfo
 		cur    string
 	}{
 		{name: "no_models"},
 		{
 			name: "two_models",
-			models: []acpclient.ModelInfo{
+			models: []client.ModelInfo{
 				{ID: "anthropic/sonnet", Name: "Sonnet"},
 				{ID: "openai/gpt-5", Name: "GPT-5"},
 			},
@@ -89,7 +89,7 @@ func TestParameterControls_MatchesPoeSchema(t *testing.T) {
 		},
 		{
 			name:   "model_with_unset_default",
-			models: []acpclient.ModelInfo{{ID: "x/y", Name: "XY"}},
+			models: []client.ModelInfo{{ID: "x/y", Name: "XY"}},
 		},
 	}
 	for _, tc := range cases {
@@ -110,7 +110,7 @@ func TestSettingsResponse_MatchesPoeSchema(t *testing.T) {
 	t.Parallel()
 	schema := loadSchema(t, "settings_response.schema.json")
 
-	models := []acpclient.ModelInfo{{ID: "anthropic/sonnet", Name: "Sonnet"}}
+	models := []client.ModelInfo{{ID: "anthropic/sonnet", Name: "Sonnet"}}
 	defaults := paramctl.Resolve(config.Defaults{}, models, "anthropic/sonnet")
 	pc := paramctl.Build(models, defaults)
 

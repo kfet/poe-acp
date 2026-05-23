@@ -17,8 +17,8 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
-	"github.com/kfet/poe-acp/internal/debuglog"
+	"github.com/kfet/acp-kit/client"
+	kitlog "github.com/kfet/acp-kit/log"
 )
 
 func TestNew_ConfigErrors(t *testing.T) {
@@ -647,10 +647,10 @@ func TestRouter_SweepAttachments_ReadDirError(t *testing.T) {
 		Agent: a, StateDir: dir, SessionTTL: time.Hour, AttachmentTTL: time.Hour,
 		Now: time.Now,
 	}, sessions: map[string]*sessionState{}}
-	// Enable debug to exercise the debuglog branch.
-	prev := debuglog.Enabled()
-	debuglog.SetEnabled(true)
-	defer debuglog.SetEnabled(prev)
+	// Enable debug to exercise the debug-log branch.
+	prev := kitlog.Enabled()
+	kitlog.SetEnabled(true)
+	defer kitlog.SetEnabled(prev)
 	r.sweepAttachmentsOnce()
 }
 
@@ -688,7 +688,7 @@ func TestRouter_ListSessionsErrorLogged(t *testing.T) {
 		fa.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	a.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
+	a.caps = client.Caps{ListSessions: true, ResumeSession: true}
 	a.listErr = errors.New("list-fail")
 	r, _ := New(Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err := r.Prompt(context.Background(), "c1", "u",
@@ -701,9 +701,9 @@ func TestSweepAttachments_DebugLogPaths(t *testing.T) {
 	a := newFakeAgent(func(context.Context, *fakeAgent, acp.SessionId, string) (acp.StopReason, error) {
 		return acp.StopReasonEndTurn, nil
 	})
-	prev := debuglog.Enabled()
-	debuglog.SetEnabled(true)
-	defer debuglog.SetEnabled(prev)
+	prev := kitlog.Enabled()
+	kitlog.SetEnabled(true)
+	defer kitlog.SetEnabled(prev)
 
 	dir := t.TempDir()
 	r, _ := New(Config{Agent: a, StateDir: dir, SessionTTL: time.Hour, AttachmentTTL: time.Hour})
@@ -782,9 +782,9 @@ func TestRouter_AttachmentBlocks_InlineReadFail(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	})
 	r, _ := New(Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour, HTTPClient: srv.Client()})
-	prev := debuglog.Enabled()
-	debuglog.SetEnabled(true)
-	defer debuglog.SetEnabled(prev)
+	prev := kitlog.Enabled()
+	kitlog.SetEnabled(true)
+	defer kitlog.SetEnabled(prev)
 	if err := r.Prompt(context.Background(), "c1", "u",
 		[]Turn{{Role: "user", Content: "hi", MessageID: "m1", Attachments: []Attachment{
 			{URL: srv.URL, ContentType: "image/png", Name: "x.png"},
@@ -969,7 +969,7 @@ type raceInjectingAgent struct {
 	convID string
 }
 
-func (a *raceInjectingAgent) NewSession(ctx context.Context, cwd string, sink acpclient.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
+func (a *raceInjectingAgent) NewSession(ctx context.Context, cwd string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
 	sid, err := a.fakeAgent.NewSession(ctx, cwd, sink, sysBlocks)
 	if err != nil {
 		return sid, err
@@ -1012,9 +1012,9 @@ func TestRouter_GetOrCreate_LostRaceFreshSeedFalse(t *testing.T) {
 
 func TestSweepAttachments_RemoveError(t *testing.T) {
 	defer swap(&osRemove, func(string) error { return errors.New("remove-fail") })()
-	prev := debuglog.Enabled()
-	debuglog.SetEnabled(true)
-	defer debuglog.SetEnabled(prev)
+	prev := kitlog.Enabled()
+	kitlog.SetEnabled(true)
+	defer kitlog.SetEnabled(prev)
 
 	a := newFakeAgent(func(context.Context, *fakeAgent, acp.SessionId, string) (acp.StopReason, error) {
 		return acp.StopReasonEndTurn, nil

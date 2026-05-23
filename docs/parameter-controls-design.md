@@ -209,7 +209,7 @@ probe (see "Model list discovery" above).
 - `sessionState` gains `applied Options`. On each `Prompt`:
   - Diff incoming `Options` against `applied`.
   - For each changed agent-facing field, call the corresponding
-    `acpclient` method **before** issuing the prompt.
+    `acp-kit/client` method **before** issuing the prompt.
   - For relay-side fields (`HideThinking`), record on the sink/SSE
     writer for that turn.
   - Update `applied` only after the agent calls succeed.
@@ -217,7 +217,7 @@ probe (see "Model list discovery" above).
   allowlist validation. Unknown keys / wrong types → silently dropped
   (logged at debug).
 
-### `internal/acpclient`
+### `acp-kit/client`
 
 - `SetModel(ctx, sid, providerSlashID string) error` — wraps unstable
   `session/set_model`. ACP-go-sdk exposes this via
@@ -284,7 +284,7 @@ No new flags. The model list is discovered automatically.
 4. **`hide_thinking` granularity.** ACP `SessionUpdate` has both
    `agent_thought_chunk` and the regular `agent_message_chunk`. The
    toggle should drop the former and keep the latter. Confirm by
-   reading `acpclient`'s update fan-out.
+   reading `acp-kit/client`'s update fan-out.
 
 ## Decision points for the user (you)
 

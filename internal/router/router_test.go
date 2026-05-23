@@ -21,13 +21,13 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
 )
 
 // fakeAgent implements Agent for tests.
 type fakeAgent struct {
 	mu      sync.Mutex
-	sinks   map[acp.SessionId]acpclient.SessionUpdateSink
+	sinks   map[acp.SessionId]client.SessionUpdateSink
 	nextID  int
 	prompts int32
 
@@ -36,8 +36,8 @@ type fakeAgent struct {
 	onPrompt func(ctx context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error)
 
 	// Optional overrides for the resume tier.
-	caps             acpclient.Caps
-	listResult       []acpclient.SessionInfo
+	caps             client.Caps
+	listResult       []client.SessionInfo
 	listErr          error
 	resumeErr        error
 	newSessErr       error
@@ -57,17 +57,17 @@ type fakeAgent struct {
 
 func newFakeAgent(onPrompt func(ctx context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error)) *fakeAgent {
 	return &fakeAgent{
-		sinks:    make(map[acp.SessionId]acpclient.SessionUpdateSink),
+		sinks:    make(map[acp.SessionId]client.SessionUpdateSink),
 		onPrompt: onPrompt,
 	}
 }
 
-func (f *fakeAgent) Caps() acpclient.Caps { return f.caps }
-func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]acpclient.SessionInfo, error) {
+func (f *fakeAgent) Caps() client.Caps { return f.caps }
+func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]client.SessionInfo, error) {
 	atomic.AddInt32(&f.listCalls, 1)
 	return f.listResult, f.listErr
 }
-func (f *fakeAgent) ResumeSession(_ context.Context, _ string, sid acp.SessionId, sink acpclient.SessionUpdateSink) error {
+func (f *fakeAgent) ResumeSession(_ context.Context, _ string, sid acp.SessionId, sink client.SessionUpdateSink) error {
 	atomic.AddInt32(&f.resumeCalls, 1)
 	if f.resumeErr != nil {
 		return f.resumeErr
@@ -77,7 +77,7 @@ func (f *fakeAgent) ResumeSession(_ context.Context, _ string, sid acp.SessionId
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeAgent) NewSession(_ context.Context, _ string, sink acpclient.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
+func (f *fakeAgent) NewSession(_ context.Context, _ string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
 	atomic.AddInt32(&f.newSessCalls, 1)
 	if f.newSessErr != nil {
 		return "", f.newSessErr
@@ -326,8 +326,8 @@ func TestRouter_ResumesWhenAgentSupportsListResume(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
-	agent.listResult = []acpclient.SessionInfo{{SessionId: "prior-sid"}}
+	agent.caps = client.Caps{ListSessions: true, ResumeSession: true}
+	agent.listResult = []client.SessionInfo{{SessionId: "prior-sid"}}
 
 	r, err := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err != nil {
@@ -361,7 +361,7 @@ func TestRouter_NewSessionWhenListEmpty(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
+	agent.caps = client.Caps{ListSessions: true, ResumeSession: true}
 	// listResult nil → empty, no prior session.
 
 	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
@@ -448,8 +448,8 @@ func TestRouter_FallsBackWhenResumeErrors(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{ListSessions: true, ResumeSession: true}
-	agent.listResult = []acpclient.SessionInfo{{SessionId: "stale"}}
+	agent.caps = client.Caps{ListSessions: true, ResumeSession: true}
+	agent.listResult = []client.SessionInfo{{SessionId: "stale"}}
 	agent.resumeErr = fmt.Errorf("session not found")
 
 	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
@@ -904,7 +904,7 @@ func TestRouter_ParsedContentEmittedAsResourceWhenCapable(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{EmbeddedContext: true}
+	agent.caps = client.Caps{EmbeddedContext: true}
 	dir := t.TempDir()
 	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour})
 	if err != nil {
@@ -1221,7 +1221,7 @@ func TestRouter_ParsedContentSkipsDownload(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{EmbeddedContext: true}
+	agent.caps = client.Caps{EmbeddedContext: true}
 	dir := t.TempDir()
 	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour, HTTPClient: srv.Client()})
 	if err != nil {
@@ -1255,7 +1255,7 @@ func TestRouter_TextWithoutParsedContentDownloads(t *testing.T) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
 	})
-	agent.caps = acpclient.Caps{EmbeddedContext: true}
+	agent.caps = client.Caps{EmbeddedContext: true}
 	dir := t.TempDir()
 	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour, HTTPClient: srv.Client()})
 	if err != nil {

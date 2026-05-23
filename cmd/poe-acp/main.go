@@ -15,14 +15,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kfet/poe-acp/internal/acpclient"
+	"github.com/kfet/acp-kit/client"
+	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/authbroker"
 	"github.com/kfet/poe-acp/internal/config"
-	"github.com/kfet/poe-acp/internal/debuglog"
 	"github.com/kfet/poe-acp/internal/httpsrv"
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poeproto"
-	"github.com/kfet/poe-acp/internal/policy"
 	"github.com/kfet/poe-acp/internal/router"
 )
 
@@ -55,18 +54,20 @@ func main() {
 		return
 	}
 
+	// Pick up POEACP_DEBUG=1 before applying --debug (flag still wins).
+	kitlog.Register("POEACP_DEBUG")
 	if *debugFlag {
-		debuglog.SetEnabled(true)
+		kitlog.SetEnabled(true)
 	}
 
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("poe-acp %s starting", version)
-	if debuglog.Enabled() {
+	if kitlog.Enabled() {
 		log.Printf("debug logging: ON")
 	}
 
-	pol, err := policy.Parse(*permission)
+	pol, err := parsePermission(*permission)
 	if err != nil {
 		log.Fatalf("policy: %v", err)
 	}
@@ -126,7 +127,7 @@ func main() {
 	if *agentDirFlag != "" {
 		env = appendEnv(env, "FIR_AGENT_DIR="+*agentDirFlag)
 	}
-	agent, err := acpclient.Start(ctx, acpclient.Config{
+	agent, err := client.Start(ctx, client.Config{
 		Command: argv,
 		Cwd:     stateDir, // agent proc cwd; per-session cwd is passed per NewSession
 		Env:     env,

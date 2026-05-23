@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Migrated shared ACP relay primitives to `acp-kit`.** The relay now imports `github.com/kfet/acp-kit/{client,log,skills}` v0.1.0 in place of the old `internal/{acpclient,debuglog,policy}` packages, deleting ~2.7k lines of locally maintained code. The same primitives back `slack-acp`, so wire-level bugs and capability-parsing tweaks get fixed once. Behaviour preserved across the swap: same initialize handshake, same `_meta` parsing, same set of permission policies (`allow-all` / `read-only` / `deny-all` — `read-only`'s heuristic is unchanged), same `POEACP_DEBUG=1` env activation, same `--debug` flag, same auth-method shape, same model-probe semantics. `internal/skills` is now a thin wrapper that owns the embedded `bundle` FS and the `"poe-acp"` tmp-dir prefix; everything else lives in `acp-kit/skills`.
+
 ### Fixed
 
 - **Attachment-only Poe user turns no longer rejected as empty.** `router.Prompt` now accepts turns with usable attachments but no text, adds a concise placeholder text block before attachment blocks, preserves the existing truly-empty error, and avoids anonymous message-dir collisions for attachment-only turns.
