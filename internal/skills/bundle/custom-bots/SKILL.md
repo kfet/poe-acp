@@ -98,6 +98,16 @@ umask 022
 
 Write that JSON to `~/.config/poe-acp/<bot>/config.json`. `agent.profile: "fir"` selects the relay's fir control schema; it is not a credential profile. Omit it only if auto-detecting from `--agent-cmd` is desired.
 
+## Update an existing bot
+
+For model/thinking/default changes, edit only `~/.config/poe-acp/<bot>/config.json`; it is the relay source of truth. Do **not** bake model defaults into the launchd plist or `--agent-cmd`, and do not change the plist for config-only updates. On macOS, apply the change with:
+
+```bash
+launchctl kickstart -k gui/$UID/dev.<you>.poe-acp.<bot>
+```
+
+Do not create delayed reloader jobs. Do not use `launchctl bootout` + `bootstrap` for an already-registered job unless you intentionally changed the plist itself; bootout/bootstrap has an async registration race that can leave the service stopped.
+
 ## Linux systemd user unit
 
 Pick a free port first: `ss -ltn | grep ':8347\|:8348\|:8349'` on Linux or `lsof -nP -iTCP -sTCP:LISTEN | grep 834` on macOS. Use one unit per bot, e.g. `~/.config/systemd/user/poe-acp-<bot>.service`:
