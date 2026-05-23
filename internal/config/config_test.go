@@ -57,7 +57,9 @@ func TestLoad_Valid(t *testing.T) {
 			"thinking": "medium",
 			"hide_thinking": false
 		},
-		"agent": {"profile": "fir"}
+		"agent": {"profile": "fir"},
+		"system_prompt_file": "prompt.md",
+		"disable_system_prompt": true
 	}`)
 	cfg, ok, err := Load(p)
 	if err != nil || !ok {
@@ -77,6 +79,12 @@ func TestLoad_Valid(t *testing.T) {
 	}
 	if cfg.Agent.Profile != "fir" {
 		t.Errorf("profile: %q", cfg.Agent.Profile)
+	}
+	if cfg.SystemPromptFile != "prompt.md" {
+		t.Errorf("system_prompt_file: %q", cfg.SystemPromptFile)
+	}
+	if !cfg.DisableSystemPrompt {
+		t.Errorf("disable_system_prompt: %v", cfg.DisableSystemPrompt)
 	}
 }
 
