@@ -4,7 +4,6 @@
 package poeproto
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -95,19 +94,18 @@ func (r *Request) LatestUserText() string {
 // Decode parses a Poe request from the HTTP body.
 func Decode(body io.Reader) (*Request, error) {
 	var (
-		req Request
-		raw []byte
+		req   Request
+		tee   *capWriter
+		debug = kitlog.Enabled()
 	)
-	if kitlog.Enabled() {
-		// Tee the body so we can log the raw JSON exactly as Poe sent
-		// it. Capped at 16 KiB to avoid allocating huge buffers on
-		// requests with large parsed_content attachment payloads.
-		buf, err := io.ReadAll(io.LimitReader(body, 16*1024))
-		if err != nil {
-			return nil, fmt.Errorf("read poe body: %w", err)
-		}
-		raw = buf
-		body = bytes.NewReader(buf)
+	if debug {
+		// Tee the body into a capped buffer so we can log the head of
+		// the raw JSON exactly as Poe sent it, without holding the
+		// full request in memory — large parsed_content payloads on
+		// PDF / transcript / image attachments can run well past tens
+		// of MiB. The decoder still streams from the original body.
+		tee = &capWriter{max: 16 * 1024}
+		body = io.TeeReader(body, tee)
 	}
 	if err := json.NewDecoder(body).Decode(&req); err != nil {
 		return nil, fmt.Errorf("decode poe request: %w", err)
@@ -115,8 +113,12 @@ func Decode(body io.Reader) (*Request, error) {
 	if req.Type == "" {
 		return nil, fmt.Errorf("poe request missing type")
 	}
-	if kitlog.Enabled() {
-		kitlog.Debugf("raw poe body (%d bytes, type=%s): %s", len(raw), req.Type, string(raw))
+	if debug {
+		suffix := ""
+		if tee.truncated {
+			suffix = "...[truncated]"
+		}
+		kitlog.Debugf("raw poe body (type=%s, head=%dB): %s%s", req.Type, len(tee.buf), string(tee.buf), suffix)
 	}
 	if req.Type == TypeReportReaction {
 		req.Reaction, req.ReactionAction = normaliseReaction(req.Reaction, req.ReactionAction)
@@ -344,4 +346,24 @@ func BearerAuth(secret string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// capWriter accumulates up to max bytes for debug-logging the head of a
+// streamed body. Once full, further writes are discarded and truncated
+// is set. It implements io.Writer so it can sit on the receive side of
+// an io.TeeReader without bounding what the decoder reads.
+type capWriter struct {
+	buf       []byte
+	max       int
+	truncated bool
+}
+
+func (c *capWriter) Write(p []byte) (int, error) {
+	if room := c.max - len(c.buf); room > 0 {
+		c.buf = append(c.buf, p[:min(len(p), room)]...)
+	}
+	if len(p) > 0 && len(c.buf) >= c.max {
+		c.truncated = true
+	}
+	return len(p), nil
 }
