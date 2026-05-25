@@ -39,13 +39,15 @@ The relay owns `conv_id → session` lifecycle. Agents are spawned via `--agent-
 
 Before implementing a fix or feature inside a specific package, stop and ask: **is this actually unique to this layer, or does it belong elsewhere?**
 
-- Poe protocol concerns (event shape, SSE framing) → `poeproto`.
+For every non-trivial change, first ask the cross-repo question: **does this belong in `acp-kit`?** acp-kit is the home for primitives both Poe and Slack relays need — ACP client wrapper, debug log, permission helpers, skill loader/formatter, attachments, state, sysprompt composition. If the change is about how a relay talks to an ACP agent (handshake, capabilities, permission decisions, model probing, skill catalog shape), it almost certainly belongs in acp-kit so `slack-acp` and `poe-acp` get the fix once. If the change is about a specific surface protocol (Poe SSE framing, `parameter_controls`, Poe attachment shapes), it stays here. When in doubt, write the patch against acp-kit first and import it; reverse-migrating later is harder than starting shared.
+
+- Poe protocol concerns (event shape, SSE framing, `parameter_controls`) → `poeproto` / `paramctl` (Poe-specific, do not push to acp-kit).
 - Agent-process concerns (spawn, stdio, ACP framing) → `acp-kit/client`.
 - Session lifecycle (cwd, GC, heartbeat, cancel) → `router` + `httpsrv`.
 - Policy (tool permission decisions) → `acp-kit/client` (`AllowAll`/`ReadOnly`/`DenyAll`); adapter in `cmd/poe-acp/permission.go`.
 - Operator-facing config (defaults, bot identity) → `config` + `paramctl.Resolve`.
 - Schema building (parameter_controls) → `paramctl.Build`.
-- When fixing a bug, check whether the same bug exists in sibling code paths. Fix it at the root, not per-site.
+- When fixing a bug, check whether the same bug exists in sibling code paths — both within this repo *and* in `slack-acp` / `acp-kit`. Fix it at the root, not per-site.
 
 ## Git
 
