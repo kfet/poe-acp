@@ -329,3 +329,22 @@ Poe's cached settings response. v0.5.0 separates these dynamics:
 
 The original v1 surface (`model`, `thinking`, `hide_thinking` controls;
 boot-time probe; flat layout; no `condition` block) is unchanged.
+
+### Single-provider collapse
+
+`paramctl.Build` adapts the schema to provider count:
+
+- **0 providers** (probe failed / unauthed) — Provider+Model dropdowns
+  omitted; only Thinking + Hide thinking render.
+- **1 provider** — UI collapses to a single flat `Model` drop_down with
+  `parameter_name: "model"` (the legacy/back-compat shape). No Provider
+  dropdown, no `condition` wrapper. Bots wired to a single provider
+  (e.g. a Sakana- or Anthropic-only relay) get the minimum-surface UI
+  their operators expect; a one-option Provider picker is pure noise.
+- **≥2 providers** — Cascading Provider → `model_<sanitised-provider>`
+  shape as described above.
+
+`router.ParseOptions` already accepts both shapes (bare `model` wins,
+then `provider` + `model_<provider>`), so the collapse needs no router
+change. `TestBuild_SingleProvider_*` and
+`TestBuildAndResolveAgree_SingleProvider` pin the collapsed shape.
