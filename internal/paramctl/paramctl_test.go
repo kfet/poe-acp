@@ -230,25 +230,28 @@ func TestBuild_ProviderGrouping(t *testing.T) {
 // TestBuild_ProviderParamSanitisation ensures awkward provider ids
 // (case, punctuation) map to safe parameter_names while still
 // referencing the unsanitised provider id in the condition literal.
+// A second provider is included so we exercise the cascading shape
+// (the single-provider input collapses to a bare `model` control).
 func TestBuild_ProviderParamSanitisation(t *testing.T) {
 	t.Parallel()
 	models := []client.ModelInfo{
 		{ID: "Foo-Bar.Baz/model-x", Name: "X"},
+		{ID: "openai/gpt-5", Name: "GPT-5"},
 	}
 	pc := Build(models, router.Options{Thinking: DefaultThinking})
 	var cond *poeproto.Control
 	for i := range pc.Sections[0].Controls {
-		if pc.Sections[0].Controls[i].Control == "condition" {
-			cond = &pc.Sections[0].Controls[i]
+		c := &pc.Sections[0].Controls[i]
+		if c.Control != "condition" || c.Condition == nil {
+			continue
+		}
+		if lit, _ := c.Condition.Right.Literal.(string); lit == "Foo-Bar.Baz" {
+			cond = c
 			break
 		}
 	}
 	if cond == nil {
-		t.Fatal("no condition control emitted")
-	}
-	lit, _ := cond.Condition.Right.Literal.(string)
-	if lit != "Foo-Bar.Baz" {
-		t.Fatalf("condition literal = %q want Foo-Bar.Baz", lit)
+		t.Fatal("no condition control emitted for Foo-Bar.Baz provider")
 	}
 	if got := cond.Controls[0].ParameterName; got != "model_foo_bar_baz" {
 		t.Fatalf("inner parameter_name = %q want model_foo_bar_baz", got)
@@ -265,14 +268,151 @@ func TestProviderParamName_EmptyBucketsToOther(t *testing.T) {
 	}
 }
 
+// TestBuild_SingleProvider_CollapsesToBareModel pins the
+// single-provider-only UI: no Provider dropdown, no `condition`
+// wrapper, one flat drop_down with parameter_name `model` listing
+// every model in order. Keeps the UI minimal for bots wired to a
+// single provider.
+func TestBuild_SingleProvider_CollapsesToBareModel(t *testing.T) {
+	t.Parallel()
+	models := []client.ModelInfo{
+		{ID: "sakana/fugu-ultra", Name: "Fugu Ultra"},
+		{ID: "sakana/fugu-mini", Name: "Fugu Mini"},
+	}
+	pc := Build(models, router.Options{Model: "sakana/fugu-mini", Thinking: DefaultThinking})
+	ctls := pc.Sections[0].Controls
+
+	// First (and only) model-related control must be a flat
+	// drop_down with parameter_name "model".
+	if got := ctls[0].ParameterName; got != "model" {
+		t.Fatalf("first ctl param_name = %q want \"model\"", got)
+	}
+	if ctls[0].Control != "drop_down" || ctls[0].Label != "Model" {
+		t.Fatalf("first ctl = %+v", ctls[0])
+	}
+	if d, _ := ctls[0].DefaultValue.(string); d != "sakana/fugu-mini" {
+		t.Fatalf("model default = %v want sakana/fugu-mini", ctls[0].DefaultValue)
+	}
+	gotIDs := []string{}
+	for _, o := range ctls[0].Options {
+		gotIDs = append(gotIDs, o.Value)
+	}
+	if !reflect.DeepEqual(gotIDs, []string{"sakana/fugu-ultra", "sakana/fugu-mini"}) {
+		t.Fatalf("model options = %v", gotIDs)
+	}
+
+	// No Provider control, no condition control anywhere.
+	for _, c := range ctls {
+		if c.ParameterName == "provider" {
+			t.Errorf("provider dropdown should be omitted when single provider, got %+v", c)
+		}
+		if c.Control == "condition" {
+			t.Errorf("condition control should be omitted when single provider, got %+v", c)
+		}
+		if strings.HasPrefix(c.ParameterName, "model_") {
+			t.Errorf("per-provider model_<x> should be omitted when single provider, got %+v", c)
+		}
+	}
+
+	// Wire-format guard: legacy `dropdown` spelling not used, and the
+	// flat `model` parameter is what reaches Poe.
+	b, err := json.Marshal(pc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(b)
+	for _, want := range []string{
+		`"parameter_name":"model"`,
+		`"default_value":"sakana/fugu-mini"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("json missing %q\nfull: %s", want, s)
+		}
+	}
+	for _, banned := range []string{
+		`"parameter_name":"provider"`,
+		`"control":"condition"`,
+	} {
+		if strings.Contains(s, banned) {
+			t.Errorf("json contains banned %q in single-provider shape\nfull: %s", banned, s)
+		}
+	}
+}
+
+// TestBuild_SingleProvider_DefaultsFirstModelWhenUnpinned ensures the
+// collapsed schema never lands on an empty selection: an unconfigured
+// default falls through to the first model in the (single) group.
+func TestBuild_SingleProvider_DefaultsFirstModelWhenUnpinned(t *testing.T) {
+	t.Parallel()
+	models := []client.ModelInfo{
+		{ID: "sakana/fugu-ultra", Name: "Fugu Ultra"},
+		{ID: "sakana/fugu-mini", Name: "Fugu Mini"},
+	}
+	pc := Build(models, router.Options{Thinking: DefaultThinking})
+	d, _ := pc.Sections[0].Controls[0].DefaultValue.(string)
+	if d != "sakana/fugu-ultra" {
+		t.Fatalf("model default = %v want first model sakana/fugu-ultra", pc.Sections[0].Controls[0].DefaultValue)
+	}
+}
+
+// TestBuild_SingleProvider_DefaultModelOutsideGroupFallsToFirst guards
+// the hasModel check in the collapsed branch: a misconfigured default
+// (provider matches the only group, but id is unknown) must not be
+// rendered as a phantom default_value.
+func TestBuild_SingleProvider_DefaultModelOutsideGroupFallsToFirst(t *testing.T) {
+	t.Parallel()
+	models := []client.ModelInfo{
+		{ID: "sakana/fugu-ultra", Name: "Fugu Ultra"},
+	}
+	// Bypass Resolve so an out-of-list default reaches Build directly.
+	pc := Build(models, router.Options{Model: "sakana/ghost", Thinking: DefaultThinking})
+	d, _ := pc.Sections[0].Controls[0].DefaultValue.(string)
+	if d != "sakana/fugu-ultra" {
+		t.Fatalf("model default = %v want first model when configured default is unknown", pc.Sections[0].Controls[0].DefaultValue)
+	}
+}
+
+// TestBuildAndResolveAgree_SingleProvider extends the
+// build/resolve sync pin to the collapsed shape: defaults.Model is
+// carried on the bare `model` parameter, no `provider` default is
+// emitted.
+func TestBuildAndResolveAgree_SingleProvider(t *testing.T) {
+	t.Parallel()
+	models := []client.ModelInfo{
+		{ID: "sakana/fugu-ultra", Name: "Fugu Ultra"},
+		{ID: "sakana/fugu-mini", Name: "Fugu Mini"},
+	}
+	d := Resolve(config.Defaults{Model: "sakana/fugu-mini"}, models, "")
+	pc := Build(models, d)
+	schemaDefaults := map[string]any{}
+	collect(pc.Sections, schemaDefaults)
+	if got, want := schemaDefaults["model"], d.Model; got != want {
+		t.Errorf("model: schema=%v defaults.Model=%v", got, want)
+	}
+	if got, ok := schemaDefaults["provider"]; ok {
+		t.Errorf("provider default should not appear in collapsed shape: %v", got)
+	}
+	if got, want := schemaDefaults["thinking"], d.Thinking; got != want {
+		t.Errorf("thinking: schema=%v defaults=%v", got, want)
+	}
+	if got, want := schemaDefaults["hide_thinking"], d.HideThinking; got != want {
+		t.Errorf("hide_thinking: schema=%v defaults=%v", got, want)
+	}
+}
+
 // TestBuild_DefaultModelProviderNotInList covers the defensive
 // hasProvider guard: a caller passing defaults.Model whose provider is
 // absent from the model list (would only happen on a bypass of
 // Resolve) must still produce a valid schema — no provider default,
-// per-provider defaults driven by the first model in each group.
+// per-provider defaults driven by the first model in each group. Uses
+// two providers to keep the cascading shape (a single-provider input
+// collapses to a bare `model` control and exercises a different path).
 func TestBuild_DefaultModelProviderNotInList(t *testing.T) {
 	t.Parallel()
-	models := []client.ModelInfo{{ID: "openai/gpt-5", Name: "GPT-5"}}
+	models := []client.ModelInfo{
+		{ID: "openai/gpt-5", Name: "GPT-5"},
+		{ID: "google/gemini", Name: "Gemini"},
+	}
 	defs := router.Options{Model: "anthropic/sonnet", Thinking: DefaultThinking}
 	pc := Build(models, defs)
 	prov := pc.Sections[0].Controls[0]

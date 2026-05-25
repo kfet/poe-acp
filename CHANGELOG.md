@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-05-24
+
 ### Fixed
 
 - **Debug logging no longer 400s on Poe requests >16 KiB.** `poeproto.Decode` previously fed a 16 KiB-`LimitReader`-truncated buffer to the JSON decoder when debug logging was enabled, so any real Poe `query` carrying a non-trivial `parsed_content` attachment failed to decode and returned 400 — Poe then surfaced this to operators as a `report_error` and the bot stopped responding. The decoder now streams from the full body via `io.TeeReader` into an internal `capWriter` that captures only the first 16 KiB for the log line (suffixed with `...[truncated]` when more bytes streamed past). No per-request cap on what the decoder sees, matching the non-debug path — image / video / large transcript attachments stream through unimpeded. Regression covered by `TestDecode_DebugPath` decoding a 64 KiB body under `kitlog.SetEnabled(true)`.

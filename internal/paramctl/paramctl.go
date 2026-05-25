@@ -6,23 +6,30 @@
 // the first turn of every conversation. They are produced from a
 // single Resolve() call so they cannot drift.
 //
-// Model selection is presented as cascading dropdowns:
+// Model selection adapts to how many providers the agent exposes:
 //
-//	Provider          — top-level drop_down, options derived from the
-//	                    prefix-before-first-slash of each model ID
-//	                    (e.g. "anthropic", "openai"). Models with no
-//	                    slash are grouped under "other".
-//	Model (per-prov)  — one drop_down per provider, gated by a
-//	                    `condition` control on `provider == <P>`.
-//	                    parameter_name is `model_<sanitised provider>`
-//	                    so each provider can carry its own remembered
-//	                    selection independently.
+//	Single provider — one flat `Model` drop_down with parameter_name
+//	                  `model` (the legacy/back-compat shape). The
+//	                  Provider dropdown is omitted entirely because a
+//	                  one-option picker is pure noise; bots wired to a
+//	                  single provider (e.g. a Sakana- or Anthropic-only
+//	                  relay) get the minimum-surface UI they want.
+//	Multiple providers — cascading dropdowns:
+//	  Provider          — top-level drop_down, options derived from the
+//	                      prefix-before-first-slash of each model ID
+//	                      (e.g. "anthropic", "openai"). Models with no
+//	                      slash are grouped under "other".
+//	  Model (per-prov)  — one drop_down per provider, gated by a
+//	                      `condition` control on `provider == <P>`.
+//	                      parameter_name is `model_<sanitised provider>`
+//	                      so each provider carries its own remembered
+//	                      selection independently.
 //
 // The relay reconciles the user-visible state back to a single agent
-// model id in router.ParseOptions: bare `model` (legacy/back-compat)
-// wins; otherwise `model_<provider>` (looked up by the chosen
-// `provider` value) is used. Empty parameters fall back to the
-// resolved Defaults().
+// model id in router.ParseOptions: bare `model` (collapsed shape and
+// legacy/back-compat) wins; otherwise `model_<provider>` (looked up by
+// the chosen `provider` value) is used. Empty parameters fall back to
+// the resolved Defaults().
 package paramctl
 
 import (
@@ -197,6 +204,11 @@ func Providers(models []client.ModelInfo) []string {
 // provider+model dropdowns are omitted entirely; only Thinking and
 // Hide thinking remain.
 //
+// If the model list resolves to exactly one provider, the schema
+// collapses to a single bare `model` drop_down (no Provider picker, no
+// `condition` wrapper). The router accepts that legacy shape via
+// ParseOptions's bare-`model` path, so no router change is needed.
+//
 // Model order is preserved as received from the agent: the agent owns
 // priority semantics (capability score, cost tier) that the relay
 // can't see, so re-sorting here would clobber a meaningful order.
@@ -204,8 +216,34 @@ func Providers(models []client.ModelInfo) []string {
 func Build(models []client.ModelInfo, defaults router.Options) *poeproto.ParameterControls {
 	var controls []poeproto.Control
 
-	if len(models) > 0 {
-		groups := groupByProvider(models)
+	switch groups := groupByProvider(models); {
+	case len(groups) == 0:
+		// No models known — skip provider/model controls entirely.
+	case len(groups) == 1:
+		// Single provider — collapse to a bare `model` drop_down. Use
+		// defaults.Model only if it actually lives in this group; the
+		// hasModel check guards a misconfigured default whose provider
+		// happens to be the one we have but whose id isn't in the
+		// returned model list.
+		g := groups[0]
+		modelOpts := make([]poeproto.ValueNamePair, 0, len(g.models))
+		for _, m := range g.models {
+			modelOpts = append(modelOpts, poeproto.ValueNamePair{Value: m.ID, Name: m.Name})
+		}
+		modelCtl := poeproto.Control{
+			Control:       "drop_down",
+			Label:         "Model",
+			ParameterName: "model",
+			Options:       modelOpts,
+		}
+		switch {
+		case defaults.Model != "" && hasModel(g.models, defaults.Model):
+			modelCtl.DefaultValue = defaults.Model
+		case len(g.models) > 0:
+			modelCtl.DefaultValue = g.models[0].ID
+		}
+		controls = append(controls, modelCtl)
+	default:
 		defaultProvider := ""
 		if defaults.Model != "" {
 			defaultProvider = ProviderOf(defaults.Model)
