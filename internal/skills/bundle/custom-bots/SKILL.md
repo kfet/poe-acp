@@ -98,6 +98,39 @@ umask 022
 
 Write that JSON to `~/.config/poe-acp/<bot>/config.json`. `agent.profile: "fir"` selects the relay's fir control schema; it is not a credential profile. Omit it only if auto-detecting from `--agent-cmd` is desired.
 
+## Operator system prompt (per-bot)
+
+Each bot can prepend a durable, operator-authored system prompt to every new session — bot persona, house rules, surface-specific guidance, etc. File-based, edited in place, no JSON escaping.
+
+```jsonc
+// ~/.config/poe-acp/<bot>/config.json
+{
+  "bot_name": "<slug>",
+  "system_prompt_file": "system.md",   // relative → resolved against dirname(config)
+  "disable_system_prompt": false       // true wins: no prompt, no skills catalog, no transport clause
+}
+```
+
+```text
+~/.config/poe-acp/<bot>/
+  config.json
+  system.md            ← free-form Markdown, full bot prompt lives here
+```
+
+Composition order at runtime: **`system.md` contents → skills catalog → transport-contract clause**. The relay snapshots the result per-session at session start; edits to `system.md` apply to the **next new conversation**, no supervisor restart needed.
+
+Path rules:
+
+- Relative path → resolved against `dirname(<config>)`, so per-bot layout above "just works".
+- Absolute path → used as-is.
+- **Boot fail-fast**: a missing or unreadable file at startup aborts the relay (`log.Fatalf`). Fix the path or the file, then restart.
+- **Per-session degrade**: a file that goes missing after boot is logged as a warning; new conversations get an empty operator prompt but the bot keeps serving.
+- Leading/trailing whitespace in the file is trimmed.
+
+When to set `disable_system_prompt: true`: total opt-out — no operator prompt, no skills catalog injected, no transport-contract clause. Wins over a configured file (no read attempted).
+
+Added in poe-acp `v0.16.0`. Available on slack-acp too, with the same `disable_system_prompt` key and an inline-only `system_prompt` string (no `_file` variant there).
+
 ## Update an existing bot
 
 For model/thinking/default changes, edit only `~/.config/poe-acp/<bot>/config.json`; it is the relay source of truth. Do **not** bake model defaults into the launchd plist or `--agent-cmd`, and do not change the plist for config-only updates. On macOS, apply the change with:
@@ -204,6 +237,7 @@ It does not isolate external tools or environment inherited by the same Unix use
 
 - [ ] `~/.config/poe-acp/<bot>/env` exists, mode `0600`, correct key.
 - [ ] `config.json` has exact `bot_name` and pinned `defaults.model` if model-specific.
+- [ ] If a bot persona is needed, `system_prompt_file` set and the referenced file exists relative to the config dir.
 - [ ] Per-bot fir root created and logged into when credentials differ.
 - [ ] Service uses `--agent-dir`, not shell-embedded `FIR_AGENT_DIR`, unless no alternative exists.
 - [ ] Unique loopback port and supervisor unit label/name.
