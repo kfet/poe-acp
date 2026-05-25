@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Debug logging no longer 400s on Poe requests >16 KiB.** `poeproto.Decode` previously fed a 16 KiB-`LimitReader`-truncated buffer to the JSON decoder when debug logging was enabled, so any real Poe `query` carrying a non-trivial `parsed_content` attachment failed to decode and returned 400 — Poe then surfaced this to operators as a `report_error` and the bot stopped responding. The decoder now streams from the full body via `io.TeeReader` into an internal `capWriter` that captures only the first 16 KiB for the log line (suffixed with `...[truncated]` when more bytes streamed past). No per-request cap on what the decoder sees, matching the non-debug path — image / video / large transcript attachments stream through unimpeded. Regression covered by `TestDecode_DebugPath` decoding a 64 KiB body under `kitlog.SetEnabled(true)`.
+
+### Changed
+
+- **Single-provider bots collapse to a flat `Model` dropdown.** `paramctl.Build` now adapts the `parameter_controls` schema to provider count: 0 providers → no model controls (unchanged), exactly 1 provider → a single flat `drop_down` with `parameter_name: "model"` (no Provider picker, no `condition` wrapper), ≥2 providers → cascading Provider → `model_<sanitised-provider>` shape (unchanged). A one-option Provider dropdown is pure noise on bots wired to a single provider (Sakana-only, Anthropic-only, etc.); they now get the minimum-surface UI their operators expect. `router.ParseOptions` already accepts both shapes (bare `model` wins over `provider` + `model_<provider>`), so no router change was needed. `TestBuild_SingleProvider_{CollapsesToBareModel,DefaultsFirstModelWhenUnpinned,DefaultModelOutsideGroupFallsToFirst}` and `TestBuildAndResolveAgree_SingleProvider` pin the collapsed shape; the existing single-provider fixtures in `TestBuild_ProviderParamSanitisation` and `TestBuild_DefaultModelProviderNotInList` were lifted to two providers so the cascading invariants they targeted stay covered.
+
 ## [0.16.0] - 2026-05-23
 
 ### Added
