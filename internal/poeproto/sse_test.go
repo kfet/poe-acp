@@ -65,6 +65,56 @@ func TestDecode_DebugPath(t *testing.T) {
 	if _, err := Decode(errReader{}); err == nil {
 		t.Fatal("expected read error")
 	}
+
+	// Regression: bodies larger than 16 KiB must still decode under
+	// debug logging — earlier the body was truncated by io.LimitReader
+	// before being handed to the JSON decoder, causing 400s on any
+	// real Poe query carrying attachment parsed_content.
+	bigContent := strings.Repeat("x", 64*1024)
+	big := `{"type":"query","query":[{"role":"user","content":"` + bigContent + `"}]}`
+	r2, err := Decode(strings.NewReader(big))
+	if err != nil {
+		t.Fatalf("decode large body: %v", err)
+	}
+	if got := r2.LatestUserText(); len(got) != len(bigContent) {
+		t.Fatalf("content len=%d want=%d", len(got), len(bigContent))
+	}
+}
+
+func TestCapWriter(t *testing.T) {
+	// Under-fill: buffer grows, never truncates.
+	c := &capWriter{max: 10}
+	n, err := c.Write([]byte("hello"))
+	if err != nil || n != 5 {
+		t.Fatalf("write 5: n=%d err=%v", n, err)
+	}
+	if string(c.buf) != "hello" || c.truncated {
+		t.Fatalf("under: buf=%q truncated=%v", c.buf, c.truncated)
+	}
+
+	// Straddle the boundary: keep first 5 more bytes, mark truncated.
+	n, err = c.Write([]byte("world!!!extra"))
+	if err != nil || n != 13 {
+		t.Fatalf("straddle: n=%d err=%v", n, err)
+	}
+	if string(c.buf) != "helloworld" || !c.truncated {
+		t.Fatalf("straddle: buf=%q truncated=%v", c.buf, c.truncated)
+	}
+
+	// Post-full: nothing added, still truncated, n still reports input len.
+	n, err = c.Write([]byte("more"))
+	if err != nil || n != 4 {
+		t.Fatalf("post: n=%d err=%v", n, err)
+	}
+	if string(c.buf) != "helloworld" {
+		t.Fatalf("post: buf=%q", c.buf)
+	}
+
+	// Empty write at full does not flip anything weird.
+	n, err = c.Write(nil)
+	if err != nil || n != 0 {
+		t.Fatalf("empty: n=%d err=%v", n, err)
+	}
 }
 
 // nonFlusher writer to exercise NewSSEWriter error.
