@@ -1,5 +1,10 @@
 # poe-acp
 
+[![CI](https://github.com/kfet/poe-acp/actions/workflows/ci.yml/badge.svg)](https://github.com/kfet/poe-acp/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/kfet/poe-acp.svg)](https://pkg.go.dev/github.com/kfet/poe-acp)
+[![Go Report Card](https://goreportcard.com/badge/github.com/kfet/poe-acp)](https://goreportcard.com/report/github.com/kfet/poe-acp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Poe.com server-bot that drives ACP-compliant agents (default: `fir --mode acp`)
 as a pure ACP client. One binary, no MCP server surface. Each Poe
 `conversation_id` maps 1:1 to an ACP session inside a shared agent process.
