@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Mobile-friendly status line: `dev.poe-acp.status-line/v1` ACP extension.** poe-acp now prepends a compact one-line header — `<provider-emoji> • <mood> • <plan>` — to assistant responses and the live "Thinking…" heartbeat spinner, so users on Poe's mobile / web chat surfaces see fir-style indicators they'd otherwise miss without a TUI. The provider emoji is **relay-owned**, resolved from the model id (`anthropic/...` → 🏛️, `openai/...` → 🌐, `google/...` → ✨, and 10 other slug families; case-insensitive; unknown → segment dropped). Mood and plan are **agent-owned**, opaque strings carried on `session/update._meta["dev.poe-acp.status-line/v1"]` and rendered with a 12-rune length cap each. Empty segments are dropped; if nothing would render, no header is emitted. Capability is exchanged in the `initialize` handshake (`clientCapabilities._meta` / `agentCapabilities._meta`), but rendering does not gate on negotiation — agents that never emit `_meta` still get the provider-emoji-only header for backwards compat. Wire spec lives in `docs/ext/status-line.md`; renderer + slug map in new `internal/statusline` package; router parses `_meta` in `drainProcessChunk`; SSE sink builds the spinner via `statusline.Spinner` and prepends the final header exactly once on the first `text` event of the turn (skipped on `replace_response` / `error` paths since those overwrite the body). Required acp-kit ≥ v0.1.2: adds `client.Config.ClientMeta` (extra `_meta` entries merged into outgoing `clientCapabilities._meta`) and `client.Caps.Extensions` (parsed non-kit entries from `agentCapabilities._meta`). Renderer covered by `internal/statusline/statusline_test.go` (provider mapping, empty-segment drops, rune-aware length cap, unknown providers, spinner frames, meta parsing); sink behaviour by `TestSink_StatusLine*` in `internal/httpsrv/branches_test.go`; router forwarding by `TestRouter_StatusLine*` in `internal/router/router_test.go`. The fir-side emitter that populates `_meta` is tracked separately.
+
 ## [0.16.1] - 2026-05-24
 
 ### Fixed

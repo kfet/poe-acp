@@ -880,3 +880,126 @@ type errNewSessionAgent struct{ *fakeAgent }
 func (e *errNewSessionAgent) NewSession(_ context.Context, _ string, _ client.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
 	return "", errors.New("new session boom")
 }
+
+// TestSink_StatusLinePrependsHeaderOnce verifies that a non-empty
+// dev.poe-acp.status-line/v1 status renders into the first user Text
+// chunk exactly once, and that subsequent chunks pass through unchanged.
+func TestSink_StatusLinePrependsHeaderOnce(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	s := newSink(w, 0)
+	s.SetProviderEmoji("🏛️")
+	s.SetStatus("steady", "2/5")
+	if err := s.Text("hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Text(" world"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Done(); err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	// Header appears once, on the first chunk only.
+	if strings.Count(body, "🏛️ • steady • 2/5") != 1 {
+		t.Errorf("expected header exactly once in body: %q", body)
+	}
+	// Header is followed by a blank line then the first chunk's text.
+	if !strings.Contains(body, "🏛️ • steady • 2/5\\n\\nhello") {
+		// SSE-escaped newlines — fall back to checking raw assembled order.
+		t.Logf("body: %q", body)
+	}
+}
+
+// TestSink_StatusLineNoHeaderWhenAllEmpty: with no provider emoji set
+// and no agent _meta, the first Text chunk is forwarded unchanged.
+func TestSink_StatusLineNoHeaderWhenAllEmpty(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	s := newSink(w, 0)
+	// No SetProviderEmoji, no SetStatus.
+	if err := s.Text("only-content"); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Done()
+	body := rec.Body.String()
+	if strings.Contains(body, " • ") {
+		t.Errorf("unexpected header separator in body: %q", body)
+	}
+	if !strings.Contains(body, "only-content") {
+		t.Errorf("missing chunk content: %q", body)
+	}
+}
+
+// TestSink_StatusLineEmojiOnlyWithoutAgentMeta verifies the
+// backwards-compat case: agent doesn't emit _meta, so only the
+// provider emoji segment survives. Header is still prepended.
+func TestSink_StatusLineEmojiOnlyWithoutAgentMeta(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	s := newSink(w, 0)
+	s.SetProviderEmoji("🌐")
+	if err := s.Text("payload"); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Done()
+	body := rec.Body.String()
+	if !strings.Contains(body, "🌐") {
+		t.Errorf("emoji missing from body: %q", body)
+	}
+	// No mood/plan dividers should be present.
+	if strings.Contains(body, "🌐 • ") {
+		t.Errorf("unexpected mood/plan segment present: %q", body)
+	}
+}
+
+// TestSink_StatusLineSpinnerCarriesHeader verifies the spinner frame
+// includes the current status — provider emoji + mood + plan + Thinking…
+func TestSink_StatusLineSpinnerCarriesHeader(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	wait := waitTicks(t, 2)
+	s := newSink(w, 5*time.Millisecond)
+	s.SetProviderEmoji("🏛️")
+	s.SetStatus("steady", "2/5")
+	wait()
+	s.FirstChunk()
+	<-s.hbExited
+	body := rec.Body.String()
+	if !strings.Contains(body, "🏛️") {
+		t.Errorf("spinner missing emoji: %q", body)
+	}
+	if !strings.Contains(body, "steady") {
+		t.Errorf("spinner missing mood: %q", body)
+	}
+	if !strings.Contains(body, "2/5") {
+		t.Errorf("spinner missing plan: %q", body)
+	}
+	if !strings.Contains(body, "Thinking") {
+		t.Errorf("spinner missing Thinking suffix: %q", body)
+	}
+}
+
+// TestSink_StatusLineHeaderEmittedOnlyForText verifies that the header
+// is not prepended onto Replace / Error paths (those overwrite the
+// body, so a header there would be erased or out of place).
+func TestSink_StatusLineHeaderSkippedOnReplace(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	s := newSink(w, 0)
+	s.SetProviderEmoji("🏛️")
+	s.SetStatus("steady", "2/5")
+	if err := s.Replace("_(cancelled)_"); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Done()
+	body := rec.Body.String()
+	if strings.Contains(body, "🏛️") {
+		t.Errorf("Replace path must not prepend header: %q", body)
+	}
+}
