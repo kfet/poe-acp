@@ -145,6 +145,26 @@ func (f *fakeAgent) emitUpdate(sid acp.SessionId, u acp.SessionUpdate) {
 	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{SessionId: sid, Update: u})
 }
 
+// emitWithMeta sends a session/update carrying an arbitrary _meta map
+// (used to exercise the dev.poe-acp.status-line/v1 extension path).
+func (f *fakeAgent) emitWithMeta(sid acp.SessionId, chunk string, meta map[string]any) {
+	f.mu.Lock()
+	sink := f.sinks[sid]
+	f.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		SessionId: sid,
+		Meta:      meta,
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.TextBlock(chunk),
+			},
+		},
+	})
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -168,6 +188,10 @@ type captureSink struct {
 	replaceText string
 	done        bool
 	firstCalled bool
+	// dev.poe-acp.status-line/v1 — last values seen.
+	providerEmoji string
+	mood          string
+	plan          string
 }
 
 func (s *captureSink) FirstChunk() {
@@ -194,6 +218,16 @@ func (s *captureSink) Error(t, et string) error {
 	return nil
 }
 func (s *captureSink) Done() error { s.mu.Lock(); s.done = true; s.mu.Unlock(); return nil }
+func (s *captureSink) SetProviderEmoji(emoji string) {
+	s.mu.Lock()
+	s.providerEmoji = emoji
+	s.mu.Unlock()
+}
+func (s *captureSink) SetStatus(mood, plan string) {
+	s.mu.Lock()
+	s.mood, s.plan = mood, plan
+	s.mu.Unlock()
+}
 
 func TestRouter_PromptStreamsText(t *testing.T) {
 	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error) {
@@ -1519,6 +1553,8 @@ func (s *eventSink) Text(t string) error {
 func (s *eventSink) Replace(t string) error   { return nil }
 func (s *eventSink) Error(t, et string) error { return nil }
 func (s *eventSink) Done() error              { return nil }
+func (s *eventSink) SetProviderEmoji(string)  {}
+func (s *eventSink) SetStatus(string, string) {}
 
 // simulatedContent replays an event sequence as Poe renders it:
 // Replace("") wipes all prior Text; subsequent Text events append.
@@ -1597,4 +1633,158 @@ func TestRouter_FirstChunkReplaceCannotWipeSubsequentText(t *testing.T) {
 	}
 
 	close(st.drainStop)
+}
+
+// TestRouter_StatusLineMetaForwardedToSink verifies the
+// dev.poe-acp.status-line/v1 _meta on session/update reaches the sink
+// via SetStatus, and that the relay-resolved provider emoji is
+// forwarded via SetProviderEmoji once applyOptions has resolved the
+// model.
+func TestRouter_StatusLineMetaForwardedToSink(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		// Early update with mood only.
+		a.emitWithMeta(sid, "thinking…", map[string]any{
+			"dev.poe-acp.status-line/v1": map[string]any{"mood": "curious"},
+		})
+		// Later update with both mood and plan.
+		a.emitWithMeta(sid, " result", map[string]any{
+			"dev.poe-acp.status-line/v1": map[string]any{"mood": "steady", "plan": "2/5"},
+		})
+		return acp.StopReasonEndTurn, nil
+	})
+	r, err := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &captureSink{}
+	opts := Options{Model: "anthropic/claude-sonnet-4"}
+	if err := r.Prompt(context.Background(), "c-status", "u", []Turn{{Role: "user", Content: "hi"}}, opts, sink); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	// Final SetStatus call wins (later update).
+	if sink.mood != "steady" || sink.plan != "2/5" {
+		t.Errorf("status: mood=%q plan=%q want steady/2/5", sink.mood, sink.plan)
+	}
+	// Provider emoji resolved from anthropic/ prefix.
+	if sink.providerEmoji != "🏛️" {
+		t.Errorf("providerEmoji=%q want 🏛️", sink.providerEmoji)
+	}
+}
+
+// TestRouter_StatusLineMissingMetaLeavesSinkUntouched: agents that
+// don't advertise the extension produce session/updates with no _meta
+// → sink.SetStatus is never called.
+func TestRouter_StatusLineMissingMetaLeavesSinkUntouched(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "plain") // no _meta
+		return acp.StopReasonEndTurn, nil
+	})
+	r, err := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &captureSink{}
+	opts := Options{Model: "openai/gpt-5"}
+	if err := r.Prompt(context.Background(), "c-empty", "u", []Turn{{Role: "user", Content: "hi"}}, opts, sink); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if sink.mood != "" || sink.plan != "" {
+		t.Errorf("expected empty mood/plan, got mood=%q plan=%q", sink.mood, sink.plan)
+	}
+	// Provider emoji still set from the effective model (backwards-compat path).
+	if sink.providerEmoji != "🌐" {
+		t.Errorf("providerEmoji=%q want 🌐", sink.providerEmoji)
+	}
+}
+
+// TestRouter_StatusLineUnknownProviderEmpty: a model id with no '/'
+// (or an unrecognised provider slug) produces an empty providerEmoji
+// — the relay drops the segment in that case.
+func TestRouter_StatusLineUnknownProviderEmpty(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "x")
+		return acp.StopReasonEndTurn, nil
+	})
+	r, err := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &captureSink{}
+	if err := r.Prompt(context.Background(), "c-unk", "u",
+		[]Turn{{Role: "user", Content: "hi"}},
+		Options{Model: "weirdcorp/whatever"}, sink); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if sink.providerEmoji != "" {
+		t.Errorf("unknown provider: got emoji=%q want empty", sink.providerEmoji)
+	}
+}
+
+// TestRouter_StatusLineEmojiSetBeforeOptionErrorText verifies the
+// emoji set on the sink reflects the ACTUALLY-active model, not the
+// requested one, when applyOptions fails. Regression guard: an
+// earlier draft set the emoji AFTER emitting the
+// "_(option not applied)_" Text — which had already triggered the
+// header prepend with the handler-seeded (requested-model) emoji.
+//
+// Setup: a fakeAgent that rejects SetModel. Handler-side seeding is
+// simulated by calling SetProviderEmoji on the sink BEFORE Prompt
+// (mirroring httpsrv's `s.SetProviderEmoji(...)` at sink construction).
+// After the failed applyOptions, the router must overwrite the emoji
+// to match st.applied.Model (which stays empty/unchanged on failure)
+// BEFORE the error text reaches the sink.
+func TestRouter_StatusLineEmojiSetBeforeOptionErrorText(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	agent.setModelErr = stringErr("provider down")
+	r, err := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &recordingEmojiSink{captureSink: &captureSink{}}
+	// Handler-side pre-seed: requested model is anthropic/X → 🏛️.
+	sink.SetProviderEmoji("🏛️")
+	if err := r.Prompt(context.Background(), "c-emoji-order", "u",
+		[]Turn{{Role: "user", Content: "hi"}},
+		Options{Model: "anthropic/claude-sonnet-4"},
+		sink,
+	); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	// applyOptions failed → applied.Model stays "" → providerEmoji
+	// must be reset to "" BEFORE the option-not-applied Text fires.
+	// recordingEmojiSink captures the emoji value at the moment of
+	// each Text call.
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.textEmojiAtCall) == 0 {
+		t.Fatal("expected at least one Text call")
+	}
+	first := sink.textEmojiAtCall[0]
+	if first != "" {
+		t.Errorf("first Text emoji = %q; want %q (applied.Model is empty, emoji must be cleared first)", first, "")
+	}
+}
+
+// recordingEmojiSink snapshots the providerEmoji at the moment each
+// Text call lands, so tests can assert ordering between
+// SetProviderEmoji and Text on the same sink.
+type recordingEmojiSink struct {
+	*captureSink
+	textEmojiAtCall []string
+}
+
+func (s *recordingEmojiSink) Text(t string) error {
+	s.mu.Lock()
+	s.textEmojiAtCall = append(s.textEmojiAtCall, s.providerEmoji)
+	s.mu.Unlock()
+	return s.captureSink.Text(t)
 }

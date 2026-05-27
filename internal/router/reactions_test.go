@@ -355,7 +355,9 @@ func (s *orderingSink) Error(t, _ string) error {
 	s.send("error", t)
 	return nil
 }
-func (s *orderingSink) Done() error { s.send("done", ""); return nil }
+func (s *orderingSink) Done() error              { s.send("done", ""); return nil }
+func (s *orderingSink) SetProviderEmoji(string)  {}
+func (s *orderingSink) SetStatus(string, string) {}
 func (s *orderingSink) send(kind, text string) {
 	s.events <- orderingEvent{kind, text}
 }
@@ -609,5 +611,31 @@ func TestPrompt_CtxCancelPlusRunnerErr(t *testing.T) {
 	err := <-d
 	if err == nil || err.Error() == context.Canceled.Error() {
 		t.Fatalf("want runner err (not ctx.Err), got %v", err)
+	}
+}
+
+// TestRouter_ReactionStatusMetaIgnored: reaction turns use a
+// discardSink. Any dev.poe-acp.status-line/v1 _meta the agent emits
+// during a reaction is silently absorbed (the sink no-ops both
+// SetProviderEmoji and SetStatus). This exercises discardSink's
+// status-line stubs.
+func TestRouter_ReactionStatusMetaIgnored(t *testing.T) {
+	done := make(chan struct{})
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		// Reaction prompt fires; emit a status-line _meta update.
+		a.emitWithMeta(sid, "ack", map[string]any{
+			"dev.poe-acp.status-line/v1": map[string]any{"mood": "steady", "plan": "1/1"},
+		})
+		close(done)
+		return acp.StopReasonEndTurn, nil
+	})
+	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err := r.ReportReaction(context.Background(), "conv-rxn-status", "u", "m-1", "👍", "added"); err != nil {
+		t.Fatalf("ReportReaction: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reaction never executed")
 	}
 }

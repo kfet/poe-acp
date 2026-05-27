@@ -23,6 +23,7 @@ import (
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
+	"github.com/kfet/poe-acp/internal/statusline"
 )
 
 // version is set via -ldflags at build time.
@@ -147,12 +148,21 @@ func main() {
 		Cwd:     stateDir, // agent proc cwd; per-session cwd is passed per NewSession
 		Env:     env,
 		Policy:  pol,
+		ClientMeta: map[string]any{
+			// Advertise support for the dev.poe-acp.status-line/v1
+			// extension so agents that care can emit mood/plan in
+			// session/update._meta. See docs/ext/status-line.md.
+			statusline.ExtensionID: map[string]any{"version": 1},
+		},
 	})
 	if err != nil {
 		log.Fatalf("start agent: %v", err)
 	}
 	defer agent.Close()
 	log.Printf("agent started: %s", *agentCmd)
+	if _, ok := agent.Caps().Extensions[statusline.ExtensionID]; ok {
+		log.Printf("agent advertises %s", statusline.ExtensionID)
+	}
 
 	// Probe the agent for its available models so we can populate the
 	// model dropdown in the parameter_controls. Best-effort: if the

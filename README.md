@@ -203,6 +203,15 @@ the config file.
   during slow first-token scenarios (fir cold start is ~50s with a
   full extension set). The heartbeat stops on the first real agent
   chunk.
+- **Status line.** poe-acp prepends a compact one-line header to
+  assistant responses and the live "Thinking…" spinner, surfacing the
+  provider emoji plus the agent's current mood / plan progress so
+  mobile users see fir-style indicators they'd otherwise miss without
+  a TUI. The provider emoji is resolved by the relay from the model
+  id; mood / plan are agent-supplied via the
+  `dev.poe-acp.status-line/v1` ACP extension on `session/update._meta`.
+  Agents that don't emit `_meta` still get a provider-emoji-only
+  header. See [`docs/ext/status-line.md`](docs/ext/status-line.md).
 - **Cancel propagation.** If the Poe HTTP client disconnects
   mid-turn, the relay issues ACP `session/cancel` so fir stops burning
   tokens. Fir's `StopReasonCancelled` is translated to an SSE
