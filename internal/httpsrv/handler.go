@@ -14,6 +14,7 @@ import (
 	"github.com/kfet/poe-acp/internal/authbroker"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
+	"github.com/kfet/poe-acp/internal/statusline"
 )
 
 // Config configures a Handler.
@@ -166,12 +167,18 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	}
 
 	// Sink: SSE writer + heartbeat coordination + disconnect → cancel.
-	// The heartbeat always animates a `> _Thinking._` spinner; the
-	// orderedWriter clears it the moment the first real chunk lands,
-	// regardless of hide_thinking. (hide_thinking is a router-level
-	// concern: it suppresses agent_thought_chunk content from the
-	// stream, not the spinner.)
+	// The heartbeat animates a status-line spinner (provider emoji +
+	// mood + plan + Thinking…) that the orderedWriter clears the
+	// moment the first real chunk lands. (hide_thinking is a
+	// router-level concern: it suppresses agent_thought_chunk content
+	// from the stream, not the spinner.)
 	s := newSink(sse, h.cfg.HeartbeatInterval)
+	// Pre-seed the provider emoji from the handler-resolved model so
+	// tick #1 of the spinner already carries it. The router re-runs
+	// the resolution after applyOptions returns (success or failure)
+	// so the header tracks the actually-applied model, not the
+	// requested one. Unknown providers return "" → segment dropped.
+	s.SetProviderEmoji(statusline.ProviderEmojiForModel(opts.Model))
 	defer s.stop()
 
 	// Cancel propagation: if the HTTP client goes away while a prompt
@@ -338,6 +345,17 @@ type sink struct {
 	// wait on this to read the SSE body race-free; production callers
 	// don't observe it. Pre-closed when no heartbeat goroutine is spawned.
 	hbExited chan struct{}
+
+	// statusMu guards the dev.poe-acp.status-line/v1 state below.
+	// Kept separate from orderedWriter.mu because the heartbeat
+	// goroutine reads it on every tick, the router's drain goroutine
+	// writes it on every session/update with the extension's _meta,
+	// and the chunk path reads it once on header-prepend — three
+	// independent threads of access that have no need to interlock
+	// with the SSE append-gate.
+	statusMu      sync.Mutex
+	status        statusline.Status
+	headerEmitted bool // true once a final-header prepend has been considered
 }
 
 func newSink(w *poeproto.SSEWriter, hb time.Duration) *sink {
@@ -386,7 +404,12 @@ func (s *sink) heartbeat(every time.Duration) {
 			// subsequent headings, lists or fenced blocks emitted by
 			// the agent. Replace + spinner doubles as user-visible
 			// liveness AND keepalive, so one path covers both.
-			gateOpen, _ := s.o.hbReplace("> _Thinking" + dots + "_")
+			//
+			// Spinner frame now carries the dev.poe-acp.status-line/v1
+			// header (provider emoji, mood, plan) so mobile users see
+			// fir-style indicators they'd miss without a TUI.
+			frame := statusline.Spinner(s.snapshotStatus(), dots)
+			gateOpen, _ := s.o.hbReplace(frame)
 			if !gateOpen {
 				// A user write has landed (or the stream is closed):
 				// any further tick would be a wasted mutex acquire.
@@ -411,10 +434,60 @@ func (s *sink) stop() {
 // from orderedWriter, not from this call.
 func (s *sink) FirstChunk() { s.stop() }
 
-func (s *sink) Text(t string) error      { return s.o.userText(t) }
+func (s *sink) Text(t string) error      { return s.o.userText(s.maybePrependHeader(t)) }
 func (s *sink) Replace(t string) error   { return s.o.userReplace(t) }
 func (s *sink) Error(t, et string) error { s.stop(); return s.o.userError(t, et) }
 func (s *sink) Done() error              { s.stop(); return s.o.userDone() }
+
+// SetProviderEmoji records the relay-resolved provider emoji for the
+// active turn. Router calls this once after applyOptions resolves the
+// effective model. Empty string means the provider is unknown and the
+// segment will be dropped by the renderer.
+func (s *sink) SetProviderEmoji(emoji string) {
+	s.statusMu.Lock()
+	s.status.ProviderEmoji = emoji
+	s.statusMu.Unlock()
+}
+
+// SetStatus records the agent-supplied mood/plan labels from the
+// latest session/update._meta carrying dev.poe-acp.status-line/v1.
+// Both fields are already trimmed and length-capped by the parser.
+// May be called many times per turn; the renderer keeps the latest.
+func (s *sink) SetStatus(mood, plan string) {
+	s.statusMu.Lock()
+	s.status.Mood = mood
+	s.status.Plan = plan
+	s.statusMu.Unlock()
+}
+
+// snapshotStatus returns a value copy of the current status line state
+// for the heartbeat / header renderer.
+func (s *sink) snapshotStatus() statusline.Status {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.status
+}
+
+// maybePrependHeader injects the final-message status header in front
+// of the first user-visible text chunk, exactly once. Subsequent
+// chunks pass through unchanged. If the rendered header is empty
+// (unknown provider + no agent _meta), nothing is prepended. Replace /
+// Error / Done paths intentionally do NOT prepend: they overwrite or
+// terminate the body, so a header there would be erased or out of
+// place.
+func (s *sink) maybePrependHeader(t string) string {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	if s.headerEmitted {
+		return t
+	}
+	s.headerEmitted = true
+	h := statusline.Header(s.status)
+	if h == "" {
+		return t
+	}
+	return h + "\n\n" + t
+}
 
 // handleAuth runs an auth-flow turn end-to-end on the SSE stream. Always
 // emits a single text payload + done, regardless of broker outcome.

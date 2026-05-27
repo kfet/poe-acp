@@ -27,6 +27,8 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
+
+	"github.com/kfet/poe-acp/internal/statusline"
 )
 
 // ChunkSink is the interface the HTTP/SSE layer implements to receive
@@ -40,6 +42,18 @@ type ChunkSink interface {
 	// receives a non-empty update from the agent. Used by the HTTP layer
 	// to stop the "still thinking…" heartbeat.
 	FirstChunk()
+	// SetProviderEmoji conveys the relay-resolved provider emoji for
+	// the current turn (dev.poe-acp.status-line/v1). Empty string means
+	// the provider is unknown and the segment should be dropped.
+	// Called at most once per turn, before any chunks land.
+	SetProviderEmoji(emoji string)
+	// SetStatus conveys the latest agent-supplied mood/plan labels
+	// (dev.poe-acp.status-line/v1). Called whenever a session/update
+	// carries the extension's _meta entry. Both fields are opaque
+	// strings already trimmed and length-capped by the parser; an
+	// empty string means "drop this segment". May be called multiple
+	// times per turn — the renderer keeps the latest values.
+	SetStatus(mood, plan string)
 }
 
 // Turn is one message in a Poe query, decoupled from the wire type so
@@ -524,6 +538,12 @@ func (s *sessionState) drainChunks() {
 // drainProcessChunk handles one chunk notification. Called only from
 // drainChunks so the pointer arguments need no synchronisation.
 func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chunkMode *chunkKind) {
+	// Extract dev.poe-acp.status-line/v1 _meta before any early returns:
+	// the extension can ride along on ANY session/update kind (e.g.
+	// plan, tool_call), not just AgentMessageChunk/AgentThoughtChunk.
+	if mood, plan, ok := statusline.ParseMeta(n.Meta); ok {
+		td.sink.SetStatus(mood, plan)
+	}
 	u := n.Update
 	var (
 		kind chunkKind
@@ -705,8 +725,10 @@ func (d discardSink) Error(text, et string) error {
 	kitlog.Debugf("reaction sink (conv=%s) error[%s]: %s", d.convID, et, text)
 	return nil
 }
-func (d discardSink) Done() error { return nil }
-func (d discardSink) FirstChunk() {}
+func (d discardSink) Done() error              { return nil }
+func (d discardSink) FirstChunk()              {}
+func (d discardSink) SetProviderEmoji(string)  {}
+func (d discardSink) SetStatus(string, string) {}
 
 // runTurns is the single goroutine that owns Agent.Prompt for one
 // session. It pops turnReqs from the queue in FIFO order and runs
@@ -744,9 +766,18 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	sink := req.sink
 
 	if req.kind == turnUser {
-		if err := r.applyOptions(ctx, st, req.opts); err != nil {
+		applyErr := r.applyOptions(ctx, st, req.opts)
+		// Set the provider emoji once st.applied.Model is settled,
+		// whether or not the swap succeeded — on failure applied.Model
+		// keeps its previous value (often "" on a fresh session),
+		// which must be reflected BEFORE the "_(option not applied)_"
+		// Text below triggers the header prepend. The relay-owned
+		// emoji is the source of truth here; reactions (turnReaction)
+		// use discardSink so this is a no-op for them.
+		sink.SetProviderEmoji(statusline.ProviderEmojiForModel(st.applied.Model))
+		if applyErr != nil {
 			sink.FirstChunk()
-			_ = sink.Text(fmt.Sprintf("_(option not applied: %v)_\n\n", err))
+			_ = sink.Text(fmt.Sprintf("_(option not applied: %v)_\n\n", applyErr))
 		}
 	}
 
