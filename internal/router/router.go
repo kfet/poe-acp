@@ -43,12 +43,12 @@ type ChunkSink interface {
 	// to stop the "still thinking…" heartbeat.
 	FirstChunk()
 	// SetProviderEmoji conveys the relay-resolved provider emoji for
-	// the current turn (dev.poe-acp.status-line/v1). Empty string means
+	// the current turn (dev.acp-kit.status-line/v1). Empty string means
 	// the provider is unknown and the segment should be dropped.
 	// Called at most once per turn, before any chunks land.
 	SetProviderEmoji(emoji string)
 	// SetStatus conveys the latest agent-supplied mood/plan labels
-	// (dev.poe-acp.status-line/v1). Called whenever a session/update
+	// (dev.acp-kit.status-line/v1). Called whenever a session/update
 	// carries the extension's _meta entry. Both fields are opaque
 	// strings already trimmed and length-capped by the parser; an
 	// empty string means "drop this segment". May be called multiple
@@ -538,7 +538,7 @@ func (s *sessionState) drainChunks() {
 // drainProcessChunk handles one chunk notification. Called only from
 // drainChunks so the pointer arguments need no synchronisation.
 func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chunkMode *chunkKind) {
-	// Extract dev.poe-acp.status-line/v1 _meta before any early returns:
+	// Extract dev.acp-kit.status-line/v1 _meta before any early returns:
 	// the extension can ride along on ANY session/update kind (e.g.
 	// plan, tool_call), not just AgentMessageChunk/AgentThoughtChunk.
 	if mood, plan, ok := statusline.ParseMeta(n.Meta); ok {
