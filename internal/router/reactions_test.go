@@ -615,7 +615,7 @@ func TestPrompt_CtxCancelPlusRunnerErr(t *testing.T) {
 }
 
 // TestRouter_ReactionStatusMetaIgnored: reaction turns use a
-// discardSink. Any dev.poe-acp.status-line/v1 _meta the agent emits
+// discardSink. Any dev.acp-kit.status-line/v1 _meta the agent emits
 // during a reaction is silently absorbed (the sink no-ops both
 // SetProviderEmoji and SetStatus). This exercises discardSink's
 // status-line stubs.
@@ -624,7 +624,7 @@ func TestRouter_ReactionStatusMetaIgnored(t *testing.T) {
 	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
 		// Reaction prompt fires; emit a status-line _meta update.
 		a.emitWithMeta(sid, "ack", map[string]any{
-			"dev.poe-acp.status-line/v1": map[string]any{"mood": "steady", "plan": "1/1"},
+			"dev.acp-kit.status-line/v1": map[string]any{"mood": "steady", "plan": "1/1"},
 		})
 		close(done)
 		return acp.StopReasonEndTurn, nil

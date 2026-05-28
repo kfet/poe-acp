@@ -168,7 +168,7 @@ func TestParseMeta(t *testing.T) {
 func TestExtensionIDStable(t *testing.T) {
 	// The wire key is part of the protocol — a typo would silently
 	// break interop with fir / other emitters. Pin it here.
-	if ExtensionID != "dev.poe-acp.status-line/v1" {
+	if ExtensionID != "dev.acp-kit.status-line/v1" {
 		t.Fatalf("ExtensionID = %q", ExtensionID)
 	}
 }

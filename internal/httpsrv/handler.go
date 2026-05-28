@@ -346,7 +346,7 @@ type sink struct {
 	// don't observe it. Pre-closed when no heartbeat goroutine is spawned.
 	hbExited chan struct{}
 
-	// statusMu guards the dev.poe-acp.status-line/v1 state below.
+	// statusMu guards the dev.acp-kit.status-line/v1 state below.
 	// Kept separate from orderedWriter.mu because the heartbeat
 	// goroutine reads it on every tick, the router's drain goroutine
 	// writes it on every session/update with the extension's _meta,
@@ -405,7 +405,7 @@ func (s *sink) heartbeat(every time.Duration) {
 			// the agent. Replace + spinner doubles as user-visible
 			// liveness AND keepalive, so one path covers both.
 			//
-			// Spinner frame now carries the dev.poe-acp.status-line/v1
+			// Spinner frame now carries the dev.acp-kit.status-line/v1
 			// header (provider emoji, mood, plan) so mobile users see
 			// fir-style indicators they'd miss without a TUI.
 			frame := statusline.Spinner(s.snapshotStatus(), dots)
@@ -450,7 +450,7 @@ func (s *sink) SetProviderEmoji(emoji string) {
 }
 
 // SetStatus records the agent-supplied mood/plan labels from the
-// latest session/update._meta carrying dev.poe-acp.status-line/v1.
+// latest session/update._meta carrying dev.acp-kit.status-line/v1.
 // Both fields are already trimmed and length-capped by the parser.
 // May be called many times per turn; the renderer keeps the latest.
 func (s *sink) SetStatus(mood, plan string) {

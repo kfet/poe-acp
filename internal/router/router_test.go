@@ -146,7 +146,7 @@ func (f *fakeAgent) emitUpdate(sid acp.SessionId, u acp.SessionUpdate) {
 }
 
 // emitWithMeta sends a session/update carrying an arbitrary _meta map
-// (used to exercise the dev.poe-acp.status-line/v1 extension path).
+// (used to exercise the dev.acp-kit.status-line/v1 extension path).
 func (f *fakeAgent) emitWithMeta(sid acp.SessionId, chunk string, meta map[string]any) {
 	f.mu.Lock()
 	sink := f.sinks[sid]
@@ -188,7 +188,7 @@ type captureSink struct {
 	replaceText string
 	done        bool
 	firstCalled bool
-	// dev.poe-acp.status-line/v1 — last values seen.
+	// dev.acp-kit.status-line/v1 — last values seen.
 	providerEmoji string
 	mood          string
 	plan          string
@@ -1636,7 +1636,7 @@ func TestRouter_FirstChunkReplaceCannotWipeSubsequentText(t *testing.T) {
 }
 
 // TestRouter_StatusLineMetaForwardedToSink verifies the
-// dev.poe-acp.status-line/v1 _meta on session/update reaches the sink
+// dev.acp-kit.status-line/v1 _meta on session/update reaches the sink
 // via SetStatus, and that the relay-resolved provider emoji is
 // forwarded via SetProviderEmoji once applyOptions has resolved the
 // model.
@@ -1644,11 +1644,11 @@ func TestRouter_StatusLineMetaForwardedToSink(t *testing.T) {
 	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
 		// Early update with mood only.
 		a.emitWithMeta(sid, "thinking…", map[string]any{
-			"dev.poe-acp.status-line/v1": map[string]any{"mood": "curious"},
+			"dev.acp-kit.status-line/v1": map[string]any{"mood": "curious"},
 		})
 		// Later update with both mood and plan.
 		a.emitWithMeta(sid, " result", map[string]any{
-			"dev.poe-acp.status-line/v1": map[string]any{"mood": "steady", "plan": "2/5"},
+			"dev.acp-kit.status-line/v1": map[string]any{"mood": "steady", "plan": "2/5"},
 		})
 		return acp.StopReasonEndTurn, nil
 	})

@@ -882,7 +882,7 @@ func (e *errNewSessionAgent) NewSession(_ context.Context, _ string, _ client.Se
 }
 
 // TestSink_StatusLinePrependsHeaderOnce verifies that a non-empty
-// dev.poe-acp.status-line/v1 status renders into the first user Text
+// dev.acp-kit.status-line/v1 status renders into the first user Text
 // chunk exactly once, and that subsequent chunks pass through unchanged.
 func TestSink_StatusLinePrependsHeaderOnce(t *testing.T) {
 	rec := httptest.NewRecorder()

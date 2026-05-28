@@ -1,4 +1,4 @@
-# ACP Extension — `dev.poe-acp.status-line/v1`
+# ACP Extension — `dev.acp-kit.status-line/v1`
 
 A compact one-line status header that poe-acp prepends to assistant
 responses and to the live "Thinking…" indicator, so users on mobile
@@ -54,7 +54,7 @@ Both sides advertise support via their `_meta` map in the ACP
 ```json
 {
   "_meta": {
-    "dev.poe-acp.status-line/v1": { "version": 1 }
+    "dev.acp-kit.status-line/v1": { "version": 1 }
   }
 }
 ```
@@ -64,7 +64,7 @@ Both sides advertise support via their `_meta` map in the ACP
 ```json
 {
   "_meta": {
-    "dev.poe-acp.status-line/v1": { "version": 1 }
+    "dev.acp-kit.status-line/v1": { "version": 1 }
   }
 }
 ```
@@ -91,7 +91,7 @@ an `AgentMessageChunk`, an `AgentThoughtChunk`, or a plan update.
   "params": {
     "sessionId": "sess-…",
     "_meta": {
-      "dev.poe-acp.status-line/v1": {
+      "dev.acp-kit.status-line/v1": {
         "mood": "steady",
         "plan": "2/5"
       }

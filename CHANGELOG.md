@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Status-line extension id renamed to `dev.acp-kit.status-line/v1`** and the wire-contract pieces (id, length cap, `Status`, provider→emoji map, `ParseMeta`, `Segments`, `CapRunes`) now live in `github.com/kfet/acp-kit/statusline` so `slack-acp` and any future relay render the same agent identically. `internal/statusline` retains only the poe-acp-specific renderers (`Header`, `Spinner`) and re-exports the kit symbols under their existing names so call sites are unchanged. Requires acp-kit ≥ commit `2525b43` (pseudo-version `v0.1.4-0.20260528015243-2525b4370ac5`). The old `dev.poe-acp.status-line/v1` id is dead — agents emitting under the old key will no longer be picked up.
+
 ## [0.17.0] - 2026-05-26
 
 ### Added

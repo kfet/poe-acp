@@ -209,7 +209,7 @@ the config file.
   mobile users see fir-style indicators they'd otherwise miss without
   a TUI. The provider emoji is resolved by the relay from the model
   id; mood / plan are agent-supplied via the
-  `dev.poe-acp.status-line/v1` ACP extension on `session/update._meta`.
+  `dev.acp-kit.status-line/v1` ACP extension on `session/update._meta`.
   Agents that don't emit `_meta` still get a provider-emoji-only
   header. See [`docs/ext/status-line.md`](docs/ext/status-line.md).
 - **Cancel propagation.** If the Poe HTTP client disconnects
