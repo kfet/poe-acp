@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-05-27
+
+### Changed
+
+- **Bumped `github.com/kfet/acp-kit` to tagged `v0.1.4`.** Replaces the pseudo-version `v0.1.4-0.20260528015243-2525b4370ac5` that 0.17.1 pinned while the status-line wire-contract migration was still on an untagged commit. No behaviour change — `v0.1.4` is the released tag of that same tree.
+
 ## [0.17.1] - 2026-05-27
 
 ### Changed
