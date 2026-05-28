@@ -149,7 +149,7 @@ func main() {
 		Env:     env,
 		Policy:  pol,
 		ClientMeta: map[string]any{
-			// Advertise support for the dev.poe-acp.status-line/v1
+			// Advertise support for the dev.acp-kit.status-line/v1
 			// extension so agents that care can emit mood/plan in
 			// session/update._meta. See docs/ext/status-line.md.
 			statusline.ExtensionID: map[string]any{"version": 1},
