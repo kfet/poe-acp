@@ -14,9 +14,6 @@ syntax or other side channels.
 
 ## Non-goals
 
-- **Permission policy.** Stays a server-side flag (`--permission`).
-  Letting Poe users flip permissions per-conversation is a security
-  footgun for a server bot — out of scope.
 - **Per-turn model-list refresh.** v1 probes the agent once at relay
   startup and caches the result for the relay's lifetime. Auth changes
   during runtime are not reflected until restart.

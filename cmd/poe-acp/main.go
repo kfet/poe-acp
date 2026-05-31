@@ -36,7 +36,6 @@ func main() {
 		agentDirFlag = flag.String("agent-dir", "", "FIR_AGENT_DIR passed to the child agent (default: inherit)")
 		stateDirFlag = flag.String("state-dir", "", "Per-conv state dir root (default: $XDG_STATE_HOME/poe-acp)")
 		configFlag   = flag.String("config", "", "Path to JSON config (default: $XDG_CONFIG_HOME/poe-acp/config.json)")
-		permission   = flag.String("permission", "allow-all", "Permission policy: allow-all|read-only|deny-all")
 		accessKeyEnv = flag.String("access-key-env", "POEACP_ACCESS_KEY", "Env var holding the Poe bearer secret")
 		poePath      = flag.String("poe-path", "/poe", "HTTP path for the Poe protocol endpoint")
 		introMsg     = flag.String("introduction", "poe-acp: ACP-backed bot.", "Poe introduction message")
@@ -68,11 +67,6 @@ func main() {
 	log.Printf("poe-acp %s starting", version)
 	if kitlog.Enabled() {
 		log.Printf("debug logging: ON")
-	}
-
-	pol, err := parsePermission(*permission)
-	if err != nil {
-		log.Fatalf("policy: %v", err)
 	}
 
 	secret := os.Getenv(*accessKeyEnv)
@@ -147,7 +141,6 @@ func main() {
 		Command: argv,
 		Cwd:     stateDir, // agent proc cwd; per-session cwd is passed per NewSession
 		Env:     env,
-		Policy:  pol,
 		ClientMeta: map[string]any{
 			// Advertise support for the dev.acp-kit.status-line/v1
 			// extension so agents that care can emit mood/plan in

@@ -1,7 +1,7 @@
 // Package config loads the relay's JSON config file. The file holds
 // "what kind of bot is this" knobs (defaults shown to users, the bot's
 // Poe name, agent profile selection) — separate from ops-level CLI
-// flags (listen address, state dir, permission policy).
+// flags (listen address, state dir).
 //
 // Schema is intentionally small. Unknown keys fail loudly at boot
 // (DisallowUnknownFields) so typos are caught immediately rather than
@@ -82,7 +82,7 @@ type Agent struct {
 // Load reads and parses a config file. A non-existent path returns an
 // empty Config and ok=false — callers should treat that as "no config,
 // use defaults" rather than an error. Any other failure (parse error,
-// permission denied, unknown field) is returned verbatim.
+// access denied, unknown field) is returned verbatim.
 func Load(path string) (cfg Config, ok bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {

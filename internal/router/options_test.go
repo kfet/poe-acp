@@ -61,7 +61,7 @@ func TestParseOptions(t *testing.T) {
 		},
 		{
 			"unknown key dropped, default survives for untouched fields",
-			map[string]any{"model": "x", "permission": "deny-all"},
+			map[string]any{"model": "x", "bogus_key": "whatever"},
 			Options{Thinking: "medium"},
 			Options{Model: "x", Thinking: "medium"},
 		},

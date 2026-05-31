@@ -30,8 +30,7 @@ go build -o ./bin/poe-acp ./cmd/poe-acp
 export POEACP_ACCESS_KEY=mysecret        # match the key in your Poe bot dashboard
 ./bin/poe-acp \
   --http-addr :8080 \
-  --agent-cmd "fir --mode acp" \
-  --permission allow-all
+  --agent-cmd "fir --mode acp"
 
 # smoke test (separate shell)
 POEACP_ACCESS_KEY=mysecret ./test/smoke.sh
@@ -133,7 +132,6 @@ follow-up; a template will land alongside the first production deploy.
 --agent-dir            FIR_AGENT_DIR passed to the child (default inherit)
 --state-dir            Per-conv state root (default $XDG_STATE_HOME/poe-acp)
 --config               JSON config path (default $XDG_CONFIG_HOME/poe-acp/config.json)
---permission           allow-all|read-only|deny-all (default allow-all)
 --access-key-env       Env var holding the Poe bearer secret (default POEACP_ACCESS_KEY)
 --introduction         Poe introduction message
 --session-ttl          Idle TTL for a conv (default 2h)
@@ -188,7 +186,7 @@ Unknown keys fail loudly at boot (DisallowUnknownFields). See
 `docs/config.example.json`.
 
 CLI flags only cover ops concerns (listen address, state dir,
-permission policy). Anything that's "what kind of bot is this" goes in
+access-key env). Anything that's "what kind of bot is this" goes in
 the config file.
 
 ## Behaviour notes
@@ -224,9 +222,6 @@ the config file.
   The relay snapshots the latest list and returns the names in the
   Poe `settings.commands` response so they show up in the Poe UI
   autocomplete menu.
-- **Permission.** `allow-all` (default), `read-only`, or `deny-all`
-  via `--permission`. The relay answers `session/request_permission`
-  locally; no prompt to the Poe user in v1.
 - **Attachments → agent.** Each Poe attachment on the latest user
   turn is downloaded to
   `$STATE/convs/<conv_id>/.poe-attachments/<message_id>/<name>` and
@@ -284,7 +279,7 @@ context and is fine.
 
 ```
 poe-acp/
-  cmd/poe-acp/             entry point + flag wiring + --permission adapter
+  cmd/poe-acp/             entry point + flag wiring
   docs/                    design doc + Poe protocol reference
   internal/authbroker/     interactive OAuth login over Poe chat
   internal/config/         JSON config loader (DisallowUnknownFields)
@@ -296,5 +291,5 @@ poe-acp/
   test/smoke.sh            black-box SSE smoke test
 ```
 
-Shared ACP primitives (agent process wrapper, debug log, permission
-helpers, skill loader) live in `github.com/kfet/acp-kit`.
+Shared ACP primitives (agent process wrapper, debug log, skill loader)
+live in `github.com/kfet/acp-kit`.

@@ -16,7 +16,6 @@ Deploy `poe-acp` to a remote host fronted by `tailscale funnel`. The relay liste
 4. **Funnel layout**:
    - **(a) Dedicated** — funnel `127.0.0.1:8080` on `/`. Relay uses default `--poe-path /poe`. Public URL: `https://<host>.<tailnet>.ts.net/poe`.
    - **(b) Prefix** — funnel `127.0.0.1:<port>` on `/<prefix>`. Funnel strips `/<prefix>` before forwarding, so set `--poe-path /<prefix>` to match. Default loopback port: **8347** (phone-keypad "8FIR": F=3, I=4, R=7). Any free port works; 8347 is our convention when the agent is `fir`.
-5. **Permission policy** — `allow-all` (default), `read-only`, `deny-all`.
 
 ## Steps
 
