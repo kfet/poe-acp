@@ -19,7 +19,7 @@ One Poe bot = one `poe-acp` process with its own Poe access key, config dir, loo
 - **Model defaults**: `defaults.model`, `defaults.thinking`, `defaults.hide_thinking`.
 - **Credential boundary**: shared fir creds or a per-bot fir root such as `~/.config/fir-sakana`.
 - **Agent command**: default `fir --mode acp`.
-- **Introduction** and permission policy if non-default.
+- **Introduction**.
 
 ## Layout
 

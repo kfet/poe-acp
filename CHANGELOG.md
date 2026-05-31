@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Removed the `--permission` CLI flag and the per-conversation `permission` parameter path; poe-acp no longer exposes a relay-owned permission policy.
+
 ## [0.17.2] - 2026-05-27
 
 ### Changed
@@ -38,7 +42,7 @@
 
 ### Changed
 
-- **Migrated shared ACP relay primitives to `acp-kit`.** The relay now imports `github.com/kfet/acp-kit/{client,log,skills}` v0.1.0 in place of the old `internal/{acpclient,debuglog,policy}` packages, deleting ~2.7k lines of locally maintained code. The same primitives back `slack-acp`, so wire-level bugs and capability-parsing tweaks get fixed once. Behaviour preserved across the swap: same initialize handshake, same `_meta` parsing, same set of permission policies (`allow-all` / `read-only` / `deny-all` — `read-only`'s heuristic is unchanged), same `POEACP_DEBUG=1` env activation, same `--debug` flag, same auth-method shape, same model-probe semantics. `internal/skills` is now a thin wrapper that owns the embedded `bundle` FS and the `"poe-acp"` tmp-dir prefix; everything else lives in `acp-kit/skills`.
+- **Migrated shared ACP relay primitives to `acp-kit`.** The relay now imports `github.com/kfet/acp-kit/{client,log,skills}` v0.1.0 in place of the old `internal/{acpclient,debuglog,policy}` packages, deleting ~2.7k lines of locally maintained code. The same primitives back `slack-acp`, so wire-level bugs and capability-parsing tweaks get fixed once. Behaviour preserved across the swap: same initialize handshake, same `_meta` parsing, same `POEACP_DEBUG=1` env activation, same `--debug` flag, same auth-method shape, same model-probe semantics. `internal/skills` is now a thin wrapper that owns the embedded `bundle` FS and the `"poe-acp"` tmp-dir prefix; everything else lives in `acp-kit/skills`.
 - **`custom-bots` and `update` skills: prescribe `launchctl kickstart -k` for routine restarts.** Both bundled skill bodies now explicitly call out that config-only or binary-only changes should restart the existing launchd job via `launchctl kickstart -k gui/$UID/<label>` rather than scheduling a delayed reloader or running `bootout` + `bootstrap` (which has an async registration race that can leave the service stopped). `custom-bots` also grows an "Update an existing bot" section pointing operators at `~/.config/poe-acp/<bot>/config.json` as the relay source of truth for model/thinking/default changes.
 
 ### Fixed

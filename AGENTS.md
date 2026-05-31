@@ -19,7 +19,7 @@ See [docs/poe-acp-design.md](docs/poe-acp-design.md) for the full design, goals,
 ## Repository layout
 
 ```
-cmd/poe-acp/             entry point: flags + server wiring + --permission policy adapter
+cmd/poe-acp/             entry point: flags + server wiring
 docs/                    design doc + Poe protocol reference
 internal/authbroker/     interactive OAuth login over Poe chat
 internal/config/         JSON config loader (DisallowUnknownFields)
@@ -31,20 +31,19 @@ internal/skills/         embedded bundle + acp-kit/skills wrapper
 test/smoke.sh            black-box SSE smoke test
 ```
 
-Shared ACP primitives — agent process wrapper, debug log, permission helpers, skill loader/formatter — live in `github.com/kfet/acp-kit` (sibling repo, MIT). The relay imports `acp-kit/client`, `acp-kit/log`, and `acp-kit/skills`.
+Shared ACP primitives — agent process wrapper, debug log, skill loader/formatter — live in `github.com/kfet/acp-kit` (sibling repo, MIT). The relay imports `acp-kit/client`, `acp-kit/log`, and `acp-kit/skills`.
 
-The relay owns `conv_id → session` lifecycle. Agents are spawned via `--agent-cmd` (default `fir --mode acp`). Keep the split clean: HTTP + Poe framing in `httpsrv`/`poeproto`, agent + ACP in `acp-kit/client`, session lifecycle in `router`, permission policy adapter in `cmd/poe-acp` (delegating to `acp-kit/client`'s `AllowAllPermissions`/`ReadOnlyPermissions`/`DenyAllPermissions`).
+The relay owns `conv_id → session` lifecycle. Agents are spawned via `--agent-cmd` (default `fir --mode acp`). Keep the split clean: HTTP + Poe framing in `httpsrv`/`poeproto`, agent + ACP in `acp-kit/client`, session lifecycle in `router`.
 
 ## Think before you specialise
 
 Before implementing a fix or feature inside a specific package, stop and ask: **is this actually unique to this layer, or does it belong elsewhere?**
 
-For every non-trivial change, first ask the cross-repo question: **does this belong in `acp-kit`?** acp-kit is the home for primitives both Poe and Slack relays need — ACP client wrapper, debug log, permission helpers, skill loader/formatter, attachments, state, sysprompt composition. If the change is about how a relay talks to an ACP agent (handshake, capabilities, permission decisions, model probing, skill catalog shape), it almost certainly belongs in acp-kit so `slack-acp` and `poe-acp` get the fix once. If the change is about a specific surface protocol (Poe SSE framing, `parameter_controls`, Poe attachment shapes), it stays here. When in doubt, write the patch against acp-kit first and import it; reverse-migrating later is harder than starting shared.
+For every non-trivial change, first ask the cross-repo question: **does this belong in `acp-kit`?** acp-kit is the home for primitives both Poe and Slack relays need — ACP client wrapper, debug log, skill loader/formatter, attachments, state, sysprompt composition. If the change is about how a relay talks to an ACP agent (handshake, capabilities, model probing, skill catalog shape), it almost certainly belongs in acp-kit so `slack-acp` and `poe-acp` get the fix once. If the change is about a specific surface protocol (Poe SSE framing, `parameter_controls`, Poe attachment shapes), it stays here. When in doubt, write the patch against acp-kit first and import it; reverse-migrating later is harder than starting shared.
 
 - Poe protocol concerns (event shape, SSE framing, `parameter_controls`) → `poeproto` / `paramctl` (Poe-specific, do not push to acp-kit).
 - Agent-process concerns (spawn, stdio, ACP framing) → `acp-kit/client`.
 - Session lifecycle (cwd, GC, heartbeat, cancel) → `router` + `httpsrv`.
-- Policy (tool permission decisions) → `acp-kit/client` (`AllowAll`/`ReadOnly`/`DenyAll`); adapter in `cmd/poe-acp/permission.go`.
 - Operator-facing config (defaults, bot identity) → `config` + `paramctl.Resolve`.
 - Schema building (parameter_controls) → `paramctl.Build`.
 - When fixing a bug, check whether the same bug exists in sibling code paths — both within this repo *and* in `slack-acp` / `acp-kit`. Fix it at the root, not per-site.
