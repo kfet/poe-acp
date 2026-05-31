@@ -711,7 +711,7 @@ func TestSweepAttachments_DebugLogPaths(t *testing.T) {
 	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// File whose os.Remove will fail: make the parent dir read-only AFTER
+	// File whose os.Remove will fail: make the parent dir non-writable AFTER
 	// writing the file, so chmod restoration in cleanup needs care.
 	old := filepath.Join(convDir, "old.png")
 	if err := os.WriteFile(old, []byte("d"), 0o644); err != nil {

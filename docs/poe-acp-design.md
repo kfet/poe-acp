@@ -52,8 +52,6 @@ So: the relay is a pure **ACP client** that drives ACP-compliant agents
   fronting reverse proxy or `tailscale funnel` on the host handles TLS.
   Documented as a future option (see Future section).
 - **No remote ACP transport.** The relay spawns agents locally over stdio.
-- **No permission round-trip to the Poe user.** `session/request_permission`
-  is handled by a local policy (allow-all / read-only / deny-all).
 
 ## fir multi-session facts (as of wt/poe-acp base)
 
@@ -122,15 +120,12 @@ right thing with zero modifications.
 - Lives in `github.com/kfet/acp-kit` (MIT) so it can be shared with
   sister relays such as `slack-acp`.
 - `AgentProc` = exec.Cmd + `acp.Connection`; implements
-  `acp.Client` (SessionUpdate fan-out, RequestPermission → policy,
-  ReadTextFile / WriteTextFile, terminal no-ops).
+  `acp.Client` (SessionUpdate fan-out, ReadTextFile / WriteTextFile,
+  terminal no-ops).
 - `Start` launches child, calls `Initialize`.
 - `NewSession(ctx, cwd, sink)` creates ACP session, registers sink.
 - `Prompt(ctx, sid, blocks) → StopReason`.
 - `Cancel(ctx, sid)`.
-- Built-in permission policies: `AllowAllPermissions`,
-  `ReadOnlyPermissions`, `DenyAllPermissions`. Selected per-process via
-  the relay's `--permission` flag (resolved in `cmd/poe-acp`).
 
 ### `internal/router` — conv_id router
 
@@ -192,13 +187,6 @@ never points at a swept file.
 turns' files are part of the agent's session history. Prior-turn
 attachments are *not* re-downloaded on resume.
 
-### Permission policy
-
-`allow-all` / `read-only` / `deny-all`, selected via `--permission`.
-Implementations live in `acp-kit/client` (`AllowAllPermissions`,
-`ReadOnlyPermissions`, `DenyAllPermissions`); the flag-to-policy
-resolver is `cmd/poe-acp/permission.go`.
-
 ### `internal/httpsrv` — HTTP layer
 
 - `/poe` POST (bearer-gated): dispatches `query` / `settings` / `report_*`
@@ -214,7 +202,6 @@ Flags:
 --agent-cmd            "fir --mode acp"
 --agent-dir            $FIR_AGENT_DIR   (env override for the spawned fir)
 --state-dir            $XDG_STATE_HOME/poe-acp
---permission           allow-all|read-only|deny-all
 --access-key-env       POEACP_ACCESS_KEY
 --session-ttl          2h
 --heartbeat-interval   10s
@@ -299,9 +286,6 @@ under `/poe-acp` needs its Poe URL set to `/poe-acp/poe` (not bare
   resilience and isolation. Only if one process becomes a bottleneck.
 - **Remote ACP transport.** "ACP over ws" so agents can live on a
   different host than the relay.
-- **Permission round-trip to the Poe user.** Turn
-  `session/request_permission` into an interstitial Poe message with
-  an inline allow/deny; requires a pending-continuation mechanism.
 - **Attachments.** Implemented. See _Components → router → Attachments_
   for the file-on-disk + additive-inline design. Out of scope for v1:
   per-conv disk quota (operator can use a shorter `AttachmentTTL` or
