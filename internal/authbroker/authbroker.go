@@ -2,11 +2,17 @@
 // _meta.auth.interactive two-call OAuth protocol.
 //
 // Each Poe conversation can have at most one in-flight login. The first
-// /login turn calls fir's authenticate to produce a URL; the next user
-// turn from the same conversation submits the pasted redirect URL. The
-// broker holds no goroutines — the actual blocking on the user input
-// happens inside fir, parked across turns. The relay only remembers
-// which conversation has a pending login for which method.
+// login command (e.g. "!login anthropic") calls fir's authenticate to
+// produce a URL; the next user turn from the same conversation submits
+// the pasted redirect URL. The broker holds no goroutines — the actual
+// blocking on the user input happens inside fir, parked across turns.
+// The relay only remembers which conversation has a pending login for
+// which method.
+//
+// Commands accept the sigils "/", "!", and "." but user-facing prose
+// suggests "!" (DisplaySigil): Poe's chat client intercepts "/"-prefixed
+// messages as native slash commands and rejects unknown ones before they
+// reach the bot, so "/login" is unreliable; "!"/"." pass straight through.
 package authbroker
 
 import (
@@ -58,13 +64,42 @@ func (b *Broker) HasPending(convID string) bool {
 	return ok
 }
 
-// IsLoginCommand reports whether text is a /login or /logout command.
-// Trims leading whitespace so users can paste the command after a thought.
+// commandSigils are the leading characters that introduce a relay
+// command. Poe's chat client intercepts "/"-prefixed messages as native
+// slash commands and rejects unknown ones before they ever reach the
+// bot, so a bare "/login" usually never arrives (and is flaky when it
+// does — see docs). "!" and "." pass straight through untouched. We
+// accept all three on input and echo DisplaySigil in user-facing prose.
+const commandSigils = "/!."
+
+// DisplaySigil is the command prefix shown in user-facing messages. It
+// is deliberately not "/" so the suggested commands survive Poe's
+// client-side slash-command interceptor.
+const DisplaySigil = "!"
+
+// stripSigil removes a single leading command sigil from t (which must
+// already be TrimSpace'd) and reports whether one was present.
+func stripSigil(t string) (body string, ok bool) {
+	if t == "" {
+		return t, false
+	}
+	if strings.IndexByte(commandSigils, t[0]) >= 0 {
+		return t[1:], true
+	}
+	return t, false
+}
+
+// IsLoginCommand reports whether text is a login/logins/cancel-login
+// command under any accepted sigil (/, !, .). Trims leading whitespace
+// so users can paste the command after a thought.
 func IsLoginCommand(text string) bool {
-	t := strings.TrimSpace(text)
-	return t == "/login" || strings.HasPrefix(t, "/login ") ||
-		t == "/logins" || // alias for "list"
-		t == "/cancel-login"
+	body, ok := stripSigil(strings.TrimSpace(text))
+	if !ok {
+		return false
+	}
+	return body == "login" || strings.HasPrefix(body, "login ") ||
+		body == "logins" || // alias for "list"
+		body == "cancel-login"
 }
 
 // Outcome is what the HTTP handler should render to the user. Exactly
@@ -90,31 +125,33 @@ type Outcome struct {
 // forwarded to the normal prompt path.
 func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, error) {
 	t := strings.TrimSpace(text)
+	body, hasSigil := stripSigil(t)
 
 	// Pasted redirect URL for an in-flight login wins over command parsing.
 	if entry, ok := b.peek(convID); ok {
-		if t == "/cancel-login" {
+		if hasSigil && body == "cancel-login" {
 			return b.cancel(ctx, convID, entry)
 		}
 		return b.complete(ctx, convID, entry, t)
 	}
 
-	if !IsLoginCommand(t) {
+	if !hasSigil {
 		return nil, nil
 	}
 
-	if t == "/cancel-login" {
+	switch {
+	case body == "cancel-login":
 		return &Outcome{Text: "No login in progress."}, nil
-	}
-	if t == "/login" || t == "/logins" {
+	case body == "login" || body == "logins":
 		return b.list(), nil
+	case strings.HasPrefix(body, "login "):
+		// body has a provider arg: "login <provider>".
+		rest := strings.TrimSpace(strings.TrimPrefix(body, "login"))
+		return b.start(ctx, convID, rest)
+	default:
+		// Sigil-prefixed but not a login command — not ours.
+		return nil, nil
 	}
-	// At this point t starts with "/login " (IsLoginCommand verified that
-	// or one of the early-returned forms). After TrimSpace at the top,
-	// "/login " with no provider would have collapsed to "/login" and hit
-	// the listing branch above, so rest is non-empty here.
-	rest := strings.TrimSpace(strings.TrimPrefix(t, "/login"))
-	return b.start(ctx, convID, rest)
 }
 
 // list renders the available login methods.
@@ -128,7 +165,7 @@ func (b *Broker) list() *Outcome {
 	sb.WriteString("Available login methods:\n\n")
 	for _, m := range loginable {
 		shortID := strings.TrimPrefix(m.ID, "oauth-")
-		fmt.Fprintf(&sb, "- `/login %s` — %s", shortID, m.Name)
+		fmt.Fprintf(&sb, "- `%slogin %s` — %s", DisplaySigil, shortID, m.Name)
 		if m.Description != "" {
 			fmt.Fprintf(&sb, " (%s)", m.Description)
 		}
@@ -148,7 +185,7 @@ func (b *Broker) start(ctx context.Context, convID, provider string) (*Outcome, 
 	b.mu.Lock()
 	if existing, ok := b.pending[convID]; ok {
 		b.mu.Unlock()
-		return &Outcome{Text: fmt.Sprintf("A login is already in progress (%s). Paste the redirect URL or send `/cancel-login`.", existing.methodID)}, nil
+		return &Outcome{Text: fmt.Sprintf("A login is already in progress (%s). Paste the redirect URL or send `%scancel-login`.", existing.methodID, DisplaySigil)}, nil
 	}
 	b.mu.Unlock()
 
@@ -184,7 +221,7 @@ func (b *Broker) start(ctx context.Context, convID, provider string) (*Outcome, 
 // complete submits the pasted redirect URL.
 func (b *Broker) complete(ctx context.Context, convID string, entry pendingEntry, redirect string) (*Outcome, error) {
 	if redirect == "" {
-		return &Outcome{Text: "Empty paste — send the redirect URL or `/cancel-login`."}, nil
+		return &Outcome{Text: fmt.Sprintf("Empty paste — send the redirect URL or `%scancel-login`.", DisplaySigil)}, nil
 	}
 	res, err := b.a.Authenticate(ctx, entry.methodID, entry.authID, redirect, false)
 	// Always drop the pending entry — a failed paste means the user must
@@ -193,7 +230,7 @@ func (b *Broker) complete(ctx context.Context, convID string, entry pendingEntry
 	delete(b.pending, convID)
 	b.mu.Unlock()
 	if err != nil {
-		return &Outcome{Text: fmt.Sprintf("❌ Login failed: %v\n\nSend `/login %s` to try again.", err, strings.TrimPrefix(entry.methodID, "oauth-"))}, nil
+		return &Outcome{Text: fmt.Sprintf("❌ Login failed: %v\n\nSend `%slogin %s` to try again.", err, DisplaySigil, strings.TrimPrefix(entry.methodID, "oauth-"))}, nil
 	}
 	switch res.State {
 	case "ok", "":

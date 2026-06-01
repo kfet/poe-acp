@@ -288,6 +288,53 @@ func TestResolveMethodID_FullID(t *testing.T) {
 	}
 }
 
+// TestBangSigil_EndToEnd verifies the "!" sigil (which survives Poe's
+// slash-command interceptor) drives the same flow as "/", and that
+// user-facing suggestions use the bang form.
+func TestBangSigil_EndToEnd(t *testing.T) {
+	f := newFake()
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x/auth"}
+	b := New(f)
+
+	// List via "." sigil must enumerate methods using the "!" display sigil.
+	list, _ := b.Handle(context.Background(), "c1", ".login")
+	if !strings.Contains(list.Text, "!login anthropic") {
+		t.Fatalf("list should suggest the bang sigil, got: %q", list.Text)
+	}
+	if strings.Contains(list.Text, "/login ") {
+		t.Fatalf("list should not suggest the slash sigil, got: %q", list.Text)
+	}
+
+	// Start via "!" sigil.
+	out, err := b.Handle(context.Background(), "c1", "!login anthropic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Text, "https://x/auth") || !b.HasPending("c1") {
+		t.Fatalf("bang-sigil login did not start: %q pending=%v", out.Text, b.HasPending("c1"))
+	}
+
+	// Cancel via "!" sigil.
+	cancel, _ := b.Handle(context.Background(), "c1", "!cancel-login")
+	if !strings.Contains(cancel.Text, "cancelled") && !strings.Contains(cancel.Text, "Login cancelled") {
+		t.Fatalf("bang-sigil cancel failed: %q", cancel.Text)
+	}
+	if b.HasPending("c1") {
+		t.Fatal("expected no pending login after cancel")
+	}
+}
+
+// TestHandle_SigilNonLogin covers the defensive path: a sigil-prefixed
+// message that isn't a login command, with no pending login, is not ours
+// (returns nil, nil) so it falls through to the normal prompt path.
+func TestHandle_SigilNonLogin(t *testing.T) {
+	b := New(newFake())
+	out, err := b.Handle(context.Background(), "c1", "!foo bar")
+	if err != nil || out != nil {
+		t.Fatalf("expected (nil, nil) for non-login sigil command, got out=%v err=%v", out, err)
+	}
+}
+
 func TestIsLoginCommand(t *testing.T) {
 	cases := map[string]bool{
 		"/login":              true,
@@ -295,10 +342,18 @@ func TestIsLoginCommand(t *testing.T) {
 		"/login anthropic":    true,
 		"/logins":             true,
 		"/cancel-login":       true,
+		"!login":              true,
+		"!login anthropic":    true,
+		".login":              true,
+		".logins":             true,
+		"!cancel-login":       true,
+		"  !login anthropic ": true,
 		"login":               false,
 		"hello":               false,
 		"/loginanthropic":     false,
+		"!loginanthropic":     false,
 		"please /login later": false,
+		"!logout":             false,
 	}
 	for in, want := range cases {
 		if got := IsLoginCommand(in); got != want {
