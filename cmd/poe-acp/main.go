@@ -180,12 +180,14 @@ func main() {
 		defaults.Model, defaults.Thinking, defaults.HideThinking)
 
 	// Router
+	broker := authbroker.New(agent)
 	rtr, err := router.New(router.Config{
 		Agent:                agent,
 		StateDir:             stateDir,
 		SessionTTL:           *ttl,
 		Defaults:             defaults,
 		SystemPromptProvider: systemPromptProvider(cfgPath),
+		AuthErrorHint:        broker.OfferLogin,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
@@ -194,7 +196,6 @@ func main() {
 	defer stopGC()
 
 	// HTTP
-	broker := authbroker.New(agent)
 	if methods := agent.AuthMethods(); len(methods) > 0 {
 		ids := make([]string, 0, len(methods))
 		for _, m := range methods {

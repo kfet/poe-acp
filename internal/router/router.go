@@ -158,6 +158,28 @@ type Config struct {
 	// to be no shorter than SessionTTL with a warn log so that a live
 	// resumed session never points at a swept file.
 	AttachmentTTL time.Duration
+	// AuthErrorHint, when set, is called if a prompt fails with the
+	// agent's "Authentication required" error (JSON-RPC code -32000).
+	// Its return value is streamed to the user as ordinary assistant
+	// text in place of the raw error, so a bot with no connected
+	// provider can offer login instructions instead of a cryptic
+	// failure. Called outside Router.mu; must be safe for concurrent
+	// use. If nil, or if it returns "", the raw error is surfaced.
+	AuthErrorHint func() string
+}
+
+// authRequiredCode is the JSON-RPC error code fir returns from
+// session/prompt when no provider is authenticated ("Authentication
+// required"; data.error names the remedy). Matched structurally so the
+// relay can swap the raw error for friendly login guidance.
+const authRequiredCode = -32000
+
+// isAuthRequired reports whether err is the agent's "Authentication
+// required" prompt error.
+func isAuthRequired(err error) bool {
+	var re *acp.RequestError
+	return errors.As(err, &re) && re.Code == authRequiredCode &&
+		re.Message == "Authentication required"
 }
 
 // Router is the conv_id → session map.
@@ -810,6 +832,14 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	<-endDone
 
 	if err != nil {
+		if isAuthRequired(err) && r.cfg.AuthErrorHint != nil {
+			if hint := r.cfg.AuthErrorHint(); hint != "" {
+				_ = sink.Text(hint)
+				_ = sink.Done()
+				req.err = err
+				return
+			}
+		}
 		_ = sink.Error(fmt.Sprintf("acp prompt: %v", err), "user_caused_error")
 		_ = sink.Done()
 		req.err = err
