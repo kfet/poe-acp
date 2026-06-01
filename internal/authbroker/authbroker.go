@@ -154,6 +154,31 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 	}
 }
 
+// OfferLogin renders the onboarding message shown when the agent reports
+// that no usable provider is connected (an "Authentication required"
+// prompt error). It lists the loginable providers using the Poe-safe
+// DisplaySigil. Safe for concurrent use. Returned text is empty-safe:
+// it always yields actionable guidance, even with no OAuth methods.
+func (b *Broker) OfferLogin() string {
+	loginable := filterLoginable(b.a.AuthMethods())
+	if len(loginable) == 0 {
+		return "⚠️ This bot has no LLM provider connected, and the agent " +
+			"advertises no interactive login methods. Set a provider API key " +
+			"in the agent's environment (e.g. `ANTHROPIC_API_KEY`) and restart."
+	}
+	var sb strings.Builder
+	sb.WriteString("⚠️ No LLM provider is connected yet, so I can't answer. " +
+		"Connect one by sending one of these (the leading `" + DisplaySigil +
+		"` matters — Poe swallows a leading `/`):\n\n")
+	for _, m := range loginable {
+		shortID := strings.TrimPrefix(m.ID, "oauth-")
+		fmt.Fprintf(&sb, "- `%slogin %s` — %s\n", DisplaySigil, shortID, m.Name)
+	}
+	sb.WriteString("\nThen open the URL I reply with, authenticate, and paste " +
+		"the page's URL back here to finish.")
+	return sb.String()
+}
+
 // list renders the available login methods.
 func (b *Broker) list() *Outcome {
 	methods := b.a.AuthMethods()

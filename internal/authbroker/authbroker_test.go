@@ -335,6 +335,23 @@ func TestHandle_SigilNonLogin(t *testing.T) {
 	}
 }
 
+// TestOfferLogin lists loginable providers with the Poe-safe sigil and
+// degrades gracefully when the agent advertises none.
+func TestOfferLogin(t *testing.T) {
+	got := New(newFake()).OfferLogin()
+	if !strings.Contains(got, "!login anthropic") || !strings.Contains(got, "!login github-copilot") {
+		t.Fatalf("offer missing loginable providers: %q", got)
+	}
+	if strings.Contains(got, "env-openai") || strings.Contains(got, "/login ") {
+		t.Fatalf("offer leaked env method or slash sigil: %q", got)
+	}
+
+	none := New(&fakeAuth{}).OfferLogin()
+	if !strings.Contains(none, "API key") {
+		t.Fatalf("no-methods offer should suggest an env API key, got %q", none)
+	}
+}
+
 func TestIsLoginCommand(t *testing.T) {
 	cases := map[string]bool{
 		"/login":              true,
