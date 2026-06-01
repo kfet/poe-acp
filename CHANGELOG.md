@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **Login commands now accept the `!` and `.` sigils (and still `/`).** Poe's chat client intercepts `/`-prefixed messages as native slash commands and rejects unknown ones before they reach the bot, so `/login` usually never arrived (and was flaky/first-message-only when it did). The auth broker now recognises `!login`, `.login`, `!cancel-login`, etc., and **user-facing prose suggests the `!` form** (`DisplaySigil`) which passes straight through Poe untouched. `/login` remains accepted for anyone already in the habit. This unblocks the existing OAuth relay (`internal/authbroker`), whose only entry point was the swallowed slash command. No new auth machinery — just a reachable doorbell.
 - Removed the `--permission` CLI flag and the per-conversation `permission` parameter path; poe-acp no longer exposes a relay-owned permission policy.
 
 ## [0.17.2] - 2026-05-27
