@@ -33,9 +33,9 @@ type Config struct {
 	// request to populate SettingsResponse.ParameterControls. If nil,
 	// Settings.ParameterControls is used as-is.
 	ParameterControlsProvider func() *poeproto.ParameterControls
-	// AuthBroker, if set, intercepts /login commands and pasted redirect
-	// URLs from in-flight logins before they reach the router. Optional;
-	// nil disables interactive auth.
+	// AuthBroker, if set, intercepts login commands (sigils /, !, .) and
+	// pasted redirect URLs from in-flight logins before they reach the
+	// router. Optional; nil disables interactive auth.
 	AuthBroker AuthBroker
 }
 
@@ -135,9 +135,9 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		turns = append(turns, t)
 	}
 
-	// Auth broker intercept: /login commands or pasted redirect URLs for
-	// an in-flight login are handled out-of-band, never reaching the
-	// router.
+	// Auth broker intercept: login commands (any accepted sigil) or
+	// pasted redirect URLs for an in-flight login are handled out-of-band,
+	// never reaching the router.
 	if h.cfg.AuthBroker != nil {
 		latest := latestUserTurn(turns)
 		if latest != "" && (h.cfg.AuthBroker.HasPending(req.ConversationID) || authbroker.IsLoginCommand(latest)) {
