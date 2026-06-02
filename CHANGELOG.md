@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-06-02
+
 ### Changed
 
 - **No-provider prompts now offer login instead of a cryptic error.** When the agent rejects a prompt with "Authentication required" (JSON-RPC `-32000` — e.g. a freshly deployed bot with no connected provider), the relay no longer surfaces the raw `acp prompt: ...` error. Instead it streams a friendly onboarding message listing the loginable providers as `!login <provider>` commands (via the new `authbroker.Broker.OfferLogin`, wired through `router.Config.AuthErrorHint`). Detection is structural (`errors.As` on `*acp.RequestError`, code `-32000` + message), not string-scraping. The hook lives on the *prompt* path rather than gating at session start on purpose: `session/new` does expose model availability (fir omits the `models` field when no provider is connected), but that list is cached at session creation and login is handled out-of-band, so it goes stale right after the user authenticates and would loop the offer. The prompt error reflects live auth state, self-heals the moment login succeeds, and (verified) costs no tokens — fir rejects before any model call, and the result renders as ordinary assistant text, not an error.
