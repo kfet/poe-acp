@@ -99,6 +99,9 @@ type Agent interface {
 	// Models returns the agent's last-seen available models and the
 	// current model id. Empty until a session has been created.
 	Models() (models []client.ModelInfo, currentID string)
+	// AvailableCommands returns the agent's advertised slash-command
+	// catalog (snapshotted from session/update). Empty until advertised.
+	AvailableCommands() []client.CommandInfo
 }
 
 // Options is the per-prompt set of user-selected parameter values
@@ -1451,9 +1454,15 @@ func (r *Router) Cancel(ctx context.Context, convID string) error {
 }
 
 // AvailableModels returns the agent's available models and current id.
-// Satisfies authbroker.Controller.
+// Satisfies command.Controller.
 func (r *Router) AvailableModels() (models []client.ModelInfo, currentID string) {
 	return r.cfg.Agent.Models()
+}
+
+// AgentCommands returns the agent's advertised command catalog.
+// Satisfies command.Controller.
+func (r *Router) AgentCommands() []client.CommandInfo {
+	return r.cfg.Agent.AvailableCommands()
 }
 
 // SessionStatus is a race-free snapshot of a conversation's relay state.
@@ -1469,7 +1478,7 @@ type SessionStatus struct {
 // StatusFor returns a snapshot for convID. It deliberately does not read
 // the session's goroutine-confined applied options; it reports the
 // configured default, the sticky override, and live session presence.
-// Satisfies authbroker.Controller.
+// Satisfies command.Controller.
 func (r *Router) StatusFor(convID string) SessionStatus {
 	if convID == "" {
 		convID = "default"
@@ -1495,7 +1504,7 @@ func (r *Router) StatusFor(convID string) SessionStatus {
 
 // SetModelOverride validates modelID against the agent's available models
 // and records it as the sticky model for convID. It takes effect on the
-// next prompt turn. Satisfies authbroker.Controller.
+// next prompt turn. Satisfies command.Controller.
 func (r *Router) SetModelOverride(convID, modelID string) error {
 	if convID == "" {
 		convID = "default"
@@ -1522,7 +1531,7 @@ func (r *Router) SetModelOverride(convID, modelID string) error {
 // ResetSession drops the conversation's live agent session so the next
 // turn starts fresh (cleared context). The sticky model override is
 // preserved. Returns ErrSessionBusy if a reply is in flight. Satisfies
-// authbroker.Controller.
+// command.Controller.
 func (r *Router) ResetSession(convID string) error {
 	if convID == "" {
 		convID = "default"

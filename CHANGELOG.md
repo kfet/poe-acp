@@ -4,13 +4,19 @@
 
 ### Added
 
+- **`!reload` (and an allowlisted agent-command passthrough).** Commands the agent advertises over ACP (`availableCommands`) can now be invoked from chat: `!reload` → the relay forwards `/reload` through the normal prompt path and the agent executes it and streams the result. Generic mechanism, gated by a curated allowlist (`reload`, `compact`, `session`, `changelog`) intersected with what the agent actually advertises — anything else stays literal user text. `!help` lists the available agent commands dynamically. Backed by acp-kit's new `AgentProc.AvailableCommands()` catalog (snapshotted from `availableCommandsUpdate`), surfaced via `router.AgentCommands()` and `command.Broker.Passthrough`.
 - **Phase-1 session commands: `!status`, `!models`, `!model`, `!new`** (plus `!help`, now dynamic). These map to standard ACP primitives so they work for any ACP agent, and target mobile users for whom the Poe Options panel is awkward:
   - `!status` / `!whoami` — current (effective) model, thinking level, available-model count, live-session presence. Race-free: reads the configured default + sticky override + session presence, never the goroutine-confined per-turn applied options.
   - `!models [filter]` — list available models (from `session/new.models`), optional substring filter, current model marked, capped at 40 per message.
   - `!model <id>` — set a **sticky per-conversation model override** (validated against the agent's model list) that survives Poe's per-turn parameter; applies on the next prompt. `!model` with no arg shows the current model.
   - `!new` / `!reset` — drop the conversation's live ACP session so the next turn starts fresh (cleared context); model override kept. Returns a friendly message if a reply is mid-flight (`ErrSessionBusy`).
-  - Wiring: `authbroker.Controller` (implemented by `*router.Router`, injected via `SetController`) exposes `AvailableModels`/`StatusFor`/`SetModelOverride`/`ResetSession`; the router gained a per-conv `overrides` map overlaid in `Prompt`, plus `router.SessionStatus` and `ErrSessionBusy`. `authbroker.IsCommand` now also gates the session verbs. (The `authbroker` package now covers the whole relay command surface, not just auth — a rename to `command` is a sensible follow-up.)
-- **`!help` command** lists the relay commands the bot understands. Handled by the auth broker under any accepted sigil (`!`/`.`/`/`); stateless, so it works even mid-login without disturbing a pending flow. The HTTP handler's broker-intercept gate now keys on the new `authbroker.IsCommand` instead of `IsLoginCommand`.
+  - Wiring: `command.Controller` (implemented by `*router.Router`, injected via `SetController`) exposes `AvailableModels`/`StatusFor`/`SetModelOverride`/`ResetSession`/`AgentCommands`; the router gained a per-conv `overrides` map overlaid in `Prompt`, plus `router.SessionStatus` and `ErrSessionBusy`. `command.IsCommand` now also gates the session verbs.
+- **`!help` command** lists the relay commands the bot understands. Handled under any accepted sigil (`!`/`.`/`/`); stateless, so it works even mid-login without disturbing a pending flow. The HTTP handler's command-intercept gate now keys on `command.IsCommand` instead of `IsLoginCommand`.
+
+### Changed
+
+- **Renamed `internal/authbroker` → `internal/command`** — the package now spans the whole relay chat-command surface (login + `!help`/`!status`/`!models`/`!model`/`!new` + agent passthrough), not just auth. The `httpsrv` config field `AuthBroker` → `Commands` and its interface `AuthBroker` → `CommandHandler` (gaining `Passthrough`). Behaviour unchanged.
+- Bumped `github.com/kfet/acp-kit` v0.1.4 → **v0.2.2** for `AgentProc.AvailableCommands()`.
 
 ## [0.17.3] - 2026-06-02
 

@@ -66,7 +66,8 @@ func (f *fakeAgent) SetModel(_ context.Context, _ acp.SessionId, _ string) error
 func (f *fakeAgent) SetConfigOption(_ context.Context, _ acp.SessionId, _, _ string) error {
 	return nil
 }
-func (f *fakeAgent) Models() ([]client.ModelInfo, string) { return nil, "" }
+func (f *fakeAgent) Models() ([]client.ModelInfo, string)    { return nil, "" }
+func (f *fakeAgent) AvailableCommands() []client.CommandInfo { return nil }
 
 func TestHandler_Query(t *testing.T) {
 	rtr, err := router.New(router.Config{

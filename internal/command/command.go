@@ -1,5 +1,7 @@
-// Package authbroker bridges Poe's turn-based chat into fir's
-// _meta.auth.interactive two-call OAuth protocol.
+// Package command implements the relay's chat-command surface: it
+// brokers interactive OAuth login (bridging Poe turns into fir's
+// _meta.auth.interactive two-call protocol) and the session-control
+// commands (!status, !models, !model, !new, !help).
 //
 // Each Poe conversation can have at most one in-flight login. The first
 // login command (e.g. "!login anthropic") calls fir's authenticate to
@@ -13,7 +15,7 @@
 // suggests "!" (DisplaySigil): Poe's chat client intercepts "/"-prefixed
 // messages as native slash commands and rejects unknown ones before they
 // reach the bot, so "/login" is unreliable; "!"/"." pass straight through.
-package authbroker
+package command
 
 import (
 	"context"
@@ -37,13 +39,26 @@ type Authenticator interface {
 // Controller is the per-conversation session-control surface used by the
 // non-auth commands (!status, !models, !model, !new). *router.Router
 // satisfies it. Optional: if nil, those commands report unavailable.
-// (router never imports authbroker — the dependency edge is one-way:
-// authbroker → router.)
+// (router never imports command — the dependency edge is one-way:
+// command → router.)
 type Controller interface {
 	AvailableModels() (models []client.ModelInfo, currentID string)
 	SetModelOverride(convID, modelID string) error
 	ResetSession(convID string) error
 	StatusFor(convID string) router.SessionStatus
+	AgentCommands() []client.CommandInfo
+}
+
+// passthroughAllow is the curated set of agent-advertised commands the
+// relay is willing to forward as chat commands (`!reload` → `/reload`).
+// Kept deliberately small and safe: read-only or non-destructive,
+// process-scoped operations. Commands outside this set never reach the
+// agent via the command surface (the user's literal text still does).
+var passthroughAllow = map[string]bool{
+	"reload":    true,
+	"compact":   true,
+	"session":   true,
+	"changelog": true,
 }
 
 // Broker tracks per-conversation pending logins.
@@ -59,6 +74,54 @@ type Broker struct {
 // !status/!models/!model/!new. Call once at startup, after construction,
 // to break the broker↔router construction cycle. Safe before any turns.
 func (b *Broker) SetController(c Controller) { b.ctrl = c }
+
+// Passthrough decides whether text is an allowlisted agent command and,
+// if so, returns the prompt text to forward to the agent (e.g. "!reload"
+// → "/reload"). ok=false means the turn is not a passthrough command and
+// should be handled normally. The command must be both allowlisted and
+// actually advertised by the agent. Requires a wired Controller.
+func (b *Broker) Passthrough(text string) (rewritten string, ok bool) {
+	if b.ctrl == nil {
+		return "", false
+	}
+	body, has := stripSigil(strings.TrimSpace(text))
+	if !has || body == "" {
+		return "", false
+	}
+	name := body
+	if i := strings.IndexByte(body, ' '); i >= 0 {
+		name = body[:i]
+	}
+	if !passthroughAllow[name] || !b.agentHasCommand(name) {
+		return "", false
+	}
+	return "/" + body, true
+}
+
+// agentHasCommand reports whether the agent currently advertises name.
+func (b *Broker) agentHasCommand(name string) bool {
+	for _, c := range b.ctrl.AgentCommands() {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// passthroughCommands returns the allowlisted commands the agent
+// currently advertises, for display in !help.
+func (b *Broker) passthroughCommands() []client.CommandInfo {
+	if b.ctrl == nil {
+		return nil
+	}
+	var out []client.CommandInfo
+	for _, c := range b.ctrl.AgentCommands() {
+		if passthroughAllow[c.Name] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 // pendingEntry is the per-conversation in-flight login state.
 type pendingEntry struct {
@@ -261,6 +324,16 @@ func (b *Broker) help() *Outcome {
 	sb.WriteString("- `" + s + "login` — list providers you can connect\n")
 	sb.WriteString("- `" + s + "login <provider>` — connect a provider (e.g. `" + s + "login anthropic`)\n")
 	sb.WriteString("- `" + s + "cancel-login` — abort a login in progress\n")
+	if pt := b.passthroughCommands(); len(pt) > 0 {
+		sb.WriteString("\nAgent commands:\n\n")
+		for _, c := range pt {
+			fmt.Fprintf(&sb, "- `%s%s`", s, c.Name)
+			if c.Description != "" {
+				fmt.Fprintf(&sb, " — %s", c.Description)
+			}
+			sb.WriteString("\n")
+		}
+	}
 	return &Outcome{Text: sb.String()}
 }
 
