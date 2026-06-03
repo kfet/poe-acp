@@ -197,7 +197,7 @@ Two ways to initiate an upgrade:
    `internal/poeproto/poeproto.go`). Useful for automated update
    flows that don't have shell access.
 
-A user-facing `/reexec` chat command (authbroker-style) is **not**
+A user-facing `!reexec` chat command (command-broker-style) is **not**
 recommended — it'd let any Poe user trigger relay restarts.
 
 ### Failure modes & ops

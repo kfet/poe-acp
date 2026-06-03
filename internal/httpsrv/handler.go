@@ -11,7 +11,7 @@ import (
 	"time"
 
 	kitlog "github.com/kfet/acp-kit/log"
-	"github.com/kfet/poe-acp/internal/authbroker"
+	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 	"github.com/kfet/poe-acp/internal/statusline"
@@ -33,18 +33,22 @@ type Config struct {
 	// request to populate SettingsResponse.ParameterControls. If nil,
 	// Settings.ParameterControls is used as-is.
 	ParameterControlsProvider func() *poeproto.ParameterControls
-	// AuthBroker, if set, intercepts login commands (sigils /, !, .) and
-	// pasted redirect URLs from in-flight logins before they reach the
-	// router. Optional; nil disables interactive auth.
-	AuthBroker AuthBroker
+	// Commands, if set, intercepts relay chat-commands (login family,
+	// !help, !status, !models, !model, !new — any of the sigils /, !, .)
+	// and pasted redirect URLs from in-flight logins before they reach
+	// the router. Optional; nil disables the command surface.
+	Commands CommandHandler
 }
 
-// AuthBroker is the surface httpsrv depends on; *authbroker.Broker
-// implements it. Extracted so tests can inject brokers that return
-// odd combinations the real broker can't produce.
-type AuthBroker interface {
+// CommandHandler is the surface httpsrv depends on; *command.Broker
+// implements it. Extracted so tests can inject handlers that return
+// odd combinations the real one can't produce.
+type CommandHandler interface {
 	HasPending(convID string) bool
-	Handle(ctx context.Context, convID, text string) (*authbroker.Outcome, error)
+	Handle(ctx context.Context, convID, text string) (*command.Outcome, error)
+	// Passthrough reports whether text is an allowlisted agent command;
+	// if ok, rewritten is the prompt text to forward to the agent.
+	Passthrough(text string) (rewritten string, ok bool)
 }
 
 // Handler serves the /poe endpoint.
@@ -135,14 +139,22 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		turns = append(turns, t)
 	}
 
-	// Auth broker intercept: login commands (any accepted sigil) or
-	// pasted redirect URLs for an in-flight login are handled out-of-band,
-	// never reaching the router.
-	if h.cfg.AuthBroker != nil {
+	// Command intercept: relay-owned chat commands (login family, !help,
+	// !status/!models/!model/!new — any accepted sigil) and pasted
+	// redirect URLs for an in-flight login are handled out-of-band, never
+	// reaching the agent. Allowlisted agent commands (e.g. !reload) are
+	// instead rewritten to their slash form and forwarded through the
+	// normal prompt path so the agent executes them and streams a reply.
+	if h.cfg.Commands != nil {
 		latest := latestUserTurn(turns)
-		if latest != "" && (h.cfg.AuthBroker.HasPending(req.ConversationID) || authbroker.IsCommand(latest)) {
-			h.handleAuth(ctx, sse, req.ConversationID, latest)
-			return
+		if latest != "" {
+			if h.cfg.Commands.HasPending(req.ConversationID) || command.IsCommand(latest) {
+				h.handleAuth(ctx, sse, req.ConversationID, latest)
+				return
+			}
+			if rewritten, ok := h.cfg.Commands.Passthrough(latest); ok {
+				turns = rewriteLatestUserTurn(turns, rewritten)
+			}
 		}
 	}
 
@@ -492,9 +504,9 @@ func (s *sink) maybePrependHeader(t string) string {
 // handleAuth runs an auth-flow turn end-to-end on the SSE stream. Always
 // emits a single text payload + done, regardless of broker outcome.
 func (h *Handler) handleAuth(ctx context.Context, sse *poeproto.SSEWriter, convID, text string) {
-	out, err := h.cfg.AuthBroker.Handle(ctx, convID, text)
+	out, err := h.cfg.Commands.Handle(ctx, convID, text)
 	if err != nil {
-		log.Printf("authbroker (conv=%s): %v", convID, err)
+		log.Printf("command (conv=%s): %v", convID, err)
 		_ = sse.Error(err.Error(), "user_caused_error")
 		_ = sse.Done()
 		return
@@ -542,6 +554,19 @@ func latestUserTurn(turns []router.Turn) string {
 		}
 	}
 	return ""
+}
+
+// rewriteLatestUserTurn replaces the Content of the most recent user turn
+// with text (used to forward an allowlisted agent command as its slash
+// form). Returns turns unchanged if there is no user turn.
+func rewriteLatestUserTurn(turns []router.Turn, text string) []router.Turn {
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].Role == "user" {
+			turns[i].Content = text
+			return turns
+		}
+	}
+	return turns
 }
 
 // truncateRunes shortens s to at most n runes, appending an ellipsis

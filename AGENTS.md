@@ -21,7 +21,7 @@ See [docs/poe-acp-design.md](docs/poe-acp-design.md) for the full design, goals,
 ```
 cmd/poe-acp/             entry point: flags + server wiring
 docs/                    design doc + Poe protocol reference
-internal/authbroker/     interactive OAuth login over Poe chat
+internal/command/        relay chat-commands: login, !help, !status, !model, …
 internal/config/         JSON config loader (DisallowUnknownFields)
 internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
 internal/paramctl/       parameter_controls schema builder + Resolve

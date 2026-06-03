@@ -136,3 +136,13 @@ func TestResetSession(t *testing.T) {
 		t.Fatalf("expected ErrSessionBusy, got %v", err)
 	}
 }
+
+func TestAgentCommands(t *testing.T) {
+	a := newFakeAgent(nil)
+	a.agentCmds = []client.CommandInfo{{Name: "reload"}, {Name: "compact"}}
+	r := newCmdRouter(t, a, "")
+	cs := r.AgentCommands()
+	if len(cs) != 2 || cs[0].Name != "reload" {
+		t.Fatalf("AgentCommands: %v", cs)
+	}
+}

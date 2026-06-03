@@ -281,7 +281,7 @@ context and is fine.
 poe-acp/
   cmd/poe-acp/             entry point + flag wiring
   docs/                    design doc + Poe protocol reference
-  internal/authbroker/     interactive OAuth login over Poe chat
+  internal/command/        relay chat-commands: login, !help, !status, !model, …
   internal/config/         JSON config loader (DisallowUnknownFields)
   internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
   internal/paramctl/       parameter_controls schema builder + Resolve
