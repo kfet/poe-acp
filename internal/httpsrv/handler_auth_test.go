@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/kfet/acp-kit/client"
-	"github.com/kfet/poe-acp/internal/authbroker"
+	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/router"
 )
 
@@ -29,7 +29,7 @@ func TestHandler_LoginIntercept(t *testing.T) {
 		methods: []client.AuthMethod{{ID: "oauth-anthropic", Name: "Anthropic", Type: "agent"}},
 		res:     client.AuthResult{State: "needs_redirect", URL: "https://example/auth"},
 	}
-	broker := authbroker.New(stub)
+	broker := command.New(stub)
 
 	rtr, err := router.New(router.Config{
 		Agent:      &fakeAgent{},
@@ -39,7 +39,7 @@ func TestHandler_LoginIntercept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, AuthBroker: broker, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: broker, HeartbeatInterval: 0})
 
 	body := mustJSON(map[string]any{
 		"type":            "query",
@@ -78,7 +78,7 @@ func TestHandler_LoginPaste(t *testing.T) {
 		methods: []client.AuthMethod{{ID: "oauth-anthropic", Name: "Anthropic", Type: "agent"}},
 		res:     client.AuthResult{State: "needs_redirect", URL: "https://example/auth"},
 	}
-	broker := authbroker.New(stub)
+	broker := command.New(stub)
 	// Prime with a /login.
 	if _, err := broker.Handle(context.Background(), "c1", "/login anthropic"); err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestHandler_LoginPaste(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, AuthBroker: broker, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: broker, HeartbeatInterval: 0})
 
 	body := mustJSON(map[string]any{
 		"type":            "query",
@@ -122,7 +122,7 @@ func TestHandler_LoginPaste(t *testing.T) {
 func TestHandler_NormalPromptUnaffectedByAuthBroker(t *testing.T) {
 	// Wire a broker but send a non-auth prompt; must reach the agent.
 	stub := &stubAuth{methods: []client.AuthMethod{{ID: "oauth-anthropic", Type: "agent"}}}
-	broker := authbroker.New(stub)
+	broker := command.New(stub)
 	rtr, err := router.New(router.Config{
 		Agent:      &fakeAgent{},
 		StateDir:   t.TempDir(),
@@ -131,7 +131,7 @@ func TestHandler_NormalPromptUnaffectedByAuthBroker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, AuthBroker: broker, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: broker, HeartbeatInterval: 0})
 
 	body := mustJSON(map[string]any{
 		"type":            "query",

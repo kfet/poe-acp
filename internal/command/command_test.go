@@ -1,4 +1,4 @@
-package authbroker
+package command
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/kfet/poe-acp/internal/router"
 )
 
-// fakeCtrl is a stub authbroker.Controller for command tests.
+// fakeCtrl is a stub command.Controller for command tests.
 type fakeCtrl struct {
 	models    []client.ModelInfo
 	current   string
@@ -19,6 +19,7 @@ type fakeCtrl struct {
 	status    router.SessionStatus
 	lastSet   [2]string // {convID, modelID}
 	resetConv string
+	agentCmds []client.CommandInfo
 }
 
 func (c *fakeCtrl) AvailableModels() ([]client.ModelInfo, string) { return c.models, c.current }
@@ -28,6 +29,7 @@ func (c *fakeCtrl) SetModelOverride(conv, id string) error {
 }
 func (c *fakeCtrl) ResetSession(conv string) error        { c.resetConv = conv; return c.resetErr }
 func (c *fakeCtrl) StatusFor(string) router.SessionStatus { return c.status }
+func (c *fakeCtrl) AgentCommands() []client.CommandInfo   { return c.agentCmds }
 
 func withCtrl(c *fakeCtrl) *Broker {
 	b := New(newFake())
@@ -580,5 +582,50 @@ func TestIsCommand_SessionVerbs(t *testing.T) {
 		if IsCommand(c) {
 			t.Errorf("IsCommand(%q) = true, want false", c)
 		}
+	}
+}
+
+func TestPassthrough(t *testing.T) {
+	c := &fakeCtrl{agentCmds: []client.CommandInfo{{Name: "reload", Description: "Reload"}, {Name: "share"}}}
+	b := withCtrl(c)
+
+	if r, ok := b.Passthrough("!reload"); !ok || r != "/reload" {
+		t.Fatalf("reload: %q %v", r, ok)
+	}
+	// allowlisted but agent does NOT advertise it
+	if _, ok := b.Passthrough("!compact"); ok {
+		t.Fatal("compact not advertised → false")
+	}
+	// advertised but not allowlisted
+	if _, ok := b.Passthrough("!share"); ok {
+		t.Fatal("share not allowlisted → false")
+	}
+	// no sigil
+	if _, ok := b.Passthrough("reload"); ok {
+		t.Fatal("no sigil → false")
+	}
+	// empty body
+	if _, ok := b.Passthrough("!"); ok {
+		t.Fatal("empty body → false")
+	}
+	// args preserved
+	c.agentCmds = []client.CommandInfo{{Name: "session"}}
+	if r, ok := b.Passthrough("!session foo"); !ok || r != "/session foo" {
+		t.Fatalf("session args: %q %v", r, ok)
+	}
+	// nil controller
+	if _, ok := New(newFake()).Passthrough("!reload"); ok {
+		t.Fatal("nil ctrl → false")
+	}
+}
+
+func TestHelp_ListsAgentCommands(t *testing.T) {
+	b := withCtrl(&fakeCtrl{agentCmds: []client.CommandInfo{{Name: "reload", Description: "Reload exts"}, {Name: "share"}}})
+	g := hb(b, "!help")
+	if !strings.Contains(g, "Agent commands") || !strings.Contains(g, "!reload") || !strings.Contains(g, "Reload exts") {
+		t.Fatalf("help should list allowlisted agent cmds: %s", g)
+	}
+	if strings.Contains(g, "!share") {
+		t.Fatalf("non-allowlisted agent cmd leaked: %s", g)
 	}
 }
