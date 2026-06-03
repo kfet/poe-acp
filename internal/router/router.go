@@ -96,6 +96,9 @@ type Agent interface {
 	Cancel(ctx context.Context, sid acp.SessionId) error
 	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
 	SetConfigOption(ctx context.Context, sid acp.SessionId, configID, value string) error
+	// Models returns the agent's last-seen available models and the
+	// current model id. Empty until a session has been created.
+	Models() (models []client.ModelInfo, currentID string)
 }
 
 // Options is the per-prompt set of user-selected parameter values
@@ -186,8 +189,9 @@ func isAuthRequired(err error) bool {
 type Router struct {
 	cfg Config
 
-	mu       sync.Mutex
-	sessions map[string]*sessionState
+	mu        sync.Mutex
+	sessions  map[string]*sessionState
+	overrides map[string]string // convID → sticky model id set via !model
 }
 
 // sessionState tracks one conv_id.
@@ -450,7 +454,7 @@ func New(cfg Config) (*Router, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "convs"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir state: %w", err)
 	}
-	return &Router{cfg: cfg, sessions: make(map[string]*sessionState)}, nil
+	return &Router{cfg: cfg, sessions: make(map[string]*sessionState), overrides: make(map[string]string)}, nil
 }
 
 // systemPromptForSession asks the configured provider for the system
@@ -615,6 +619,13 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	if convID == "" {
 		convID = "default"
 	}
+	// Sticky per-conv model override (set via the !model command) wins
+	// over the per-turn Poe parameter so the choice survives turns.
+	r.mu.Lock()
+	if ov := r.overrides[convID]; ov != "" {
+		opts.Model = ov
+	}
+	r.mu.Unlock()
 	// Effective text for the latest user turn: Poe content if non-empty,
 	// else a synthesised attachment placeholder, else "" (rejected). When
 	// query has no user turn, latestUserTurnRef returns the zero Turn and
@@ -1438,6 +1449,102 @@ func (r *Router) Cancel(ctx context.Context, convID string) error {
 	}
 	return r.cfg.Agent.Cancel(ctx, st.sessionID)
 }
+
+// AvailableModels returns the agent's available models and current id.
+// Satisfies authbroker.Controller.
+func (r *Router) AvailableModels() (models []client.ModelInfo, currentID string) {
+	return r.cfg.Agent.Models()
+}
+
+// SessionStatus is a race-free snapshot of a conversation's relay state.
+type SessionStatus struct {
+	EffectiveModel  string // override if set, else the configured default
+	DefaultModel    string
+	OverrideModel   string // "" when no !model override is active
+	Thinking        string
+	HasSession      bool
+	ModelsAvailable int
+}
+
+// StatusFor returns a snapshot for convID. It deliberately does not read
+// the session's goroutine-confined applied options; it reports the
+// configured default, the sticky override, and live session presence.
+// Satisfies authbroker.Controller.
+func (r *Router) StatusFor(convID string) SessionStatus {
+	if convID == "" {
+		convID = "default"
+	}
+	models, _ := r.cfg.Agent.Models()
+	r.mu.Lock()
+	override := r.overrides[convID]
+	_, hasSession := r.sessions[convID]
+	r.mu.Unlock()
+	eff := r.cfg.Defaults.Model
+	if override != "" {
+		eff = override
+	}
+	return SessionStatus{
+		EffectiveModel:  eff,
+		DefaultModel:    r.cfg.Defaults.Model,
+		OverrideModel:   override,
+		Thinking:        r.cfg.Defaults.Thinking,
+		HasSession:      hasSession,
+		ModelsAvailable: len(models),
+	}
+}
+
+// SetModelOverride validates modelID against the agent's available models
+// and records it as the sticky model for convID. It takes effect on the
+// next prompt turn. Satisfies authbroker.Controller.
+func (r *Router) SetModelOverride(convID, modelID string) error {
+	if convID == "" {
+		convID = "default"
+	}
+	models, _ := r.cfg.Agent.Models()
+	if len(models) > 0 {
+		found := false
+		for _, m := range models {
+			if m.ID == modelID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("unknown model %q", modelID)
+		}
+	}
+	r.mu.Lock()
+	r.overrides[convID] = modelID
+	r.mu.Unlock()
+	return nil
+}
+
+// ResetSession drops the conversation's live agent session so the next
+// turn starts fresh (cleared context). The sticky model override is
+// preserved. Returns ErrSessionBusy if a reply is in flight. Satisfies
+// authbroker.Controller.
+func (r *Router) ResetSession(convID string) error {
+	if convID == "" {
+		convID = "default"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st, ok := r.sessions[convID]
+	if !ok {
+		return nil // nothing live; next turn is fresh anyway
+	}
+	if !st.queue.idle() {
+		return ErrSessionBusy
+	}
+	close(st.drainStop)
+	close(st.runStop)
+	st.queue.stop()
+	delete(r.sessions, convID)
+	return nil
+}
+
+// ErrSessionBusy is returned by ResetSession when a turn is in flight.
+var ErrSessionBusy = errors.New("a reply is still in progress")
 
 // getOrCreate returns the sessionState for convID, creating or resuming an
 // agent session if necessary. freshSeed is true iff the caller should seed

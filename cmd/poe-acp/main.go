@@ -192,6 +192,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("router: %v", err)
 	}
+	broker.SetController(rtr)
 	stopGC := rtr.RunGC(ctx, *gcEvery)
 	defer stopGC()
 
