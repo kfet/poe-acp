@@ -352,6 +352,61 @@ func TestOfferLogin(t *testing.T) {
 	}
 }
 
+// TestHelp_ListsCommands: !help enumerates the relay commands.
+func TestHelp_ListsCommands(t *testing.T) {
+	out, err := New(newFake()).Handle(context.Background(), "c1", "!help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"!help", "!login", "!login <provider>", "!cancel-login"} {
+		if !strings.Contains(out.Text, want) {
+			t.Fatalf("help output missing %q: %s", want, out.Text)
+		}
+	}
+}
+
+// TestHelp_DuringPendingLogin: !help is stateless — it shows help without
+// consuming the pending login as a pasted redirect or cancelling it.
+func TestHelp_DuringPendingLogin(t *testing.T) {
+	f := newFake()
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x/auth"}
+	b := New(f)
+	if _, err := b.Handle(context.Background(), "c1", "!login anthropic"); err != nil {
+		t.Fatal(err)
+	}
+	if !b.HasPending("c1") {
+		t.Fatal("precondition: expected pending login")
+	}
+	out, _ := b.Handle(context.Background(), "c1", "!help")
+	if !strings.Contains(out.Text, "Available commands") {
+		t.Fatalf("expected help during pending, got %q", out.Text)
+	}
+	if !b.HasPending("c1") {
+		t.Fatal("!help must not clear a pending login")
+	}
+}
+
+func TestIsCommand(t *testing.T) {
+	cases := map[string]bool{
+		"!help":            true,
+		"/help":            true,
+		".help":            true,
+		"  !help ":         true,
+		"!login":           true,
+		"!login anthropic": true,
+		"!cancel-login":    true,
+		"help":             false, // no sigil
+		"!helpme":          false,
+		"!foo":             false,
+		"hello":            false,
+	}
+	for in, want := range cases {
+		if got := IsCommand(in); got != want {
+			t.Errorf("IsCommand(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestIsLoginCommand(t *testing.T) {
 	cases := map[string]bool{
 		"/login":              true,

@@ -89,6 +89,14 @@ func stripSigil(t string) (body string, ok bool) {
 	return t, false
 }
 
+// isLoginBody reports whether a sigil-stripped command body is one of the
+// login-family commands.
+func isLoginBody(body string) bool {
+	return body == "login" || strings.HasPrefix(body, "login ") ||
+		body == "logins" || // alias for "list"
+		body == "cancel-login"
+}
+
 // IsLoginCommand reports whether text is a login/logins/cancel-login
 // command under any accepted sigil (/, !, .). Trims leading whitespace
 // so users can paste the command after a thought.
@@ -97,9 +105,19 @@ func IsLoginCommand(text string) bool {
 	if !ok {
 		return false
 	}
-	return body == "login" || strings.HasPrefix(body, "login ") ||
-		body == "logins" || // alias for "list"
-		body == "cancel-login"
+	return isLoginBody(body)
+}
+
+// IsCommand reports whether text is any relay command the broker handles
+// (the login family or "help"), under any accepted sigil. The HTTP
+// handler uses this to decide whether to route a turn to the broker
+// instead of forwarding it to the agent.
+func IsCommand(text string) bool {
+	body, ok := stripSigil(strings.TrimSpace(text))
+	if !ok {
+		return false
+	}
+	return body == "help" || isLoginBody(body)
 }
 
 // Outcome is what the HTTP handler should render to the user. Exactly
@@ -126,6 +144,12 @@ type Outcome struct {
 func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, error) {
 	t := strings.TrimSpace(text)
 	body, hasSigil := stripSigil(t)
+
+	// Help is stateless and never collides with a pasted redirect URL
+	// (those never carry a sigil), so it wins even mid-login.
+	if hasSigil && body == "help" {
+		return b.help(), nil
+	}
 
 	// Pasted redirect URL for an in-flight login wins over command parsing.
 	if entry, ok := b.peek(convID); ok {
@@ -177,6 +201,16 @@ func (b *Broker) OfferLogin() string {
 	sb.WriteString("\nThen open the URL I reply with, authenticate, and paste " +
 		"the page's URL back here to finish.")
 	return sb.String()
+}
+
+// help lists the relay commands the broker understands.
+func (b *Broker) help() *Outcome {
+	s := DisplaySigil
+	return &Outcome{Text: "Available commands:\n\n" +
+		"- `" + s + "help` — show this message\n" +
+		"- `" + s + "login` — list providers you can connect\n" +
+		"- `" + s + "login <provider>` — connect a provider (e.g. `" + s + "login anthropic`)\n" +
+		"- `" + s + "cancel-login` — abort a login in progress\n"}
 }
 
 // list renders the available login methods.

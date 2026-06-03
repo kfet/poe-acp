@@ -140,7 +140,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// never reaching the router.
 	if h.cfg.AuthBroker != nil {
 		latest := latestUserTurn(turns)
-		if latest != "" && (h.cfg.AuthBroker.HasPending(req.ConversationID) || authbroker.IsLoginCommand(latest)) {
+		if latest != "" && (h.cfg.AuthBroker.HasPending(req.ConversationID) || authbroker.IsCommand(latest)) {
 			h.handleAuth(ctx, sse, req.ConversationID, latest)
 			return
 		}
