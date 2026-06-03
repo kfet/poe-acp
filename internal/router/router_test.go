@@ -44,6 +44,8 @@ type fakeAgent struct {
 	cancelErr        error
 	setModelErr      error
 	setConfigErr     error
+	models           []client.ModelInfo
+	currentModelID   string
 	listCalls        int32
 	resumeCalls      int32
 	newSessCalls     int32
@@ -51,6 +53,7 @@ type fakeAgent struct {
 	setModelCalls    int32
 	setConfigCalls   int32
 	lastPromptTxt    string
+	lastSetModel     string
 	lastPromptBlocks []acp.ContentBlock
 	lastSysBlocks    []acp.ContentBlock
 }
@@ -108,13 +111,19 @@ func (f *fakeAgent) Cancel(_ context.Context, _ acp.SessionId) error {
 	atomic.AddInt32(&f.cancelCalls, 1)
 	return f.cancelErr
 }
-func (f *fakeAgent) SetModel(_ context.Context, _ acp.SessionId, _ string) error {
+func (f *fakeAgent) SetModel(_ context.Context, _ acp.SessionId, modelID string) error {
 	atomic.AddInt32(&f.setModelCalls, 1)
+	f.mu.Lock()
+	f.lastSetModel = modelID
+	f.mu.Unlock()
 	return f.setModelErr
 }
 func (f *fakeAgent) SetConfigOption(_ context.Context, _ acp.SessionId, _, _ string) error {
 	atomic.AddInt32(&f.setConfigCalls, 1)
 	return f.setConfigErr
+}
+func (f *fakeAgent) Models() ([]client.ModelInfo, string) {
+	return f.models, f.currentModelID
 }
 
 func (f *fakeAgent) emit(sid acp.SessionId, chunk string) {

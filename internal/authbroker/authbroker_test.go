@@ -7,7 +7,33 @@ import (
 	"testing"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/poe-acp/internal/router"
 )
+
+// fakeCtrl is a stub authbroker.Controller for command tests.
+type fakeCtrl struct {
+	models    []client.ModelInfo
+	current   string
+	setErr    error
+	resetErr  error
+	status    router.SessionStatus
+	lastSet   [2]string // {convID, modelID}
+	resetConv string
+}
+
+func (c *fakeCtrl) AvailableModels() ([]client.ModelInfo, string) { return c.models, c.current }
+func (c *fakeCtrl) SetModelOverride(conv, id string) error {
+	c.lastSet = [2]string{conv, id}
+	return c.setErr
+}
+func (c *fakeCtrl) ResetSession(conv string) error        { c.resetConv = conv; return c.resetErr }
+func (c *fakeCtrl) StatusFor(string) router.SessionStatus { return c.status }
+
+func withCtrl(c *fakeCtrl) *Broker {
+	b := New(newFake())
+	b.SetController(c)
+	return b
+}
 
 type fakeAuth struct {
 	methods []client.AuthMethod
@@ -430,6 +456,129 @@ func TestIsLoginCommand(t *testing.T) {
 	for in, want := range cases {
 		if got := IsLoginCommand(in); got != want {
 			t.Errorf("IsLoginCommand(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func hb(b *Broker, text string) string {
+	out, _ := b.Handle(context.Background(), "c1", text)
+	if out == nil {
+		return ""
+	}
+	return out.Text
+}
+
+func TestStatus(t *testing.T) {
+	b := withCtrl(&fakeCtrl{status: router.SessionStatus{
+		EffectiveModel: "anthropic/x", OverrideModel: "anthropic/x",
+		Thinking: "low", HasSession: true, ModelsAvailable: 7,
+	}})
+	got := hb(b, "!status")
+	for _, w := range []string{"anthropic/x", "low", "7", "active", "!model"} {
+		if !strings.Contains(got, w) {
+			t.Fatalf("status missing %q: %s", w, got)
+		}
+	}
+	// whoami alias + no-session wording.
+	b2 := withCtrl(&fakeCtrl{status: router.SessionStatus{EffectiveModel: "m", ModelsAvailable: 1}})
+	if g := hb(b2, "!whoami"); !strings.Contains(g, "fresh on next message") {
+		t.Fatalf("whoami no-session: %s", g)
+	}
+}
+
+func TestModelsCommand(t *testing.T) {
+	models := []client.ModelInfo{{ID: "anthropic/opus"}, {ID: "openai/gpt"}, {ID: "anthropic/haiku"}}
+	b := withCtrl(&fakeCtrl{models: models, current: "anthropic/opus"})
+	all := hb(b, "!models")
+	if !strings.Contains(all, "3 models") || !strings.Contains(all, "anthropic/opus") || !strings.Contains(all, "←") {
+		t.Fatalf("models list: %s", all)
+	}
+	filt := hb(b, "!models anthropic")
+	if !strings.Contains(filt, "anthropic/opus") || strings.Contains(filt, "openai/gpt") {
+		t.Fatalf("models filter: %s", filt)
+	}
+	if g := hb(b, "!models zzz"); !strings.Contains(g, "none match") {
+		t.Fatalf("models no-match: %s", g)
+	}
+	if g := hb(withCtrl(&fakeCtrl{}), "!models"); !strings.Contains(g, "No models") {
+		t.Fatalf("models empty: %s", g)
+	}
+}
+
+func TestModelsCap(t *testing.T) {
+	many := make([]client.ModelInfo, modelsListCap+5)
+	for i := range many {
+		many[i] = client.ModelInfo{ID: "p/m" + string(rune('a'+i%26)) + string(rune('0'+i/26))}
+	}
+	g := hb(withCtrl(&fakeCtrl{models: many}), "!models")
+	if !strings.Contains(g, "and 5 more") {
+		t.Fatalf("expected cap overflow note: %s", g)
+	}
+}
+
+func TestModelCommand(t *testing.T) {
+	c := &fakeCtrl{models: []client.ModelInfo{{ID: "p/m"}}, current: "p/m", status: router.SessionStatus{EffectiveModel: "p/m"}}
+	b := withCtrl(c)
+	// no arg → show current
+	if g := hb(b, "!model"); !strings.Contains(g, "p/m") {
+		t.Fatalf("model no-arg: %s", g)
+	}
+	// valid set
+	if g := hb(b, "!model p/m"); !strings.Contains(g, "✅") || c.lastSet != [2]string{"c1", "p/m"} {
+		t.Fatalf("model set: %s last=%v", g, c.lastSet)
+	}
+	// error from controller
+	c.setErr = errors.New("unknown model \"bad\"")
+	if g := hb(b, "!model bad"); !strings.Contains(g, "❌") || !strings.Contains(g, "unknown model") {
+		t.Fatalf("model err: %s", g)
+	}
+}
+
+func TestResetCommand(t *testing.T) {
+	c := &fakeCtrl{}
+	if g := hb(withCtrl(c), "!new"); !strings.Contains(g, "Fresh session") || c.resetConv != "c1" {
+		t.Fatalf("new: %s conv=%s", g, c.resetConv)
+	}
+	c2 := &fakeCtrl{resetErr: errors.New("busy")}
+	if g := hb(withCtrl(c2), "!reset"); !strings.Contains(g, "busy") {
+		t.Fatalf("reset err: %s", g)
+	}
+}
+
+func TestSessionCommands_NoController(t *testing.T) {
+	b := New(newFake()) // no SetController
+	for _, cmd := range []string{"!status", "!models", "!model x", "!new"} {
+		if g := hb(b, cmd); !strings.Contains(g, "unavailable") {
+			t.Fatalf("%s without controller: %s", cmd, g)
+		}
+	}
+}
+
+func TestHelp_DynamicWithController(t *testing.T) {
+	withCmds := hb(withCtrl(&fakeCtrl{}), "!help")
+	for _, w := range []string{"!status", "!models", "!model", "!new", "!login"} {
+		if !strings.Contains(withCmds, w) {
+			t.Fatalf("help (ctrl) missing %q: %s", w, withCmds)
+		}
+	}
+	noCmds := hb(New(newFake()), "!help")
+	if strings.Contains(noCmds, "!status") || strings.Contains(noCmds, "!models") {
+		t.Fatalf("help (no ctrl) should omit session cmds: %s", noCmds)
+	}
+	if !strings.Contains(noCmds, "!login") {
+		t.Fatalf("help (no ctrl) should still list login: %s", noCmds)
+	}
+}
+
+func TestIsCommand_SessionVerbs(t *testing.T) {
+	for _, c := range []string{"!status", "!whoami", "!models", "!models foo", "!model", "!model x", "!new", "!reset", ".status"} {
+		if !IsCommand(c) {
+			t.Errorf("IsCommand(%q) = false, want true", c)
+		}
+	}
+	for _, c := range []string{"!statusx", "!modelss", "status", "!newish"} {
+		if IsCommand(c) {
+			t.Errorf("IsCommand(%q) = true, want false", c)
 		}
 	}
 }

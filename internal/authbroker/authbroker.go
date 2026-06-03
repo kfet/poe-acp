@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/poe-acp/internal/router"
 )
 
 // Authenticator is the agent-side surface the broker depends on. The full
@@ -33,13 +34,31 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, methodID, id, redirect string, cancel bool) (client.AuthResult, error)
 }
 
+// Controller is the per-conversation session-control surface used by the
+// non-auth commands (!status, !models, !model, !new). *router.Router
+// satisfies it. Optional: if nil, those commands report unavailable.
+// (router never imports authbroker — the dependency edge is one-way:
+// authbroker → router.)
+type Controller interface {
+	AvailableModels() (models []client.ModelInfo, currentID string)
+	SetModelOverride(convID, modelID string) error
+	ResetSession(convID string) error
+	StatusFor(convID string) router.SessionStatus
+}
+
 // Broker tracks per-conversation pending logins.
 type Broker struct {
-	a Authenticator
+	a    Authenticator
+	ctrl Controller // optional; set via SetController for session commands
 
 	mu      sync.Mutex
 	pending map[string]pendingEntry // convID → in-flight login
 }
+
+// SetController wires the session-control surface (the router) used by
+// !status/!models/!model/!new. Call once at startup, after construction,
+// to break the broker↔router construction cycle. Safe before any turns.
+func (b *Broker) SetController(c Controller) { b.ctrl = c }
 
 // pendingEntry is the per-conversation in-flight login state.
 type pendingEntry struct {
@@ -108,16 +127,32 @@ func IsLoginCommand(text string) bool {
 	return isLoginBody(body)
 }
 
+// isSessionBody reports whether a sigil-stripped body is one of the
+// session-control commands (handled only when a Controller is wired).
+func isSessionBody(body string) bool {
+	switch {
+	case body == "status" || body == "whoami":
+		return true
+	case body == "models" || strings.HasPrefix(body, "models "):
+		return true
+	case body == "model" || strings.HasPrefix(body, "model "):
+		return true
+	case body == "new" || body == "reset":
+		return true
+	}
+	return false
+}
+
 // IsCommand reports whether text is any relay command the broker handles
-// (the login family or "help"), under any accepted sigil. The HTTP
-// handler uses this to decide whether to route a turn to the broker
-// instead of forwarding it to the agent.
+// (the login family, "help", or a session command), under any accepted
+// sigil. The HTTP handler uses this to decide whether to route a turn to
+// the broker instead of forwarding it to the agent.
 func IsCommand(text string) bool {
 	body, ok := stripSigil(strings.TrimSpace(text))
 	if !ok {
 		return false
 	}
-	return body == "help" || isLoginBody(body)
+	return body == "help" || isLoginBody(body) || isSessionBody(body)
 }
 
 // Outcome is what the HTTP handler should render to the user. Exactly
@@ -172,6 +207,14 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 		// body has a provider arg: "login <provider>".
 		rest := strings.TrimSpace(strings.TrimPrefix(body, "login"))
 		return b.start(ctx, convID, rest)
+	case body == "status" || body == "whoami":
+		return b.status(convID), nil
+	case body == "models" || strings.HasPrefix(body, "models "):
+		return b.models(strings.TrimSpace(strings.TrimPrefix(body, "models"))), nil
+	case body == "model" || strings.HasPrefix(body, "model "):
+		return b.model(convID, strings.TrimSpace(strings.TrimPrefix(body, "model"))), nil
+	case body == "new" || body == "reset":
+		return b.reset(convID), nil
 	default:
 		// Sigil-prefixed but not a login command — not ours.
 		return nil, nil
@@ -206,11 +249,115 @@ func (b *Broker) OfferLogin() string {
 // help lists the relay commands the broker understands.
 func (b *Broker) help() *Outcome {
 	s := DisplaySigil
-	return &Outcome{Text: "Available commands:\n\n" +
-		"- `" + s + "help` — show this message\n" +
-		"- `" + s + "login` — list providers you can connect\n" +
-		"- `" + s + "login <provider>` — connect a provider (e.g. `" + s + "login anthropic`)\n" +
-		"- `" + s + "cancel-login` — abort a login in progress\n"}
+	var sb strings.Builder
+	sb.WriteString("Available commands:\n\n")
+	sb.WriteString("- `" + s + "help` — show this message\n")
+	if b.ctrl != nil {
+		sb.WriteString("- `" + s + "status` — current model, thinking, session\n")
+		sb.WriteString("- `" + s + "models [filter]` — list available models\n")
+		sb.WriteString("- `" + s + "model <id>` — switch model for this chat\n")
+		sb.WriteString("- `" + s + "new` — start a fresh session (clears context)\n")
+	}
+	sb.WriteString("- `" + s + "login` — list providers you can connect\n")
+	sb.WriteString("- `" + s + "login <provider>` — connect a provider (e.g. `" + s + "login anthropic`)\n")
+	sb.WriteString("- `" + s + "cancel-login` — abort a login in progress\n")
+	return &Outcome{Text: sb.String()}
+}
+
+// status renders the current model / thinking / session snapshot.
+func (b *Broker) status(convID string) *Outcome {
+	if b.ctrl == nil {
+		return &Outcome{Text: "Session control is unavailable."}
+	}
+	st := b.ctrl.StatusFor(convID)
+	var sb strings.Builder
+	sb.WriteString("**Status**\n\n")
+	fmt.Fprintf(&sb, "- model: `%s`", st.EffectiveModel)
+	if st.OverrideModel != "" {
+		fmt.Fprintf(&sb, " (set via %smodel)", DisplaySigil)
+	}
+	sb.WriteString("\n")
+	if st.Thinking != "" {
+		fmt.Fprintf(&sb, "- thinking: %s\n", st.Thinking)
+	}
+	fmt.Fprintf(&sb, "- models available: %d\n", st.ModelsAvailable)
+	sess := "none yet (fresh on next message)"
+	if st.HasSession {
+		sess = "active"
+	}
+	fmt.Fprintf(&sb, "- session: %s\n", sess)
+	return &Outcome{Text: sb.String()}
+}
+
+// modelsListCap bounds how many models !models prints in one message.
+const modelsListCap = 40
+
+// models lists available model ids, optionally filtered by substring.
+func (b *Broker) models(filter string) *Outcome {
+	if b.ctrl == nil {
+		return &Outcome{Text: "Session control is unavailable."}
+	}
+	all, current := b.ctrl.AvailableModels()
+	if len(all) == 0 {
+		return &Outcome{Text: fmt.Sprintf("No models available — connect a provider with `%slogin`.", DisplaySigil)}
+	}
+	f := strings.ToLower(filter)
+	matched := make([]client.ModelInfo, 0, len(all))
+	for _, m := range all {
+		if f == "" || strings.Contains(strings.ToLower(m.ID), f) {
+			matched = append(matched, m)
+		}
+	}
+	var sb strings.Builder
+	if filter == "" {
+		fmt.Fprintf(&sb, "%d models available (current: `%s`). `%smodel <id>` to switch, `%smodels <filter>` to narrow:\n\n",
+			len(all), current, DisplaySigil, DisplaySigil)
+	} else {
+		fmt.Fprintf(&sb, "%d model(s) match %q (current: `%s`):\n\n", len(matched), filter, current)
+	}
+	if len(matched) == 0 {
+		fmt.Fprintf(&sb, "(none match %q — try `%smodels` for the full list)\n", filter, DisplaySigil)
+		return &Outcome{Text: sb.String()}
+	}
+	for i, m := range matched {
+		if i >= modelsListCap {
+			fmt.Fprintf(&sb, "…and %d more (filter to narrow).\n", len(matched)-modelsListCap)
+			break
+		}
+		marker := ""
+		if m.ID == current {
+			marker = " ←"
+		}
+		fmt.Fprintf(&sb, "- `%s`%s\n", m.ID, marker)
+	}
+	return &Outcome{Text: sb.String()}
+}
+
+// model switches the sticky model for the conversation.
+func (b *Broker) model(convID, id string) *Outcome {
+	if b.ctrl == nil {
+		return &Outcome{Text: "Session control is unavailable."}
+	}
+	if id == "" {
+		st := b.ctrl.StatusFor(convID)
+		return &Outcome{Text: fmt.Sprintf("Current model: `%s`. Use `%smodel <id>` to switch, `%smodels` to list.",
+			st.EffectiveModel, DisplaySigil, DisplaySigil)}
+	}
+	if err := b.ctrl.SetModelOverride(convID, id); err != nil {
+		return &Outcome{Text: fmt.Sprintf("❌ %v. Use `%smodels` to see available ids.", err, DisplaySigil)}
+	}
+	return &Outcome{Text: fmt.Sprintf("✅ Model set to `%s` for this chat — applies from your next message.", id)}
+}
+
+// reset drops the conversation's live session so the next turn is fresh.
+func (b *Broker) reset(convID string) *Outcome {
+	if b.ctrl == nil {
+		return &Outcome{Text: "Session control is unavailable."}
+	}
+	if err := b.ctrl.ResetSession(convID); err != nil {
+		return &Outcome{Text: fmt.Sprintf("Couldn't reset: %v.", err)}
+	}
+	return &Outcome{Text: "🧹 Fresh session — previous context cleared. Your model choice is kept."}
 }
 
 // list renders the available login methods.
