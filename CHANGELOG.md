@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`!help` command** lists the relay commands the bot understands (`!help`, `!login`, `!login <provider>`, `!cancel-login`). Handled by the auth broker under any accepted sigil (`!`/`.`/`/`); stateless, so it works even mid-login without disturbing a pending flow. The HTTP handler's broker-intercept gate now keys on the new `authbroker.IsCommand` (login family + help) instead of `IsLoginCommand`.
+
 ## [0.17.3] - 2026-06-02
 
 ### Changed
