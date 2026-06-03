@@ -17,7 +17,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
-	"github.com/kfet/poe-acp/internal/authbroker"
+	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/httpsrv"
 	"github.com/kfet/poe-acp/internal/paramctl"
@@ -180,7 +180,7 @@ func main() {
 		defaults.Model, defaults.Thinking, defaults.HideThinking)
 
 	// Router
-	broker := authbroker.New(agent)
+	broker := command.New(agent)
 	rtr, err := router.New(router.Config{
 		Agent:                agent,
 		StateDir:             stateDir,
@@ -217,7 +217,7 @@ func main() {
 			m, _ := agent.Models()
 			return paramctl.Build(m, defaults)
 		},
-		AuthBroker: broker,
+		Commands: broker,
 	})
 
 	// Auto-invalidate Poe's cached settings response when the schema

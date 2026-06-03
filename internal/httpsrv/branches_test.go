@@ -17,7 +17,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
-	"github.com/kfet/poe-acp/internal/authbroker"
+	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 )
@@ -217,12 +217,12 @@ func TestHandler_CancelOnDisconnect(t *testing.T) {
 
 func TestHandler_AuthBrokerError(t *testing.T) {
 	stub := &errAuth{err: errors.New("agent down")}
-	broker := authbroker.New(stub)
+	broker := command.New(stub)
 	rtr, err := router.New(router.Config{Agent: &fakeAgent{}, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, AuthBroker: broker, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: broker, HeartbeatInterval: 0})
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c1", "user_id": "u",
 		"query": []map[string]any{{"role": "user", "content": "/login anthropic"}},
@@ -334,21 +334,24 @@ func TestSink_FirstChunkWhileSpinning(t *testing.T) {
 // fakeBroker returns whatever (out, err) is set.
 type fakeBroker struct {
 	pending bool
-	out     *authbroker.Outcome
+	out     *command.Outcome
 	err     error
+	passOut string
+	passOK  bool
 }
 
 func (f *fakeBroker) HasPending(string) bool { return f.pending }
-func (f *fakeBroker) Handle(context.Context, string, string) (*authbroker.Outcome, error) {
+func (f *fakeBroker) Handle(context.Context, string, string) (*command.Outcome, error) {
 	return f.out, f.err
 }
+func (f *fakeBroker) Passthrough(string) (string, bool) { return f.passOut, f.passOK }
 
 func TestHandler_AuthBroker_NilOutcome(t *testing.T) {
 	rtr, err := router.New(router.Config{Agent: &fakeAgent{}, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, AuthBroker: &fakeBroker{pending: true}, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: &fakeBroker{pending: true}, HeartbeatInterval: 0})
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c1",
 		"query": []map[string]any{{"role": "user", "content": "anything"}},
@@ -1001,5 +1004,48 @@ func TestSink_StatusLineHeaderSkippedOnReplace(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, "🏛️") {
 		t.Errorf("Replace path must not prepend header: %q", body)
+	}
+}
+
+// TestHandler_PassthroughRewrite: an allowlisted agent command is
+// rewritten to its slash form and forwarded to the agent as the prompt.
+func TestHandler_PassthroughRewrite(t *testing.T) {
+	agent := &fakeAgent{}
+	rtr, err := router.New(router.Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr, HeartbeatInterval: 0,
+		Commands: &fakeBroker{passOut: "/reload", passOK: true}})
+
+	body := mustJSON(map[string]any{
+		"type": "query", "conversation_id": "c1", "user_id": "u1", "message_id": "m1",
+		"query": []map[string]any{{"role": "user", "content": "!reload"}},
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	agent.mu.Lock()
+	got := ""
+	if len(agent.lastPrompt) > 0 && agent.lastPrompt[0].Text != nil {
+		got = agent.lastPrompt[0].Text.Text
+	}
+	agent.mu.Unlock()
+	if got != "/reload" {
+		t.Fatalf("agent received %q, want /reload", got)
+	}
+}
+
+func TestRewriteLatestUserTurn_NoUserTurn(t *testing.T) {
+	in := []router.Turn{{Role: "assistant", Content: "hi"}}
+	out := rewriteLatestUserTurn(in, "/reload")
+	if out[0].Content != "hi" {
+		t.Fatalf("non-user turn should be untouched: %+v", out)
+	}
+	got := rewriteLatestUserTurn([]router.Turn{{Role: "user", Content: "x"}}, "/reload")
+	if got[0].Content != "/reload" {
+		t.Fatalf("user turn rewrite: %+v", got)
 	}
 }

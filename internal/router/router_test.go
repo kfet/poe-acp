@@ -46,6 +46,7 @@ type fakeAgent struct {
 	setConfigErr     error
 	models           []client.ModelInfo
 	currentModelID   string
+	agentCmds        []client.CommandInfo
 	listCalls        int32
 	resumeCalls      int32
 	newSessCalls     int32
@@ -125,6 +126,7 @@ func (f *fakeAgent) SetConfigOption(_ context.Context, _ acp.SessionId, _, _ str
 func (f *fakeAgent) Models() ([]client.ModelInfo, string) {
 	return f.models, f.currentModelID
 }
+func (f *fakeAgent) AvailableCommands() []client.CommandInfo { return f.agentCmds }
 
 func (f *fakeAgent) emit(sid acp.SessionId, chunk string) {
 	f.mu.Lock()
