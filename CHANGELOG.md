@@ -4,7 +4,13 @@
 
 ### Added
 
-- **`!help` command** lists the relay commands the bot understands (`!help`, `!login`, `!login <provider>`, `!cancel-login`). Handled by the auth broker under any accepted sigil (`!`/`.`/`/`); stateless, so it works even mid-login without disturbing a pending flow. The HTTP handler's broker-intercept gate now keys on the new `authbroker.IsCommand` (login family + help) instead of `IsLoginCommand`.
+- **Phase-1 session commands: `!status`, `!models`, `!model`, `!new`** (plus `!help`, now dynamic). These map to standard ACP primitives so they work for any ACP agent, and target mobile users for whom the Poe Options panel is awkward:
+  - `!status` / `!whoami` — current (effective) model, thinking level, available-model count, live-session presence. Race-free: reads the configured default + sticky override + session presence, never the goroutine-confined per-turn applied options.
+  - `!models [filter]` — list available models (from `session/new.models`), optional substring filter, current model marked, capped at 40 per message.
+  - `!model <id>` — set a **sticky per-conversation model override** (validated against the agent's model list) that survives Poe's per-turn parameter; applies on the next prompt. `!model` with no arg shows the current model.
+  - `!new` / `!reset` — drop the conversation's live ACP session so the next turn starts fresh (cleared context); model override kept. Returns a friendly message if a reply is mid-flight (`ErrSessionBusy`).
+  - Wiring: `authbroker.Controller` (implemented by `*router.Router`, injected via `SetController`) exposes `AvailableModels`/`StatusFor`/`SetModelOverride`/`ResetSession`; the router gained a per-conv `overrides` map overlaid in `Prompt`, plus `router.SessionStatus` and `ErrSessionBusy`. `authbroker.IsCommand` now also gates the session verbs. (The `authbroker` package now covers the whole relay command surface, not just auth — a rename to `command` is a sensible follow-up.)
+- **`!help` command** lists the relay commands the bot understands. Handled by the auth broker under any accepted sigil (`!`/`.`/`/`); stateless, so it works even mid-login without disturbing a pending flow. The HTTP handler's broker-intercept gate now keys on the new `authbroker.IsCommand` instead of `IsLoginCommand`.
 
 ## [0.17.3] - 2026-06-02
 
