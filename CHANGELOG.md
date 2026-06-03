@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-02
+
 ### Added
 
 - **`!reload` (and an allowlisted agent-command passthrough).** Commands the agent advertises over ACP (`availableCommands`) can now be invoked from chat: `!reload` → the relay forwards `/reload` through the normal prompt path and the agent executes it and streams the result. Generic mechanism, gated by a curated allowlist (`reload`, `compact`, `session`, `changelog`) intersected with what the agent actually advertises — anything else stays literal user text. `!help` lists the available agent commands dynamically. Backed by acp-kit's new `AgentProc.AvailableCommands()` catalog (snapshotted from `availableCommandsUpdate`), surfaced via `router.AgentCommands()` and `command.Broker.Passthrough`.
