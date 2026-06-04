@@ -25,6 +25,21 @@ move to a CHANGELOG `[Unreleased]` entry when picked up.
 - **`!think <level>`** — thinking-level override (mirrors `!model`).
   Uses fir's `session/set_config_option`, which is not yet ACP-standard.
 
+## fir (upstream — enables live binary upgrades)
+
+- **Expose `/n` (re-exec) in fir's ACP command registry.** The re-exec
+  machinery exists (`pkg/session/reexec/` + `ReexecSidecar`, used by the
+  TUI `/n`), but `pkg/modes/acp/commands.go` does NOT register it — so
+  `/n` sent over observe/send hits the model as text (verified
+  2026-06-03). Registering it would let a running ACP fir re-exec into a
+  new binary **in place** (same PID/stdio FDs → the poe-acp parent never
+  disconnects), upgrading the fir serving a *live* conversation with no
+  relay drop. NON-TRIVIAL: unlike the TUI (single local session), an ACP
+  fir serves the parent over stdio and may host multiple sessions; the
+  re-exec'd process must resume the existing ACP connection (no
+  re-`initialize`) and restore all sessions from the sidecar/store. Lives
+  in the fir repo.
+
 ## acp-kit (reusable)
 
 - **Move the auth-broker core to acp-kit** — the interactive-OAuth state
