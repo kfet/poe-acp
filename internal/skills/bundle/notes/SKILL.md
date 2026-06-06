@@ -1,7 +1,7 @@
 ---
 builtin: true
 name: notes
-description: Persistent scratch notes across conversations.
+description: Persistent scratch notes across conversations. Read first when you do not know where to find or how to access something.
 ---
 
 # Notes
