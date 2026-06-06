@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-06-05
+
+### Changed
+
+- **notes skill description** now names its trigger conditions ('Read first when you do not know where to find or how to access something') so the agent consults persistent notes before concluding it cannot locate or access a repo/host, instead of dead-ending on a local search.
+
 ## [0.18.0] - 2026-06-02
 
 ### Added
