@@ -1,4 +1,4 @@
-# This is a template for the kfet/homebrew-fir tap.
+# This is a template for the kfet/homebrew-ai tap.
 #
 # Formula/poe-acp.rb in the tap is regenerated automatically by
 # GoReleaser on every kfet/poe-acp tag push (see the brews: block
@@ -7,8 +7,8 @@
 # affect users.
 #
 # Users install with:
-#   brew install kfet/fir/poe-acp
-#   (or: brew tap kfet/fir && brew install poe-acp)
+#   brew install kfet/ai/poe-acp
+#   (or: brew tap kfet/ai && brew install poe-acp)
 
 class PoeAcpRelay < Formula
   desc "HTTP relay between Poe server bots and ACP-speaking agents"
