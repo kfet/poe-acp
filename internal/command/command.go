@@ -47,6 +47,7 @@ type Controller interface {
 	ResetSession(convID string) error
 	StatusFor(convID string) router.SessionStatus
 	AgentCommands() []client.CommandInfo
+	RelayInfo(convID string) router.RelayInfo
 }
 
 // passthroughAllow is the curated set of agent-advertised commands the
@@ -196,6 +197,8 @@ func isSessionBody(body string) bool {
 	switch {
 	case body == "status" || body == "whoami":
 		return true
+	case body == "relay" || body == "bot":
+		return true
 	case body == "models" || strings.HasPrefix(body, "models "):
 		return true
 	case body == "model" || strings.HasPrefix(body, "model "):
@@ -270,6 +273,8 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 		// body has a provider arg: "login <provider>".
 		rest := strings.TrimSpace(strings.TrimPrefix(body, "login"))
 		return b.start(ctx, convID, rest)
+	case body == "relay" || body == "bot":
+		return b.relay(convID), nil
 	case body == "status" || body == "whoami":
 		return b.status(convID), nil
 	case body == "models" || strings.HasPrefix(body, "models "):
@@ -317,6 +322,7 @@ func (b *Broker) help() *Outcome {
 	sb.WriteString("- `" + s + "help` — show this message\n")
 	if b.ctrl != nil {
 		sb.WriteString("- `" + s + "status` — current model, thinking, session\n")
+		sb.WriteString("- `" + s + "relay` — relay version, uptime, sessions\n")
 		sb.WriteString("- `" + s + "models [filter]` — list available models\n")
 		sb.WriteString("- `" + s + "model <id>` — switch model for this chat\n")
 		sb.WriteString("- `" + s + "new` — start a fresh session (clears context)\n")
@@ -334,6 +340,36 @@ func (b *Broker) help() *Outcome {
 			sb.WriteString("\n")
 		}
 	}
+	return &Outcome{Text: sb.String()}
+}
+
+// relay renders relay-process realtime info (version, uptime, sessions).
+func (b *Broker) relay(convID string) *Outcome {
+	if b.ctrl == nil {
+		return &Outcome{Text: "Relay info is unavailable."}
+	}
+	ri := b.ctrl.RelayInfo(convID)
+	var sb strings.Builder
+	sb.WriteString("**Relay**\n\n")
+	if ri.Version != "" {
+		fmt.Fprintf(&sb, "- version: `%s`\n", ri.Version)
+	}
+	if ri.Uptime != "" {
+		fmt.Fprintf(&sb, "- uptime: %s\n", ri.Uptime)
+	}
+	if ri.AgentCmd != "" {
+		fmt.Fprintf(&sb, "- agent: `%s`\n", ri.AgentCmd)
+	}
+	if ri.EffectiveModel != "" {
+		fmt.Fprintf(&sb, "- model: `%s`\n", ri.EffectiveModel)
+	}
+	fmt.Fprintf(&sb, "- models available: %d\n", ri.ModelsAvailable)
+	fmt.Fprintf(&sb, "- active conversations: %d\n", ri.ActiveSessions)
+	sess := "none yet (fresh on next message)"
+	if ri.SessionID != "" {
+		sess = "`" + ri.SessionID + "`"
+	}
+	fmt.Fprintf(&sb, "- this session: %s\n", sess)
 	return &Outcome{Text: sb.String()}
 }
 
