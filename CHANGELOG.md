@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-06-07
+
 ### Fixed
 
 - **`!cmd` passthrough commands (e.g. `!session`/`/session`) no longer fall through to the LLM.** The relay rewrites an allowlisted `!cmd` to its `/cmd` slash form, but the agent only dispatches a slash command when it is the *leading* prompt text. Two router paths buried that leading `/`: transcript flattening on a fresh-seeded session (`[Resuming…] User: /session`) and the fallback inline system-prompt/skills-catalog injection (which prepended the catalog onto `blocks[0]`). Both are now skipped for a slash-command turn, so the agent receives `/session` verbatim and executes it. The skipped inline injection does not consume the one-shot — the catalog still injects on the next genuine turn.
