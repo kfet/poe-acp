@@ -20,6 +20,7 @@ type fakeCtrl struct {
 	lastSet   [2]string // {convID, modelID}
 	resetConv string
 	agentCmds []client.CommandInfo
+	relayInfo router.RelayInfo
 }
 
 func (c *fakeCtrl) AvailableModels() ([]client.ModelInfo, string) { return c.models, c.current }
@@ -30,6 +31,7 @@ func (c *fakeCtrl) SetModelOverride(conv, id string) error {
 func (c *fakeCtrl) ResetSession(conv string) error        { c.resetConv = conv; return c.resetErr }
 func (c *fakeCtrl) StatusFor(string) router.SessionStatus { return c.status }
 func (c *fakeCtrl) AgentCommands() []client.CommandInfo   { return c.agentCmds }
+func (c *fakeCtrl) RelayInfo(string) router.RelayInfo     { return c.relayInfo }
 
 func withCtrl(c *fakeCtrl) *Broker {
 	b := New(newFake())
@@ -627,5 +629,62 @@ func TestHelp_ListsAgentCommands(t *testing.T) {
 	}
 	if strings.Contains(g, "!share") {
 		t.Fatalf("non-allowlisted agent cmd leaked: %s", g)
+	}
+}
+
+func TestRelayCommand(t *testing.T) {
+	// No controller wired -> unavailable.
+	bNo := New(newFake())
+	if out, err := bNo.Handle(context.Background(), "c", "!relay"); err != nil || out == nil ||
+		!strings.Contains(out.Text, "unavailable") {
+		t.Fatalf("nil-ctrl relay: out=%+v err=%v", out, err)
+	}
+
+	// Fully populated info, including a live session id and override model.
+	b := withCtrl(&fakeCtrl{relayInfo: router.RelayInfo{
+		Version:         "9.9.9",
+		Uptime:          "3h2m1s",
+		AgentCmd:        "fir --mode acp",
+		ModelsAvailable: 7,
+		ActiveSessions:  4,
+		SessionID:       "sess-abc",
+		EffectiveModel:  "opus",
+	}})
+	out, err := b.Handle(context.Background(), "c", "!relay")
+	if err != nil || out == nil {
+		t.Fatalf("relay: out=%+v err=%v", out, err)
+	}
+	for _, want := range []string{"**Relay**", "9.9.9", "3h2m1s", "fir --mode acp",
+		"opus", "models available: 7", "active conversations: 4", "sess-abc"} {
+		if !strings.Contains(out.Text, want) {
+			t.Fatalf("relay output missing %q:\n%s", want, out.Text)
+		}
+	}
+
+	// !bot alias + empty optional fields + no session -> fresh-session line.
+	b2 := withCtrl(&fakeCtrl{relayInfo: router.RelayInfo{ModelsAvailable: 1}})
+	out2, err := b2.Handle(context.Background(), "c", "!bot")
+	if err != nil || out2 == nil {
+		t.Fatalf("bot: out=%+v err=%v", out2, err)
+	}
+	if !strings.Contains(out2.Text, "none yet") {
+		t.Fatalf("bot output missing fresh-session line:\n%s", out2.Text)
+	}
+	for _, bad := range []string{"version:", "uptime:", "agent:", "model:"} {
+		if strings.Contains(out2.Text, bad) {
+			t.Fatalf("bot output should omit empty field %q:\n%s", bad, out2.Text)
+		}
+	}
+
+	// IsCommand recognises both sigil spellings.
+	for _, c := range []string{"!relay", "/relay", ".bot", "!bot"} {
+		if !IsCommand(c) {
+			t.Fatalf("IsCommand(%q) = false, want true", c)
+		}
+	}
+
+	// help lists !relay when a controller is wired.
+	if h := b.help(); !strings.Contains(h.Text, "relay` — relay version") {
+		t.Fatalf("help missing relay line:\n%s", h.Text)
 	}
 }

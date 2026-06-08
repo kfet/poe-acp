@@ -188,6 +188,9 @@ func main() {
 		Defaults:             defaults,
 		SystemPromptProvider: systemPromptProvider(cfgPath),
 		AuthErrorHint:        broker.OfferLogin,
+		Version:              version,
+		AgentCmd:             *agentCmd,
+		StartTime:            time.Now(),
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
