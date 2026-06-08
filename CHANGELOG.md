@@ -2,11 +2,11 @@
 
 ## [Unreleased]
 
-## [0.18.3] - 2026-06-07
+## [0.20.0] - 2026-06-07
 
-### Added
+### Fixed
 
-- **`!relay` (alias `!bot`) chat command** — reports relay-process realtime info handled entirely in the relay (no LLM): poe-acp version, uptime, the ACP agent command, this conversation's effective model, models-available count, active-conversation count, and this conv's live agent session id. Fills the gap where `!status` (per-conversation) and `!session` (agent-side) exposed no relay-process state.
+- **Release-version monotonicity.** v0.18.3 was cut from a stale base (branched off v0.18.2) and merged onto main *after* v0.19.0, so a later commit wrote a lower VERSION and semver "latest" resolved to v0.19.0 — hiding the v0.18.3 `!relay` command from update tooling. v0.20.0 supersedes both; HEAD already contains the session-lifecycle fix (v0.19.0) and the `!relay` command (v0.18.3). No functional change beyond this consolidation. Root cause: concurrent release cuts on the shared repo picking the next version from a stale view of the latest tag.
 
 ## [0.19.0] - 2026-06-07
 
@@ -17,6 +17,12 @@
 ### Changed
 
 - `Router.RunGC`'s stop function is now synchronous — it waits for the GC goroutine to exit before returning, giving callers a clean shutdown (and removing a latent race on the test tick hook).
+
+## [0.18.3] - 2026-06-07
+
+### Added
+
+- **`!relay` (alias `!bot`) chat command** — reports relay-process realtime info handled entirely in the relay (no LLM): poe-acp version, uptime, the ACP agent command, this conversation's effective model, models-available count, active-conversation count, and this conv's live agent session id. Fills the gap where `!status` (per-conversation) and `!session` (agent-side) exposed no relay-process state.
 
 ## [0.18.2] - 2026-06-07
 
@@ -128,7 +134,6 @@
 - **System-prompt out-of-band contract clause.** Router prepends a short clause to the operator's `SystemPrompt` explaining the `[poe-acp:out-of-band ...]` marker so the agent recognises synthetic turns, replies tersely, and doesn't address the user (the reply is discarded).
 
 ## [0.13.2] - 2026-05-11
-
 
 ### Changed
 
