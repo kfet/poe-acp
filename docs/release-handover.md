@@ -29,7 +29,7 @@
 - Publish release artifacts and Homebrew tap update:
   - `make publish` (pushes main + tag, triggers GitHub release workflow)
   - poll release runs via `gh run list` by `headSha`
-  - verify tap update via `gh api repos/kfet/homebrew-fir/contents/Formula/poe-acp.rb`
+  - verify tap update via `gh api repos/kfet/homebrew-ai/contents/Formula/poe-acp.rb`
 
 ## Notes
 - Do not push or publish until user explicitly confirms.

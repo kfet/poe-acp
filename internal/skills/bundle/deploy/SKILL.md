@@ -30,7 +30,7 @@ make deploy HOST=<host>
 Alternatively (released to tap):
 
 ```bash
-ssh <host> 'brew install kfet/fir/poe-acp'
+ssh <host> 'brew install kfet/ai/poe-acp'
 ```
 
 ### 2. Confirm the ACP agent is on the host's PATH
