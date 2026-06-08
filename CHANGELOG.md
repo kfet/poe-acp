@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-06-07
+
 ### Added
 
 - **`!relay` (alias `!bot`) chat command** — reports relay-process realtime info handled entirely in the relay (no LLM): poe-acp version, uptime, the ACP agent command, this conversation's effective model, models-available count, active-conversation count, and this conv's live agent session id. Fills the gap where `!status` (per-conversation) and `!session` (agent-side) exposed no relay-process state.
