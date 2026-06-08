@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Session lifecycle: release on GC + transparent recovery from forgotten sessions.** The relay now bounds the agent's memory: when a conversation is garbage-collected (idle past `SessionTTL`), the router calls `session/release` on the agent so it tears down that ACP session's extension/MCP subprocesses immediately instead of leaking them until full shutdown (`gcOnce` collects evicted sids under the lock and releases them after unlocking — never holding `r.mu` across the RPC). Conversely, when the agent has *already* forgotten a session the relay still maps (typed session-not-found, JSON-RPC `-32001`), `Prompt` recovers transparently: it evicts the stale session, recreates one via `getOrCreate`, and replays the turn exactly once (bounded — a second not-found surfaces to the user). New `Agent.ReleaseSession` interface method, backed by acp-kit v0.2.3's `AgentProc.ReleaseSession` + `IsSessionNotFound`. Fixes unbounded fir-session / python-sidecar growth that OOMed long-running relays.
+
+### Changed
+
+- `Router.RunGC`'s stop function is now synchronous — it waits for the GC goroutine to exit before returning, giving callers a clean shutdown (and removing a latent race on the test tick hook).
+
 ## [0.18.2] - 2026-06-07
 
 ### Fixed

@@ -67,7 +67,7 @@ func TestRouter_NonAuthError_NotIntercepted(t *testing.T) {
 	// hint is set, but the error is not the auth error → raw error path.
 	cases := []error{
 		errors.New("boom"), // not a RequestError
-		&acp.RequestError{Code: -32001, Message: "Other"},          // wrong code
+		&acp.RequestError{Code: -32099, Message: "Other"},          // wrong code
 		&acp.RequestError{Code: authRequiredCode, Message: "Nope"}, // right code, wrong message
 	}
 	for _, e := range cases {

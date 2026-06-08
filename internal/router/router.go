@@ -94,6 +94,11 @@ type Agent interface {
 	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink client.SessionUpdateSink) error
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
 	Cancel(ctx context.Context, sid acp.SessionId) error
+	// ReleaseSession asks the agent to tear down and forget an in-memory
+	// session, freeing its extension/MCP subprocesses. The on-disk session
+	// is left intact. Returns a session-not-found error (client.IsSessionNotFound)
+	// if the agent does not hold the session.
+	ReleaseSession(ctx context.Context, sid acp.SessionId) error
 	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
 	SetConfigOption(ctx context.Context, sid acp.SessionId, configID, value string) error
 	// Models returns the agent's last-seen available models and the
@@ -273,6 +278,17 @@ type turnReq struct {
 	// err is set by the runner before closing done. Submitters that
 	// care (Prompt) read it after <-done.
 	err error
+	// recoverable, when true at the moment done is closed, signals the
+	// turn failed because the agent no longer holds this ACP session
+	// (typed session-not-found). The runner leaves the sink un-finalised
+	// so the submit path can evict the stale session, re-create it, and
+	// replay the turn ONCE. Only set for user turns.
+	recoverable bool
+	// noRecover, when true, tells the runner this is the replay attempt
+	// (or recovery is otherwise disabled): a session-not-found error is
+	// finalised on the sink as a normal error instead of being deferred
+	// to the submit path. Bounds recovery to a single retry.
+	noRecover bool
 	// shed, when true at the moment done is closed, signals the
 	// request was dropped by the queue (overflow shed, stop, or
 	// age-drop). For reactions the difference is logged but the HTTP
@@ -654,8 +670,19 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	// disk/network IO interruptible by the caller).
 	// A slash command (e.g. "/session", produced by !cmd passthrough) must
 	// reach the agent as the LEADING text or it will not be dispatched as a
-	// command. Skip transcript flattening so the "/" stays first.
+	// command. Skip transcript flattening / inline injection so the "/" stays first.
 	isCommand := strings.HasPrefix(strings.TrimSpace(latestText), "/")
+
+	blocks := r.buildPromptBlocks(ctx, st.cwd, query, latestTurn, latestText, freshSeed, isCommand)
+
+	return r.submitTurn(ctx, convID, userID, query, latestTurn, latestText, opts, sink, st, blocks, isCommand, false)
+}
+
+// buildPromptBlocks assembles the ACP content blocks for a turn: the prompt
+// text (or the flattened transcript on a fresh-seed cold start) followed by
+// any attachment blocks for the latest user turn. A slash-command turn is
+// never flattened so the leading "/" survives for agent-side dispatch.
+func (r *Router) buildPromptBlocks(ctx context.Context, cwd string, query []Turn, latestTurn Turn, latestText string, freshSeed, isCommand bool) []acp.ContentBlock {
 	promptText := latestText
 	if freshSeed && !isCommand {
 		promptText = flattenTranscript(query)
@@ -663,16 +690,23 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	blocks := []acp.ContentBlock{acp.TextBlock(promptText)}
 	embedded := r.cfg.Agent.Caps().EmbeddedContext
 	// latestTurn is non-zero here: latestText is only non-empty when
-	// the query had a user turn, and we short-circuited otherwise.
+	// the query had a user turn, and the caller short-circuited otherwise.
 	msgID := turnMsgID(latestTurn)
 	used := map[string]struct{}{}
 	for _, a := range latestTurn.Attachments {
 		if a.URL == "" {
 			continue
 		}
-		blocks = append(blocks, r.attachmentBlocks(ctx, st.cwd, msgID, used, a, embedded)...)
+		blocks = append(blocks, r.attachmentBlocks(ctx, cwd, msgID, used, a, embedded)...)
 	}
+	return blocks
+}
 
+// submitTurn pushes a user turn onto the session queue and waits for it. On a
+// recoverable session-not-found failure (the agent released or idle-reaped the
+// session) it evicts the stale session, re-creates one, and replays the turn
+// exactly once (recovered guards against retry loops).
+func (r *Router) submitTurn(ctx context.Context, convID, userID string, query []Turn, latestTurn Turn, latestText string, opts Options, sink ChunkSink, st *sessionState, blocks []acp.ContentBlock, isCommand, recovered bool) error {
 	req := &turnReq{
 		kind:         turnUser,
 		isCommand:    isCommand,
@@ -683,6 +717,7 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 		hideThinking: opts.HideThinking,
 		enqueuedAt:   r.cfg.Now(),
 		done:         make(chan struct{}),
+		noRecover:    recovered,
 	}
 	if !st.queue.push(req) {
 		// Session was being torn down between getOrCreate and push.
@@ -694,6 +729,12 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 
 	select {
 	case <-req.done:
+		// The agent forgot this session (released/idle-reaped). The runner
+		// left the sink un-finalised; recover once by recreating the session
+		// and replaying the turn.
+		if req.recoverable && !recovered {
+			return r.recoverAndReplay(ctx, convID, userID, query, latestTurn, latestText, opts, sink, st, isCommand)
+		}
 		// Runner has finished — sink.Done/Error/Replace already fired.
 		return req.err
 	case <-ctx.Done():
@@ -708,6 +749,49 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 		}
 		return ctx.Err()
 	}
+}
+
+// recoverAndReplay handles a single session-not-found recovery: evict the
+// stale session (stopping its goroutines), re-acquire a fresh session via
+// getOrCreate, and replay the turn once. This is the keystone that keeps the
+// relay resilient when fir releases or idle-reaps a session the relay still
+// maps to a conversation.
+func (r *Router) recoverAndReplay(ctx context.Context, convID, userID string, query []Turn, latestTurn Turn, latestText string, opts Options, sink ChunkSink, stale *sessionState, isCommand bool) error {
+	kitlog.Debugf("recoverAndReplay conv=%s: agent lost sid=%s, recreating", convID, string(stale.sessionID))
+	r.evictSession(convID, stale)
+	// getOrCreate re-runs its normal tiering: if the agent supports
+	// list+resume it re-resumes the on-disk session (under a fresh sid),
+	// otherwise it opens a new session. Re-resuming under a new sid is the
+	// intended behaviour here — the original leak was fir orphaning the OLD
+	// in-memory session, which session/release + the idle reaper now reclaim.
+	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query)
+	if err != nil {
+		_ = sink.Error(fmt.Sprintf("relay: %v", err), "user_caused_error")
+		_ = sink.Done()
+		return err
+	}
+	blocks := r.buildPromptBlocks(ctx, st.cwd, query, latestTurn, latestText, freshSeed, isCommand)
+	return r.submitTurn(ctx, convID, userID, query, latestTurn, latestText, opts, sink, st, blocks, isCommand, true)
+}
+
+// evictSession removes st from the session map (only if it is still the
+// current entry for convID) and stops its goroutines. Whoever wins the
+// map delete owns the channel closes, so this never double-closes against
+// gcOnce (which only evicts idle sessions).
+func (r *Router) evictSession(convID string, st *sessionState) {
+	r.mu.Lock()
+	cur, ok := r.sessions[convID]
+	deleted := ok && cur == st
+	if deleted {
+		delete(r.sessions, convID)
+	}
+	r.mu.Unlock()
+	if !deleted {
+		return
+	}
+	close(st.drainStop)
+	close(st.runStop)
+	st.queue.stop()
 }
 
 // ReportReaction queues an out-of-band reaction turn. Returns as soon
@@ -809,6 +893,15 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 
 	if req.kind == turnUser {
 		applyErr := r.applyOptions(ctx, st, req.opts)
+		// If the agent has forgotten this session, applyOptions' set_model /
+		// set_config_option is the first call to surface it. Leave the sink
+		// untouched and signal the submit path to recover (evict + recreate +
+		// replay) rather than emitting a user-visible notice.
+		if client.IsSessionNotFound(applyErr) && !req.noRecover {
+			req.recoverable = true
+			req.err = applyErr
+			return
+		}
 		// Set the provider emoji once st.applied.Model is settled,
 		// whether or not the swap succeeded — on failure applied.Model
 		// keeps its previous value (often "" on a fresh session),
@@ -852,6 +945,15 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	<-endDone
 
 	if err != nil {
+		// Recoverable: the agent no longer holds this session (released or
+		// idle-reaped). Leave the sink open and let the submit path replay
+		// the turn against a fresh session exactly once. Reactions are
+		// best-effort and use a discard sink, so only recover user turns.
+		if req.kind == turnUser && client.IsSessionNotFound(err) && !req.noRecover {
+			req.recoverable = true
+			req.err = err
+			return
+		}
 		if isAuthRequired(err) && r.cfg.AuthErrorHint != nil {
 			if hint := r.cfg.AuthErrorHint(); hint != "" {
 				_ = sink.Text(hint)
@@ -1689,7 +1791,9 @@ var runGCTickHook func()
 // stop function.
 func (r *Router) RunGC(ctx context.Context, every time.Duration) (stop func()) {
 	ctx2, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
@@ -1705,22 +1809,49 @@ func (r *Router) RunGC(ctx context.Context, every time.Duration) (stop func()) {
 			}
 		}
 	}()
-	return cancel
+	// stop is synchronous: it cancels the loop AND waits for the goroutine to
+	// exit, so no tick (gcOnce / sweep / hook) can still be running after stop
+	// returns. This gives callers a clean shutdown and prevents tests from
+	// racing the goroutine on shared state (e.g. runGCTickHook).
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func (r *Router) gcOnce() {
 	cutoff := r.cfg.Now().Add(-r.cfg.SessionTTL).UnixNano()
+	var evicted []acp.SessionId
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	for id, st := range r.sessions {
 		if st.queue.idle() && st.lastUsedNs < cutoff {
 			close(st.drainStop) // stop the session-lifetime drain goroutine
 			close(st.runStop)
 			st.queue.stop()
+			if st.sessionID != "" {
+				evicted = append(evicted, st.sessionID)
+			}
 			delete(r.sessions, id)
 		}
 	}
+	r.mu.Unlock()
+
+	// Tell the agent to release each evicted session so it frees the
+	// session's extension/MCP subprocesses instead of leaking them until
+	// full shutdown. Best-effort and done OUTSIDE r.mu — never hold the
+	// router lock across a network RPC.
+	for _, sid := range evicted {
+		rctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+		if err := r.cfg.Agent.ReleaseSession(rctx, sid); err != nil {
+			kitlog.Debugf("gcOnce: ReleaseSession(%s): %v", string(sid), err)
+		}
+		cancel()
+	}
 }
+
+// releaseTimeout bounds the best-effort session/release RPC issued when a
+// session is garbage-collected.
+const releaseTimeout = 10 * time.Second
 
 // sweepAttachmentsOnce walks <StateDir>/convs/*/.poe-attachments/ and
 // removes files whose mtime is older than AttachmentTTL. Empty message
