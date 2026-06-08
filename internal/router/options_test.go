@@ -407,3 +407,47 @@ func TestRouter_AppliesDefaultsOnEmptyParams(t *testing.T) {
 		t.Fatalf("expected SetConfigOption(thinking_level=medium) once; got %v", agent.setConfigCalls)
 	}
 }
+
+func TestRelayInfo(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		return acp.StopReasonEndTurn, nil
+	})
+	r, err := New(Config{
+		Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour,
+		Version: "1.2.3", AgentCmd: "fir --mode acp",
+		StartTime: time.Now().Add(-time.Minute),
+		Defaults:  Options{Model: "def-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Empty convID -> default; no session yet.
+	info := r.RelayInfo("")
+	if info.Version != "1.2.3" || info.AgentCmd != "fir --mode acp" {
+		t.Fatalf("relayinfo meta wrong: %+v", info)
+	}
+	if info.Uptime == "" {
+		t.Fatalf("uptime should be set when StartTime is non-zero")
+	}
+	if info.EffectiveModel != "def-model" || info.SessionID != "" || info.ActiveSessions != 0 {
+		t.Fatalf("fresh relayinfo wrong: %+v", info)
+	}
+	// Inject a live session + sticky override for c1.
+	r.mu.Lock()
+	r.sessions["c1"] = &sessionState{convID: "c1", sessionID: acp.SessionId("sid-1")}
+	r.overrides["c1"] = "override-model"
+	r.mu.Unlock()
+	info2 := r.RelayInfo("c1")
+	if info2.SessionID != "sid-1" || info2.EffectiveModel != "override-model" || info2.ActiveSessions != 1 {
+		t.Fatalf("populated relayinfo wrong: %+v", info2)
+	}
+
+	// StartTime zero -> Uptime empty.
+	r2, err := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up := r2.RelayInfo("x").Uptime; up != "" {
+		t.Fatalf("uptime should be empty with zero StartTime, got %q", up)
+	}
+}
