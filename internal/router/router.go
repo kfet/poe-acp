@@ -257,6 +257,7 @@ const (
 // after popping. No locking needed — handoff via the queue's mutex.
 type turnReq struct {
 	kind         turnKind
+	isCommand    bool // latest user turn is a slash command (skip flatten + inline sysprompt)
 	ctx          context.Context
 	sink         ChunkSink
 	opts         Options            // user turns only
@@ -651,8 +652,12 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	// Build the prompt content blocks now (attachment download uses the
 	// HTTP request ctx; doing it here keeps the runner thin and the
 	// disk/network IO interruptible by the caller).
+	// A slash command (e.g. "/session", produced by !cmd passthrough) must
+	// reach the agent as the LEADING text or it will not be dispatched as a
+	// command. Skip transcript flattening so the "/" stays first.
+	isCommand := strings.HasPrefix(strings.TrimSpace(latestText), "/")
 	promptText := latestText
-	if freshSeed {
+	if freshSeed && !isCommand {
 		promptText = flattenTranscript(query)
 	}
 	blocks := []acp.ContentBlock{acp.TextBlock(promptText)}
@@ -670,6 +675,7 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 
 	req := &turnReq{
 		kind:         turnUser,
+		isCommand:    isCommand,
 		ctx:          ctx,
 		sink:         sink,
 		opts:         opts,
@@ -818,7 +824,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	}
 
 	blocks := req.blocks
-	if req.kind == turnUser && st.pendingSystemPromptInline && st.systemPrompt != "" {
+	if req.kind == turnUser && !req.isCommand && st.pendingSystemPromptInline && st.systemPrompt != "" {
 		// Fallback path: agent didn't advertise session.systemPrompt
 		// (or this is a resume). Prepend the catalog inline so the
 		// agent picks it up on the first user turn of the hot path.
