@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release CI now refuses backwards/mismatched versions.** The `release`
+  workflow gained a guard step asserting (1) the pushed tag equals the
+  `VERSION` file and (2) the tag is the strictly-highest semver tag — so a
+  release commit that overwrites a higher `VERSION` with a lower one (how
+  v0.18.3 shipped on top of v0.19.0) is rejected before GoReleaser publishes.
+
 ## [0.20.0] - 2026-06-07
 
 ### Fixed
