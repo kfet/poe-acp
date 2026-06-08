@@ -177,6 +177,12 @@ type Config struct {
 	// failure. Called outside Router.mu; must be safe for concurrent
 	// use. If nil, or if it returns "", the raw error is surfaced.
 	AuthErrorHint func() string
+	// Version is the relay build version, surfaced by !relay.
+	Version string
+	// AgentCmd is the ACP agent command line, surfaced by !relay.
+	AgentCmd string
+	// StartTime is the relay process start; uptime in !relay is now-StartTime.
+	StartTime time.Time
 }
 
 // authRequiredCode is the JSON-RPC error code fir returns from
@@ -1607,6 +1613,52 @@ func (r *Router) StatusFor(convID string) SessionStatus {
 		Thinking:        r.cfg.Defaults.Thinking,
 		HasSession:      hasSession,
 		ModelsAvailable: len(models),
+	}
+}
+
+// RelayInfo is a snapshot of relay-process realtime state, surfaced by
+// the !relay chat command.
+type RelayInfo struct {
+	Version         string
+	Uptime          string // pre-formatted (e.g. "3h2m1s"); "" if unknown
+	AgentCmd        string
+	ModelsAvailable int
+	ActiveSessions  int    // live conv sessions tracked by the router
+	SessionID       string // this conv's live agent session id; "" if none
+	EffectiveModel  string // override if set, else configured default
+}
+
+// RelayInfo returns a race-free snapshot of relay-process state plus the
+// caller conversation's live session id. Satisfies command.Controller.
+func (r *Router) RelayInfo(convID string) RelayInfo {
+	if convID == "" {
+		convID = "default"
+	}
+	models, _ := r.cfg.Agent.Models()
+	r.mu.Lock()
+	n := len(r.sessions)
+	var sid string
+	if st, ok := r.sessions[convID]; ok {
+		sid = string(st.sessionID)
+	}
+	override := r.overrides[convID]
+	r.mu.Unlock()
+	eff := r.cfg.Defaults.Model
+	if override != "" {
+		eff = override
+	}
+	var up string
+	if !r.cfg.StartTime.IsZero() {
+		up = r.cfg.Now().Sub(r.cfg.StartTime).Round(time.Second).String()
+	}
+	return RelayInfo{
+		Version:         r.cfg.Version,
+		Uptime:          up,
+		AgentCmd:        r.cfg.AgentCmd,
+		ModelsAvailable: len(models),
+		ActiveSessions:  n,
+		SessionID:       sid,
+		EffectiveModel:  eff,
 	}
 }
 
