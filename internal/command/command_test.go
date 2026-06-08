@@ -594,6 +594,15 @@ func TestPassthrough(t *testing.T) {
 	if r, ok := b.Passthrough("!reload"); !ok || r != "/reload" {
 		t.Fatalf("reload: %q %v", r, ok)
 	}
+	// logout: allowlisted + advertised → forwarded to fir's /logout
+	c.agentCmds = []client.CommandInfo{{Name: "logout", Description: "Log out"}}
+	if r, ok := b.Passthrough("!logout"); !ok || r != "/logout" {
+		t.Fatalf("logout: %q %v", r, ok)
+	}
+	if r, ok := b.Passthrough("!logout all"); !ok || r != "/logout all" {
+		t.Fatalf("logout args: %q %v", r, ok)
+	}
+	c.agentCmds = []client.CommandInfo{{Name: "reload", Description: "Reload"}, {Name: "share"}}
 	// allowlisted but agent does NOT advertise it
 	if _, ok := b.Passthrough("!compact"); ok {
 		t.Fatal("compact not advertised → false")
