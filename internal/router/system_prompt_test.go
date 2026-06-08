@@ -282,3 +282,38 @@ func mustRouterWithConfig(t *testing.T, a Agent, cfg Config) *Router {
 	}
 	return rtr
 }
+
+// TestSystemPrompt_CommandTurnNotCorrupted: a slash command (as produced
+// by the !cmd passthrough rewrite) must reach the agent as the LEADING
+// text, with NO inline catalog prepended and NO transcript flattening —
+// otherwise the agent never dispatches it as a command and falls through
+// to the LLM. Regression for the "/session went to the model" bug.
+func TestSystemPrompt_CommandTurnNotCorrupted(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	// caps zero — fallback (inline) path, the one that corrupted commands.
+
+	rtr := mustRouterWithSP(t, agent, "DURABLE-CATALOG-XYZ")
+	if err := rtr.Prompt(context.Background(), "c-cmd", "u",
+		[]Turn{{Role: "user", Content: "/session"}}, Options{}, newCollector()); err != nil {
+		t.Fatal(err)
+	}
+	if agent.lastPromptTxt != "/session" {
+		t.Fatalf("command turn corrupted: got %q want %q", agent.lastPromptTxt, "/session")
+	}
+	if strings.Contains(agent.lastPromptTxt, "DURABLE-CATALOG-XYZ") {
+		t.Fatalf("catalog must not be inlined onto a command turn: %q", agent.lastPromptTxt)
+	}
+
+	// The skipped injection must NOT consume the one-shot: the catalog
+	// still inlines on the next genuine (non-command) turn.
+	if err := rtr.Prompt(context.Background(), "c-cmd", "u",
+		[]Turn{{Role: "user", Content: "now a real message"}}, Options{}, newCollector()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(agent.lastPromptTxt, "DURABLE-CATALOG-XYZ") {
+		t.Fatalf("catalog must inline on the first real turn after a command: %q", agent.lastPromptTxt)
+	}
+}
