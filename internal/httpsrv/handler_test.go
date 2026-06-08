@@ -59,7 +59,8 @@ func (f *fakeAgent) Prompt(_ context.Context, sid acp.SessionId, prompt []acp.Co
 	})
 	return acp.StopReasonEndTurn, nil
 }
-func (f *fakeAgent) Cancel(_ context.Context, _ acp.SessionId) error { return nil }
+func (f *fakeAgent) Cancel(_ context.Context, _ acp.SessionId) error         { return nil }
+func (f *fakeAgent) ReleaseSession(_ context.Context, _ acp.SessionId) error { return nil }
 func (f *fakeAgent) SetModel(_ context.Context, _ acp.SessionId, _ string) error {
 	return nil
 }
