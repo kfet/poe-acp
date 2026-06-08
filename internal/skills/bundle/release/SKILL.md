@@ -41,9 +41,9 @@ If the user provides a version, use it. Otherwise, auto-determine:
 After the user confirms, run `make publish`. This pushes `main` and `vVERSION` to `origin`. The GitHub `release.yml` workflow then:
 
 1. Runs `make all` + `make notices`.
-2. Invokes GoReleaser: builds the 5 cross-compile targets, creates the GitHub release with binaries + checksums + THIRD_PARTY_NOTICES.md, and commits `Formula/poe-acp.rb` to `kfet/homebrew-fir` (the shared tap).
+2. Invokes GoReleaser: builds the 5 cross-compile targets, creates the GitHub release with binaries + checksums + THIRD_PARTY_NOTICES.md, and commits `Formula/poe-acp.rb` to `kfet/homebrew-ai` (the shared tap).
 
-After which `brew install kfet/fir/poe-acp` (or `brew upgrade`) will pick up the new version.
+After which `brew install kfet/ai/poe-acp` (or `brew upgrade`) will pick up the new version.
 
 Alternatively, `make deploy HOST=<host>` pushes the right cross-compiled binary directly to a remote host via scp (no GitHub release needed) — useful for hotfixing a Funnel-exposed deployment.
 
@@ -72,12 +72,12 @@ Do not ask the user whether to monitor — always do it automatically after a su
 Once the `release` workflow concludes successfully, confirm the formula landed in the tap:
 
 ```bash
-gh api repos/kfet/homebrew-fir/contents/Formula/poe-acp.rb --jq '.sha,.size' 2>&1
+gh api repos/kfet/homebrew-ai/contents/Formula/poe-acp.rb --jq '.sha,.size' 2>&1
 ```
 
 And that `brew` sees the new version (optional, on a machine with brew installed):
 
 ```bash
 brew update
-brew info kfet/fir/poe-acp | head -5
+brew info kfet/ai/poe-acp | head -5
 ```

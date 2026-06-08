@@ -99,7 +99,7 @@ New entries go at the top of their subsection (most recent first).
 
 ## Release
 
-Releasing is driven by `.fir/skills/release/SKILL.md`. `make publish` pushes `main + vVERSION` to `origin`; `release.yml` runs `make all` + `make notices` and then GoReleaser, which publishes the GitHub release and updates `Formula/poe-acp.rb` in the shared `kfet/homebrew-fir` tap. Users install with `brew install kfet/fir/poe-acp`.
+Releasing is driven by `.fir/skills/release/SKILL.md`. `make publish` pushes `main + vVERSION` to `origin`; `release.yml` runs `make all` + `make notices` and then GoReleaser, which publishes the GitHub release and updates `Formula/poe-acp.rb` in the shared `kfet/homebrew-ai` tap. Users install with `brew install kfet/ai/poe-acp`.
 
 ## Caveman Mode
 
