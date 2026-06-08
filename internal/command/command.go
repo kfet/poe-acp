@@ -52,11 +52,13 @@ type Controller interface {
 
 // passthroughAllow is the curated set of agent-advertised commands the
 // relay is willing to forward as chat commands (`!reload` → `/reload`).
-// Kept deliberately small and safe: read-only or non-destructive,
-// process-scoped operations. Commands outside this set never reach the
-// agent via the command surface (the user's literal text still does).
+// Kept deliberately small and safe: read-only, non-destructive, or
+// explicitly account-scoped (logout) operations the user invokes
+// directly. Commands outside this set never reach the agent via the
+// command surface (the user's literal text still does).
 var passthroughAllow = map[string]bool{
 	"reload":    true,
+	"logout":    true,
 	"compact":   true,
 	"session":   true,
 	"changelog": true,

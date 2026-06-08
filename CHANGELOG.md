@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-06-07
+
+### Added
+
+- **`!logout` chat command (passthrough to fir's `/logout`).** Added `logout` to the relay's `passthroughAllow` allowlist, so `!logout [provider-id|all]` is forwarded to the agent's already-registered `/logout` ACP command instead of falling through to the LLM as plain text. Lets users clear OAuth credentials from chat, mirroring `!reload`. The allowlist comment now notes it also covers explicitly account-scoped, user-invoked operations (logout), not only read-only ones.
+
 ### Fixed
 
 - **Release CI now refuses backwards/mismatched versions.** The `release`
