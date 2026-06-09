@@ -191,6 +191,7 @@ func main() {
 		Version:              version,
 		AgentCmd:             *agentCmd,
 		StartTime:            time.Now(),
+		AccessKey:            secret,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)

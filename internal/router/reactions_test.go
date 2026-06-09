@@ -350,7 +350,8 @@ func (s *orderingSink) Text(t string) error {
 	s.send("text", t)
 	return nil
 }
-func (s *orderingSink) Replace(t string) error { s.send("replace", t); return nil }
+func (s *orderingSink) Replace(t string) error               { s.send("replace", t); return nil }
+func (s *orderingSink) File(url, ct, name, ref string) error { s.send("file", name); return nil }
 func (s *orderingSink) Error(t, _ string) error {
 	s.send("error", t)
 	return nil

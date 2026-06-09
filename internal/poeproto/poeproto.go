@@ -317,6 +317,20 @@ func (s *SSEWriter) Replace(chunk string) error {
 	return s.event("replace_response", map[string]any{"text": chunk})
 }
 
+// File advertises an output attachment to the client. The url is the
+// Poe-served download URL returned by the attachment upload; name is
+// the filename shown to the user; contentType is its MIME type. A
+// non-empty inlineRef makes Poe render the attachment inline when the
+// streamed markdown references it via ![title][inlineRef].
+func (s *SSEWriter) File(url, contentType, name, inlineRef string) error {
+	return s.event("file", map[string]any{
+		"url":          url,
+		"content_type": contentType,
+		"name":         name,
+		"inline_ref":   inlineRef,
+	})
+}
+
 // Error emits an error event.
 func (s *SSEWriter) Error(text, errorType string) error {
 	data := map[string]any{"allow_retry": true, "text": text}
