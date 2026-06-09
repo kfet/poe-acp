@@ -214,6 +214,7 @@ type captureSink struct {
 	errText     string
 	errType     string
 	replaceText string
+	files       []capturedFile
 	done        bool
 	firstCalled bool
 	// dev.acp-kit.status-line/v1 — last values seen.
@@ -236,6 +237,15 @@ func (s *captureSink) Text(t string) error {
 func (s *captureSink) Replace(t string) error {
 	s.mu.Lock()
 	s.replaceText = t
+	s.mu.Unlock()
+	return nil
+}
+
+type capturedFile struct{ url, ct, name, ref string }
+
+func (s *captureSink) File(url, ct, name, ref string) error {
+	s.mu.Lock()
+	s.files = append(s.files, capturedFile{url, ct, name, ref})
 	s.mu.Unlock()
 	return nil
 }
@@ -1578,11 +1588,12 @@ func (s *eventSink) Text(t string) error {
 	s.mu.Unlock()
 	return nil
 }
-func (s *eventSink) Replace(t string) error   { return nil }
-func (s *eventSink) Error(t, et string) error { return nil }
-func (s *eventSink) Done() error              { return nil }
-func (s *eventSink) SetProviderEmoji(string)  {}
-func (s *eventSink) SetStatus(string, string) {}
+func (s *eventSink) Replace(t string) error       { return nil }
+func (s *eventSink) File(a, b, c, d string) error { return nil }
+func (s *eventSink) Error(t, et string) error     { return nil }
+func (s *eventSink) Done() error                  { return nil }
+func (s *eventSink) SetProviderEmoji(string)      {}
+func (s *eventSink) SetStatus(string, string)     {}
 
 // simulatedContent replays an event sequence as Poe renders it:
 // Replace("") wipes all prior Text; subsequent Text events append.

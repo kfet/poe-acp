@@ -1049,3 +1049,26 @@ func TestRewriteLatestUserTurn_NoUserTurn(t *testing.T) {
 		t.Fatalf("user turn rewrite: %+v", got)
 	}
 }
+
+func TestSink_File(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, err := poeproto.NewSSEWriter(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Meta(); err != nil {
+		t.Fatal(err)
+	}
+	s := newSink(w, 0)
+	if err := s.File("https://poe/x", "text/markdown", "doc.md", ""); err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "event: file") {
+		t.Fatalf("want file event, got %q", rec.Body.String())
+	}
+	// File after Done is a no-op (closed gate).
+	_ = s.Done()
+	if err := s.File("u", "ct", "n", ""); err != nil {
+		t.Fatalf("File after done: %v", err)
+	}
+}
