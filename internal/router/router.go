@@ -27,6 +27,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/poe-acp/internal/poeupload"
 
 	"github.com/kfet/poe-acp/internal/statusline"
 )
@@ -36,6 +37,11 @@ import (
 type ChunkSink interface {
 	Text(s string) error
 	Replace(s string) error
+	// File advertises an output attachment (Poe `file` event). url is
+	// the Poe-served download URL; name the filename shown to the user;
+	// contentType the MIME type; a non-empty inlineRef makes Poe render
+	// the attachment inline when the markdown references ![..][inlineRef].
+	File(url, contentType, name, inlineRef string) error
 	Error(text, errorType string) error
 	Done() error
 	// FirstChunk is called by the router once, the first time the sink
@@ -183,6 +189,14 @@ type Config struct {
 	AgentCmd string
 	// StartTime is the relay process start; uptime in !relay is now-StartTime.
 	StartTime time.Time
+	// AccessKey is the Poe bot access key. When non-empty the relay can
+	// upload output attachments (poe-attach directives) and advertise
+	// them to the client via `file` SSE events. Empty disables the
+	// feature (directives are then forwarded as inert HTML comments).
+	AccessKey string
+	// UploadEndpoint overrides the Poe attachment-upload endpoint
+	// (testing). Empty uses poeupload.DefaultEndpoint.
+	UploadEndpoint string
 }
 
 // authRequiredCode is the JSON-RPC error code fir returns from
@@ -202,6 +216,10 @@ func isAuthRequired(err error) bool {
 // Router is the conv_id → session map.
 type Router struct {
 	cfg Config
+
+	// uploader handles output-attachment uploads; nil when AccessKey
+	// is unset (feature disabled).
+	uploader *poeupload.Uploader
 
 	mu        sync.Mutex
 	sessions  map[string]*sessionState
@@ -440,6 +458,9 @@ type chunkMsg struct {
 type turnDef struct {
 	sink         ChunkSink
 	hideThinking bool
+	// scanner extracts poe-attach directives from message chunks; nil
+	// when output attachments are disabled.
+	scanner *attachScanner
 }
 
 // chunkKind classifies the most recent stream chunk written to the sink.
@@ -480,7 +501,11 @@ func New(cfg Config) (*Router, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "convs"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir state: %w", err)
 	}
-	return &Router{cfg: cfg, sessions: make(map[string]*sessionState), overrides: make(map[string]string)}, nil
+	r := &Router{cfg: cfg, sessions: make(map[string]*sessionState), overrides: make(map[string]string)}
+	if cfg.AccessKey != "" {
+		r.uploader = poeupload.New(cfg.AccessKey, cfg.UploadEndpoint, cfg.HTTPClient)
+	}
+	return r, nil
 }
 
 // systemPromptForSession asks the configured provider for the system
@@ -494,8 +519,29 @@ func (r *Router) systemPromptForSession() string {
 	if text == "" {
 		return ""
 	}
-	return transportContractClause + "\n\n" + text
+	clause := transportContractClause
+	if r.uploader != nil {
+		clause += attachContractClause
+	}
+	return clause + "\n\n" + text
 }
+
+// attachContractClause documents the output-attachment directive. It
+// is appended to the transport contract only when uploads are enabled
+// (the bot has an access key), so the agent is never told about a
+// capability the relay cannot honour.
+const attachContractClause = `
+
+3. Output attachments. You can attach a file from this host to your
+   reply so it appears as a downloadable attachment in the chat. Emit,
+   on its OWN line in your message, an HTML comment directive:
+     <!--poe-attach path="/abs/or/relative/path" name="Nice Name"-->
+   The relay intercepts the line (it never reaches the user), uploads
+   the file to Poe, and attaches it. ` + "`" + `path` + "`" + ` is required; relative
+   paths resolve against your working dir. ` + "`" + `name` + "`" + ` is optional. Add a
+   bare ` + "`" + `inline` + "`" + ` token (e.g. ...name="Chart" inline-->) to render an
+   image inline rather than as an attachment chip. Use this to deliver
+   files instead of pasting large content or standing up a web server.`
 
 // transportContractClause is prepended to the provider-supplied system
 // prompt so the agent understands the relay's I/O contract: how
@@ -576,6 +622,9 @@ func (s *sessionState) drainChunks() {
 				first = false
 				chunkMode = chunkNone
 			case msg.endTurn != nil:
+				if td != nil && td.scanner != nil {
+					td.scanner.Flush()
+				}
 				td = nil
 				close(msg.endTurn) // ack: Prompt can proceed
 			case td != nil:
@@ -628,9 +677,21 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 		td.sink.FirstChunk()
 	}
 	if kind == chunkThought {
+		// A thought chunk interrupts message text: flush any line the
+		// scanner is holding so held text never lands after the thought.
+		if td.scanner != nil {
+			td.scanner.Flush()
+		}
 		// Continue the blockquote across newlines inside the thought
 		// chunk so Poe's Markdown renderer keeps it as one block.
 		text = strings.ReplaceAll(text, "\n", "\n> ")
+	}
+	if kind == chunkMessage && td.scanner != nil {
+		if prefix != "" {
+			_ = td.sink.Text(prefix)
+		}
+		td.scanner.Feed(text)
+		return
 	}
 	_ = td.sink.Text(prefix + text)
 }
@@ -857,6 +918,10 @@ func (d discardSink) Error(text, et string) error {
 	kitlog.Debugf("reaction sink (conv=%s) error[%s]: %s", d.convID, et, text)
 	return nil
 }
+func (d discardSink) File(url, ct, name, ref string) error {
+	kitlog.Debugf("reaction sink (conv=%s) file: %s (%s)", d.convID, name, url)
+	return nil
+}
 func (d discardSink) Done() error              { return nil }
 func (d discardSink) FirstChunk()              {}
 func (d discardSink) SetProviderEmoji(string)  {}
@@ -939,6 +1004,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	st.chunkCh <- chunkMsg{beginTurn: &turnDef{
 		sink:         sink,
 		hideThinking: req.hideThinking,
+		scanner:      r.newAttachScanner(sink, st.cwd),
 	}}
 
 	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, blocks)

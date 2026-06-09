@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-06-09
+
+### Added
+
+- **Output attachments (bot to user).** The relay can now attach a host file to
+  its reply so it appears as a downloadable attachment (or inline image) in the
+  Poe conversation. The agent emits an HTML-comment directive on its own line:
+  `<!--poe-attach path="/abs/or/relative" name="Nice Name" inline-->`. The relay
+  intercepts the line (it never reaches the user), uploads the file to Poe via
+  the `file_upload_3RD_PARTY_POST` endpoint (authenticated with the bot access
+  key), and emits a `file` SSE event. `path` is required (relative paths resolve
+  against the conversation working dir); `name` is optional; a bare `inline`
+  token renders images inline via `![name][ref]`. New `internal/poeupload`
+  package; `poeproto.SSEWriter.File`; `ChunkSink.File`; a line-oriented scanner
+  in the router that holds back text only when a line begins `<!--`, preserving
+  token-level streaming otherwise. The capability is advertised to the agent in
+  the transport-contract system clause only when the bot has an access key.
+
 ## [0.21.1] - 2026-06-08
 
 ### Changed
