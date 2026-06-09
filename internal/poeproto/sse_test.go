@@ -264,3 +264,19 @@ func TestBearerAuth(t *testing.T) {
 		t.Fatal("expected call")
 	}
 }
+
+func TestSSEWriter_File(t *testing.T) {
+	rec := httptest.NewRecorder()
+	s, err := NewSSEWriter(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.File("https://poe/x", "text/markdown", "doc.md", "ref123"); err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: file") || !strings.Contains(body, "https://poe/x") ||
+		!strings.Contains(body, "ref123") || !strings.Contains(body, "doc.md") {
+		t.Fatalf("file event missing fields: %q", body)
+	}
+}

@@ -318,6 +318,20 @@ func (o *orderedWriter) userDone() error {
 	return o.w.Done()
 }
 
+// userFile emits a `file` SSE event advertising an output attachment.
+// Like userText it counts as real content: it clears any visible
+// spinner and disarms the heartbeat gate.
+func (o *orderedWriter) userFile(url, contentType, name, inlineRef string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil
+	}
+	o.clearSpinnerLocked()
+	o.realWritten = true
+	return o.w.File(url, contentType, name, inlineRef)
+}
+
 // clearSpinnerLocked drops a visible spinner frame ahead of a user
 // write. Caller must hold o.mu. Errors are swallowed; see userText.
 func (o *orderedWriter) clearSpinnerLocked() {
@@ -450,6 +464,11 @@ func (s *sink) Text(t string) error      { return s.o.userText(s.maybePrependHea
 func (s *sink) Replace(t string) error   { return s.o.userReplace(t) }
 func (s *sink) Error(t, et string) error { s.stop(); return s.o.userError(t, et) }
 func (s *sink) Done() error              { s.stop(); return s.o.userDone() }
+
+func (s *sink) File(url, contentType, name, inlineRef string) error {
+	s.stop()
+	return s.o.userFile(url, contentType, name, inlineRef)
+}
 
 // SetProviderEmoji records the relay-resolved provider emoji for the
 // active turn. Router calls this once after applyOptions resolves the
