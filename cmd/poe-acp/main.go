@@ -39,7 +39,7 @@ func main() {
 		accessKeyEnv = flag.String("access-key-env", "POEACP_ACCESS_KEY", "Env var holding the Poe bearer secret")
 		poePath      = flag.String("poe-path", "/poe", "HTTP path for the Poe protocol endpoint")
 		introMsg     = flag.String("introduction", "poe-acp: ACP-backed bot.", "Poe introduction message")
-		ttl          = flag.Duration("session-ttl", 2*time.Hour, "Idle TTL before a conv session is evicted")
+		ttl          = flag.Duration("session-ttl", 10*time.Minute, "Idle TTL before a conv session is evicted")
 		gcEvery      = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
 		heartbeat    = flag.Duration("heartbeat-interval", 1500*time.Millisecond, "SSE heartbeat / spinner tick interval (0 to disable)")
 		allowAtt     = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
