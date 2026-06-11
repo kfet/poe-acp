@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-06-11
+
+### Added
+
+- **Redrive / edit reseed.** When the latest user turn carries a Poe
+  `message_id` the relay has already incorporated into the agent's memory — the
+  user redrove an earlier turn, or edited one in a way that keeps its id — the
+  conversation's stateful agent session is now stale. The relay detects this in
+  `getOrCreate`, drops the session (best-effort `session/release` of the old
+  agent session), and rebuilds a fresh one seeded from the current transcript.
+  The resume tier is deliberately skipped on this rebuild so the stale on-disk
+  session is not reloaded. A clean append always carries a brand-new latest id,
+  so this never trips on Poe's front-truncation of long transcripts. Per-session
+  `seenUserIDs` set tracks incorporated ids. (Edits or deletes of a *past* turn
+  that do not become the latest turn — e.g. deleting a middle message and
+  continuing — are not detected; the agent keeps its richer memory, matching
+  prior behaviour, and self-heals on the next cold start.)
+
+### Changed
+
+- Default `--session-ttl` lowered from 2h to 10m (a chat relay does not need a
+  long idle window; cuts peak resident sessions / forkserver memory).
+
 ## [0.22.0] - 2026-06-09
 
 ### Added
