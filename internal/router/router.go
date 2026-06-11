@@ -268,6 +268,16 @@ type sessionState struct {
 	// session.systemPrompt cap) for fresh sessions and on resume.
 	// Read/written only by the runTurns goroutine; no lock needed.
 	pendingSystemPromptInline bool
+
+	// seenUserIDs is the set of Poe message_ids of user turns this session
+	// has already incorporated into the agent's memory. If an incoming
+	// query's latest user turn carries an id already in this set, the user
+	// redrove (or edited, when Poe keeps the id) an earlier turn — the
+	// agent's history is stale and the session must be reseeded. A clean
+	// append always carries a brand-new latest id, so this never trips on
+	// Poe's front-truncation of long transcripts (only old turns drop; the
+	// latest is still new). Read/written only under Router.mu (getOrCreate).
+	seenUserIDs map[string]struct{}
 }
 
 // turnKind classifies a queued turnReq.
@@ -1199,6 +1209,32 @@ func userTurnText(t Turn) string {
 	return attachmentPlaceholder(t.Attachments)
 }
 
+// userTurnIDs returns the set of non-empty Poe message_ids among the user
+// turns in a query.
+func userTurnIDs(q []Turn) map[string]struct{} {
+	ids := make(map[string]struct{}, len(q))
+	for _, t := range q {
+		if t.Role == "user" && t.MessageID != "" {
+			ids[t.MessageID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// isRedrive reports whether the latest user turn is a redrive — or an
+// id-stable edit — of a turn the session already incorporated: its Poe
+// message_id was seen on an earlier turn. A genuine new turn always carries
+// a fresh id, so this never false-positives on Poe's front-truncation of long
+// transcripts (the dropped turns are old; the latest is still new). Turns with
+// no message_id (test harness, anonymous shapes) are never treated as redrives.
+func isRedrive(seenIDs map[string]struct{}, latest Turn) bool {
+	if latest.MessageID == "" {
+		return false
+	}
+	_, ok := seenIDs[latest.MessageID]
+	return ok
+}
+
 // turnMsgID returns the directory key for one user turn's attachment
 // downloads. Prefers the Poe MessageID; on the no-id path (tests, weird
 // shapes) it falls back to a hash of the turn's content — or the first
@@ -1786,14 +1822,42 @@ var ErrSessionBusy = errors.New("a reply is still in progress")
 // the next prompt with the full transcript (cold path that did not resume,
 // AND has prior turns to seed from).
 func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query []Turn) (st *sessionState, freshSeed bool, err error) {
+	var forceFresh bool
+	incomingIDs := userTurnIDs(query)
+	latest, _ := latestUserTurnRef(query)
 	r.mu.Lock()
 	if existing, ok := r.sessions[convID]; ok {
+		if !isRedrive(existing.seenUserIDs, latest) {
+			for id := range incomingIDs {
+				existing.seenUserIDs[id] = struct{}{}
+			}
+			r.mu.Unlock()
+			kitlog.Debugf("getOrCreate conv=%s -> hit (sid=%s)", convID, string(existing.sessionID))
+			return existing, false, nil
+		}
+		// The latest turn's id was already incorporated: the user redrove
+		// or edited an earlier turn, so the agent's in-memory history is
+		// now stale. Drop the session and rebuild a fresh one seeded from
+		// the current transcript. Resume is skipped below (forceFresh) so
+		// we do not reload the stale on-disk session we are discarding.
+		staleSID := existing.sessionID
 		r.mu.Unlock()
-		kitlog.Debugf("getOrCreate conv=%s -> hit (sid=%s)", convID, string(existing.sessionID))
-		return existing, false, nil
+		kitlog.Debugf("getOrCreate conv=%s -> REDRIVE/EDIT (latest id=%s seen), reseeding fresh (stale sid=%s)", convID, latest.MessageID, string(staleSID))
+		r.evictSession(convID, existing)
+		if staleSID != "" {
+			go func() {
+				rctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+				defer cancel()
+				if rerr := r.cfg.Agent.ReleaseSession(rctx, staleSID); rerr != nil {
+					kitlog.Debugf("getOrCreate conv=%s: ReleaseSession(%s): %v", convID, string(staleSID), rerr)
+				}
+			}()
+		}
+		forceFresh = true
+	} else {
+		r.mu.Unlock()
 	}
-	r.mu.Unlock()
-	kitlog.Debugf("getOrCreate conv=%s user=%s -> miss, query_len=%d", convID, userID, len(query))
+	kitlog.Debugf("getOrCreate conv=%s user=%s -> miss, query_len=%d force_fresh=%v", convID, userID, len(query), forceFresh)
 
 	cwd := filepath.Join(r.cfg.StateDir, "convs", convID)
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
@@ -1810,13 +1874,17 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		drainStop:    make(chan struct{}),
 		queue:        newSessionQueue(),
 		runStop:      make(chan struct{}),
+
+		seenUserIDs: incomingIDs,
 	}
 	go st.drainChunks()
 	go r.runTurns(st)
 
-	// Tier 1: try resume if the agent supports list+resume.
+	// Tier 1: try resume if the agent supports list+resume. Skipped on a
+	// divergence rebuild (forceFresh) — resuming would reload the stale
+	// on-disk session we are deliberately discarding.
 	caps := r.cfg.Agent.Caps()
-	if caps.ListSessions && caps.ResumeSession {
+	if !forceFresh && caps.ListSessions && caps.ResumeSession {
 		sessions, lerr := r.cfg.Agent.ListSessions(ctx, cwd)
 		if lerr == nil && len(sessions) > 0 {
 			sid := acp.SessionId(sessions[0].SessionId)

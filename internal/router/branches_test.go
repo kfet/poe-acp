@@ -1035,3 +1035,151 @@ func TestSweepAttachments_RemoveError(t *testing.T) {
 	r, _ := New(Config{Agent: a, StateDir: dir, SessionTTL: time.Hour, AttachmentTTL: time.Hour})
 	r.sweepAttachmentsOnce()
 }
+
+// --- redrive / id-stable-edit reseed (transcript divergence handling) ---
+
+func waitForCond(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition not met within deadline")
+}
+
+func TestUserTurnIDs(t *testing.T) {
+	ids := userTurnIDs([]Turn{
+		{Role: "user", Content: "a", MessageID: "m1"},
+		{Role: "bot", Content: "b", MessageID: "m2"}, // non-user, skipped
+		{Role: "user", Content: "c"},                 // empty id, skipped
+		{Role: "user", Content: "d", MessageID: "m3"},
+	})
+	if len(ids) != 2 {
+		t.Fatalf("want 2 ids, got %d (%v)", len(ids), ids)
+	}
+	if _, ok := ids["m1"]; !ok {
+		t.Fatal("m1 missing")
+	}
+	if _, ok := ids["m3"]; !ok {
+		t.Fatal("m3 missing")
+	}
+}
+
+func TestIsRedrive(t *testing.T) {
+	seen := map[string]struct{}{"m1": {}, "m2": {}}
+	if isRedrive(seen, Turn{MessageID: ""}) {
+		t.Fatal("empty id must not be a redrive")
+	}
+	if isRedrive(seen, Turn{MessageID: "m9"}) {
+		t.Fatal("fresh id must not be a redrive")
+	}
+	if !isRedrive(seen, Turn{MessageID: "m1"}) {
+		t.Fatal("seen id must be a redrive")
+	}
+}
+
+// A redrive (latest user turn carries an already-seen message_id) drops the
+// stale session and creates a fresh one; a clean append reuses the session.
+func TestRouter_RedriveReseedsFreshSession(t *testing.T) {
+	a := newFakeAgent(func(_ context.Context, fa *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		fa.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	r, _ := New(Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	ctx := context.Background()
+
+	// Turn 1: new session.
+	if err := r.Prompt(ctx, "c1", "u",
+		[]Turn{{Role: "user", Content: "hi", MessageID: "m1"}}, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	// Turn 2: clean append (fresh latest id) -> same session, merges id.
+	if err := r.Prompt(ctx, "c1", "u", []Turn{
+		{Role: "user", Content: "hi", MessageID: "m1"},
+		{Role: "bot", Content: "ok"},
+		{Role: "user", Content: "more", MessageID: "m2"},
+	}, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&a.newSessCalls); got != 1 {
+		t.Fatalf("clean append must reuse session: NewSession calls=%d", got)
+	}
+	r.mu.Lock()
+	staleSID := r.sessions["c1"].sessionID
+	r.mu.Unlock()
+
+	a.releaseErr = errors.New("release boom") // exercise the release-error log branch
+	// Turn 3: redrive of m1 -> reseed a fresh session (no resume; caps off).
+	if err := r.Prompt(ctx, "c1", "u",
+		[]Turn{{Role: "user", Content: "redo", MessageID: "m1"}}, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&a.newSessCalls); got != 2 {
+		t.Fatalf("redrive must create a fresh session: NewSession calls=%d", got)
+	}
+	if got := atomic.LoadInt32(&a.resumeCalls); got != 0 {
+		t.Fatalf("redrive must not resume: resumeCalls=%d", got)
+	}
+	waitForCond(t, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		for _, s := range a.releasedSids {
+			if s == staleSID {
+				return true
+			}
+		}
+		return false
+	})
+	r.mu.Lock()
+	ids := r.sessions["c1"].seenUserIDs
+	r.mu.Unlock()
+	if _, ok := ids["m1"]; !ok || len(ids) != 1 {
+		t.Fatalf("reseeded seenUserIDs = %v, want {m1}", ids)
+	}
+}
+
+// On a redrive, the fresh rebuild must skip the resume tier even when the
+// agent supports it — otherwise it would reload the stale on-disk session.
+func TestRouter_RedriveSkipsResume(t *testing.T) {
+	a := newFakeAgent(func(_ context.Context, fa *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		fa.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	a.caps = client.Caps{ListSessions: true, ResumeSession: true}
+	a.listResult = []client.SessionInfo{{SessionId: "resumed-1"}}
+	r, _ := New(Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	ctx := context.Background()
+
+	// Turn 1: resumes the existing on-disk session.
+	if err := r.Prompt(ctx, "c1", "u",
+		[]Turn{{Role: "user", Content: "hi", MessageID: "m1"}}, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&a.resumeCalls); got != 1 {
+		t.Fatalf("turn1 should resume: resumeCalls=%d", got)
+	}
+	// Turn 2: redrive m1 -> forceFresh -> NewSession, no second resume.
+	if err := r.Prompt(ctx, "c1", "u",
+		[]Turn{{Role: "user", Content: "redo", MessageID: "m1"}}, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&a.resumeCalls); got != 1 {
+		t.Fatalf("redrive must skip resume: resumeCalls=%d", got)
+	}
+	if got := atomic.LoadInt32(&a.newSessCalls); got != 1 {
+		t.Fatalf("redrive must create a fresh session: newSessCalls=%d", got)
+	}
+	waitForCond(t, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		for _, s := range a.releasedSids {
+			if s == acp.SessionId("resumed-1") {
+				return true
+			}
+		}
+		return false
+	})
+}
