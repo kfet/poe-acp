@@ -323,11 +323,19 @@ func (s *SSEWriter) Replace(chunk string) error {
 // non-empty inlineRef makes Poe render the attachment inline when the
 // streamed markdown references it via ![title][inlineRef].
 func (s *SSEWriter) File(url, contentType, name, inlineRef string) error {
+	// inline_ref must be JSON null (not "") for a plain downloadable
+	// attachment. An empty-but-present string makes Poe treat the file
+	// as inline with an empty reference key, rendering a degenerate
+	// "[]: <url>" markdown link-reference instead of an attachment chip.
+	var ref any
+	if inlineRef != "" {
+		ref = inlineRef
+	}
 	return s.event("file", map[string]any{
 		"url":          url,
 		"content_type": contentType,
 		"name":         name,
-		"inline_ref":   inlineRef,
+		"inline_ref":   ref,
 	})
 }
 

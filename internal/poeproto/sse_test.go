@@ -279,4 +279,22 @@ func TestSSEWriter_File(t *testing.T) {
 		!strings.Contains(body, "ref123") || !strings.Contains(body, "doc.md") {
 		t.Fatalf("file event missing fields: %q", body)
 	}
+
+	// Non-inline: inline_ref MUST serialize as null (not ""), else Poe
+	// renders a "[]: url" link-reference instead of an attachment chip.
+	rec2 := httptest.NewRecorder()
+	s2, err := NewSSEWriter(rec2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.File("https://poe/y", "text/plain", "f.txt", ""); err != nil {
+		t.Fatalf("File (non-inline): %v", err)
+	}
+	b2 := rec2.Body.String()
+	if !strings.Contains(b2, "\"inline_ref\":null") {
+		t.Fatalf("non-inline file event must send inline_ref:null, got %q", b2)
+	}
+	if strings.Contains(b2, "\"inline_ref\":\"\"") {
+		t.Fatalf("non-inline file event sent empty-string inline_ref (bug): %q", b2)
+	}
 }
