@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
+	"github.com/kfet/poe-acp/internal/selfupdate"
 	"github.com/kfet/poe-acp/internal/statusline"
 )
 
@@ -30,6 +32,14 @@ import (
 var version = "0.1.0-dev"
 
 func main() {
+	// Subcommands are dispatched before flag parsing. `update` is the
+	// canonical self-update path (ETXTBSY-safe atomic binary swap +
+	// optional supervisor restart); it supersedes the ad-hoc deploy
+	// script and `make deploy` over a running binary.
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		os.Exit(runUpdate(os.Args[2:]))
+	}
+
 	var (
 		httpAddr     = flag.String("http-addr", ":8080", "Poe HTTP listen address")
 		agentCmd     = flag.String("agent-cmd", "fir --mode acp", "ACP agent command (stdio)")
@@ -266,4 +276,49 @@ func main() {
 	defer scancel()
 	_ = srv.Shutdown(shutdownCtx)
 	log.Println("bye")
+}
+
+// runUpdate implements the `poe-acp update` subcommand: download the
+// latest (or pinned) release, verify its sha256, and atomically replace
+// the running binary. With -restart-cmd set, it runs that command (via
+// `sh -c`) afterwards so a supervisor (systemd --user / launchd) picks up
+// the new binary — note this drops any in-flight conversation, which is
+// inherent to restarting the relay process.
+func runUpdate(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	check := fs.Bool("check", false, "report whether an update is available; do not install")
+	ver := fs.String("version", "", "install a specific version (e.g. v0.27.0); default: latest")
+	repo := fs.String("repo", selfupdate.DefaultRepo, "github owner/repo to update from")
+	restartCmd := fs.String("restart-cmd", "", "shell command to run after a successful update (e.g. \"systemctl --user restart poe-acp-sea-fir\")")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	res, err := selfupdate.Run(version, selfupdate.Options{
+		Repo:      *repo,
+		Version:   *ver,
+		CheckOnly: *check,
+		Stdout:    os.Stdout,
+		Stderr:    os.Stderr,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "update:", err)
+		return 1
+	}
+	if !res.Updated {
+		return 0
+	}
+
+	if *restartCmd == "" {
+		fmt.Print("restart the service to pick up the new binary, e.g.:\n  systemctl --user restart poe-acp-<bot>\n")
+		return 0
+	}
+	fmt.Printf("restarting: %s\n", *restartCmd)
+	c := exec.Command("sh", "-c", *restartCmd)
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	if err := c.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "restart:", err)
+		return 1
+	}
+	return 0
 }
