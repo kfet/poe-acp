@@ -602,6 +602,14 @@ func TestPassthrough(t *testing.T) {
 	if r, ok := b.Passthrough("!logout all"); !ok || r != "/logout all" {
 		t.Fatalf("logout args: %q %v", r, ok)
 	}
+	// mcp: allowlisted + advertised -> forwarded to fir /mcp (incl. args)
+	c.agentCmds = []client.CommandInfo{{Name: "mcp", Description: "MCP servers"}}
+	if r, ok := b.Passthrough("!mcp"); !ok || r != "/mcp" {
+		t.Fatalf("mcp: %q %v", r, ok)
+	}
+	if r, ok := b.Passthrough("!mcp reload"); !ok || r != "/mcp reload" {
+		t.Fatalf("mcp reload: %q %v", r, ok)
+	}
 	c.agentCmds = []client.CommandInfo{{Name: "reload", Description: "Reload"}, {Name: "share"}}
 	// allowlisted but agent does NOT advertise it
 	if _, ok := b.Passthrough("!compact"); ok {

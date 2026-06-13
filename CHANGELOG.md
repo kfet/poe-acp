@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-06-13
+
+### Added
+
+- **`!mcp` passthrough.** Added `mcp` to the command passthrough allowlist,
+  so `!mcp` (show MCP servers) and `!mcp reload` (re-read `mcp.json` +
+  `mcp.d/` and reload MCP servers without a full session reload) forward to
+  the agent's `/mcp` command. Auto-surfaces in `!help` from the agent's
+  advertised command list. Same shape as the `!logout` passthrough.
+
 ## [0.23.0] - 2026-06-11
 
 ### Added
