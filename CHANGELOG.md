@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-06-13
+
+### Fixed
+
+- **Output attachments now render as a real download chip.** `SSEWriter.File`
+  was sending `inline_ref` as an empty string `""` for non-inline files; Poe
+  treats a present-but-empty `inline_ref` as "inline with an empty reference
+  key" and renders a degenerate `[]: <url>` markdown link-reference instead of
+  an attachment chip. Now sent as JSON `null` when no inline ref is set
+  (inline images still pass their generated ref). Verified end-to-end against
+  the live Poe app.
+
 ## [0.25.0] - 2026-06-13
 
 ### Added
