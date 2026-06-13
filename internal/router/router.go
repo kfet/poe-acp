@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"log"
@@ -278,6 +279,24 @@ type sessionState struct {
 	// Poe's front-truncation of long transcripts (only old turns drop; the
 	// latest is still new). Read/written only under Router.mu (getOrCreate).
 	seenUserIDs map[string]struct{}
+
+	// seenTurns is the ordered (id, content-hash) fingerprint of every
+	// id-bearing turn — user AND bot — of the last query this session
+	// incorporated. transcriptDiverged compares the incoming query against
+	// it to catch edits and deletes of any PAST turn (not just the latest):
+	// a surviving turn whose content changed (user- or bot-edit), a non-front
+	// turn removed (delete), or the tail dropped (redrive of an older turn).
+	// Poe's benign front-truncation + append leaves it intact. Read/written
+	// only under Router.mu (getOrCreate).
+	seenTurns []turnFP
+}
+
+// turnFP is one turn's identity for divergence detection: its Poe message_id
+// and a content-hash (role-tagged) of its text. Equality means "same turn,
+// unchanged".
+type turnFP struct {
+	id   string
+	hash uint64
 }
 
 // turnKind classifies a queued turnReq.
@@ -1235,6 +1254,75 @@ func isRedrive(seenIDs map[string]struct{}, latest Turn) bool {
 	return ok
 }
 
+// turnFingerprints returns the ordered (id, content-hash) of every turn in q
+// that carries a non-empty Poe message_id, covering BOTH user and bot turns.
+// Turns without an id (test harness / anonymous shapes) are skipped, matching
+// userTurnIDs and isRedrive — so an all-anonymous query yields an empty slice
+// and never registers as divergence.
+func turnFingerprints(q []Turn) []turnFP {
+	out := make([]turnFP, 0, len(q))
+	for _, t := range q {
+		if t.MessageID == "" {
+			continue
+		}
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(t.Role))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(t.Content))
+		out = append(out, turnFP{id: t.MessageID, hash: h.Sum64()})
+	}
+	return out
+}
+
+// transcriptDiverged reports whether the incoming id-bearing transcript `now`
+// cannot be explained as a BENIGN evolution of `prev` — namely Poe's
+// front-truncation (dropping the oldest turns to fit the context window) plus
+// freshly appended turns. Any other shape means the agent's stateful memory no
+// longer matches Poe's transcript and the session must be reseeded:
+//   - a surviving turn whose content changed   → edit (of a user OR bot turn)
+//   - a non-front turn removed                 → delete
+//   - the tail dropped                         → redrive of an older turn
+//
+// Benign iff `now` equals prev[k:] (exact id AND hash) for some k, followed by
+// zero or more brand-new ids. k is the count of front turns Poe truncated.
+func transcriptDiverged(prev, now []turnFP) bool {
+	if len(prev) == 0 {
+		return false // nothing incorporated yet — nothing to diverge from
+	}
+	prevIDs := make(map[string]struct{}, len(prev))
+	for _, t := range prev {
+		prevIDs[t.id] = struct{}{}
+	}
+	for k := 0; k <= len(prev); k++ {
+		m := len(prev) - k // prev turns expected to survive at the front of now
+		if m > len(now) {
+			continue // prev's suffix is longer than now → tail was lost → not this k
+		}
+		match := true
+		for i := 0; i < m; i++ {
+			if prev[k+i] != now[i] {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		// The remainder of now must be brand-new ids (never seen in prev);
+		// a reappearing old id here is a redrive/edit, not a clean append.
+		for _, t := range now[m:] {
+			if _, seen := prevIDs[t.id]; seen {
+				match = false
+				break
+			}
+		}
+		if match {
+			return false // front-truncation (k dropped) + append → benign
+		}
+	}
+	return true
+}
+
 // turnMsgID returns the directory key for one user turn's attachment
 // downloads. Prefers the Poe MessageID; on the no-id path (tests, weird
 // shapes) it falls back to a hash of the turn's content — or the first
@@ -1824,25 +1912,33 @@ var ErrSessionBusy = errors.New("a reply is still in progress")
 func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query []Turn) (st *sessionState, freshSeed bool, err error) {
 	var forceFresh bool
 	incomingIDs := userTurnIDs(query)
+	incomingFP := turnFingerprints(query)
 	latest, _ := latestUserTurnRef(query)
 	r.mu.Lock()
 	if existing, ok := r.sessions[convID]; ok {
-		if !isRedrive(existing.seenUserIDs, latest) {
+		// Two divergence signals, both meaning the agent's memory is now
+		// stale vs Poe's transcript: (1) the latest user turn redrove an
+		// already-incorporated id; (2) the full-transcript diff shows an
+		// edit/delete of any PAST turn (user or bot). A clean append trips
+		// neither, so the hot session is reused.
+		redrive := isRedrive(existing.seenUserIDs, latest)
+		if !redrive && !transcriptDiverged(existing.seenTurns, incomingFP) {
 			for id := range incomingIDs {
 				existing.seenUserIDs[id] = struct{}{}
 			}
+			existing.seenTurns = incomingFP
 			r.mu.Unlock()
 			kitlog.Debugf("getOrCreate conv=%s -> hit (sid=%s)", convID, string(existing.sessionID))
 			return existing, false, nil
 		}
-		// The latest turn's id was already incorporated: the user redrove
-		// or edited an earlier turn, so the agent's in-memory history is
-		// now stale. Drop the session and rebuild a fresh one seeded from
-		// the current transcript. Resume is skipped below (forceFresh) so
-		// we do not reload the stale on-disk session we are discarding.
+		// Diverged: the user redrove, edited, or deleted an earlier turn, so
+		// the agent's in-memory history is now stale. Drop the session and
+		// rebuild a fresh one seeded from the current transcript. Resume is
+		// skipped below (forceFresh) so we do not reload the stale on-disk
+		// session we are discarding.
 		staleSID := existing.sessionID
 		r.mu.Unlock()
-		kitlog.Debugf("getOrCreate conv=%s -> REDRIVE/EDIT (latest id=%s seen), reseeding fresh (stale sid=%s)", convID, latest.MessageID, string(staleSID))
+		kitlog.Debugf("getOrCreate conv=%s -> DIVERGED (redrive=%v, latest id=%s), reseeding fresh (stale sid=%s)", convID, redrive, latest.MessageID, string(staleSID))
 		r.evictSession(convID, existing)
 		if staleSID != "" {
 			go func() {
@@ -1876,6 +1972,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		runStop:      make(chan struct{}),
 
 		seenUserIDs: incomingIDs,
+		seenTurns:   incomingFP,
 	}
 	go st.drainChunks()
 	go r.runTurns(st)
