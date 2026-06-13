@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-06-13
+
+### Added
+
+- **`poe-acp update` self-update subcommand.** Downloads the latest (or a
+  pinned `-version`) release for the running OS/arch from GitHub Releases,
+  verifies its sha256 against `checksums.txt`, and atomically replaces the
+  running binary with an `os.Rename` of a sibling temp file. This is the
+  **ETXTBSY-safe swap**: you cannot `cp`/truncate a running executable in
+  place (it fails with "text file busy"), but renaming over it replaces the
+  directory entry while the live process keeps its old inode mapped until it
+  restarts — the root cause behind every prior "deploy reverts" failure.
+  The sha256 is computed inline as the asset is streamed to disk (no
+  read-back). Self-update is refused under package-manager-managed paths
+  (Homebrew, linuxbrew, `/usr/bin`) with a hint to use the package manager.
+  `-check` reports availability without installing; `-restart-cmd` runs a
+  supervisor restart (e.g. `systemctl --user restart poe-acp-sea-fir`) after
+  a successful swap. New `internal/selfupdate` package (100% covered);
+  supersedes the ad-hoc `poe-acp-deploy.sh` and `make deploy`-over-a-running
+  -binary path.
+
+
 ## [0.26.0] - 2026-06-13
 
 ### Fixed

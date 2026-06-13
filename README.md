@@ -115,6 +115,35 @@ v1 runs under `nohup` / a tmux window and must be restarted by hand
 on host reboot. A launchd / systemd unit is a straightforward M2
 follow-up; a template will land alongside the first production deploy.
 
+### Updating
+
+`poe-acp update` self-updates the binary in place: it resolves the latest
+GitHub release for the host's OS/arch, downloads the raw asset, verifies its
+sha256 against `checksums.txt`, and **atomically renames** it over the
+running binary. The rename (rather than `cp`-over-the-running-file, which
+fails with `ETXTBSY`) is what makes an in-place swap safe; the live process
+keeps its old inode until it restarts.
+
+```bash
+# Is a newer release available?
+poe-acp update -check
+
+# Update to the latest release (binary only — restart separately).
+poe-acp update
+
+# Pin a specific version.
+poe-acp update -version v0.27.0
+
+# Update and restart the supervisor so the new binary goes live.
+# (This drops any in-flight conversation — inherent to restarting the relay.)
+poe-acp update -restart-cmd "systemctl --user restart poe-acp-sea-fir"   # systemd --user
+poe-acp update -restart-cmd "launchctl kickstart -k gui/$UID/<label>"     # launchd
+```
+
+Self-update is refused when the binary lives under a package-manager path
+(Homebrew, linuxbrew, `/usr/bin`); use `brew upgrade poe-acp` there instead.
+A remote host can be updated with `ssh <host> poe-acp update -restart-cmd ...`.
+
 ## Endpoints
 
 | Path                   | Auth   | Purpose                                |
@@ -122,6 +151,13 @@ follow-up; a template will land alongside the first production deploy.
 | `POST /poe`            | Bearer | Poe protocol: `query`/`settings`/etc.  |
 | `GET  /healthz`        | none   | `ok sessions=N`                        |
 | `GET  /debug/sessions` | Bearer | JSON dump of conv → session state      |
+
+## Subcommands
+
+```
+update    Self-update the binary from GitHub Releases (see Updating above).
+          Flags: -check, -version <vX.Y.Z>, -repo <owner/name>, -restart-cmd <cmd>
+```
 
 ## Flags
 
