@@ -1183,3 +1183,114 @@ func TestRouter_RedriveSkipsResume(t *testing.T) {
 		return false
 	})
 }
+
+func TestTurnFingerprints(t *testing.T) {
+	fp := turnFingerprints([]Turn{
+		{Role: "user", Content: "a", MessageID: "m1"},
+		{Role: "bot", Content: "b", MessageID: "m2"}, // bot turns ARE tracked
+		{Role: "user", Content: "c"},                 // empty id -> skipped
+	})
+	if len(fp) != 2 {
+		t.Fatalf("want 2 fingerprints, got %d (%v)", len(fp), fp)
+	}
+	if fp[0].id != "m1" || fp[1].id != "m2" {
+		t.Fatalf("order/ids wrong: %v", fp)
+	}
+	// Content change must change the hash; role is part of the hash.
+	if turnFingerprints([]Turn{{Role: "user", Content: "a", MessageID: "m1"}})[0].hash !=
+		fp[0].hash {
+		t.Fatal("same role+content must hash equal")
+	}
+	if turnFingerprints([]Turn{{Role: "user", Content: "EDITED", MessageID: "m1"}})[0].hash ==
+		fp[0].hash {
+		t.Fatal("changed content must change the hash")
+	}
+	if turnFingerprints([]Turn{{Role: "bot", Content: "a", MessageID: "m1"}})[0].hash ==
+		fp[0].hash {
+		t.Fatal("changed role must change the hash")
+	}
+}
+
+func TestTranscriptDiverged(t *testing.T) {
+	fp := func(specs ...[2]string) []turnFP {
+		q := make([]Turn, 0, len(specs))
+		for _, s := range specs {
+			q = append(q, Turn{Role: "user", Content: s[1], MessageID: s[0]})
+		}
+		return turnFingerprints(q)
+	}
+	A := [2]string{"a", "ca"}
+	B := [2]string{"b", "cb"}
+	C := [2]string{"c", "cc"}
+	D := [2]string{"d", "cd"}
+	Bedit := [2]string{"b", "cb-EDITED"} // same id, changed content
+	cases := []struct {
+		name string
+		prev []turnFP
+		now  []turnFP
+		want bool
+	}{
+		{"empty prev", fp(), fp(A, B), false},
+		{"identical", fp(A, B, C), fp(A, B, C), false},
+		{"clean append", fp(A, B), fp(A, B, C, D), false},
+		{"front truncation", fp(A, B, C, D), fp(C, D), false},
+		{"front trunc + append", fp(A, B, C), fp(B, C, D), false},
+		{"edit keep-id (hash change)", fp(A, B, C), fp(A, Bedit, C), true},
+		{"edit new-id mid", fp(A, B, C), fp(A, D, C), true},
+		{"delete middle", fp(A, B, C), fp(A, C), true},
+		{"tail dropped (redrive old)", fp(A, B, C), fp(A, B), true},
+		{"reused id in appended tail", fp(A, B), fp(A, B, A), true},
+	}
+	for _, tc := range cases {
+		if got := transcriptDiverged(tc.prev, tc.now); got != tc.want {
+			t.Errorf("%s: transcriptDiverged=%v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// An edit of a PAST turn that does not become the latest (here: a past bot
+// turn is rewritten) is invisible to the redrive (latest-id) check but caught
+// by the full-transcript diff, forcing a fresh reseed.
+func TestRouter_EditPastTurnReseeds(t *testing.T) {
+	a := newFakeAgent(func(_ context.Context, fa *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		fa.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	r, _ := New(Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	ctx := context.Background()
+
+	// Turn 1: seed a 3-turn transcript (user, bot, user) — all id-bearing.
+	base := []Turn{
+		{Role: "user", Content: "q1", MessageID: "m1"},
+		{Role: "bot", Content: "a1", MessageID: "b1"},
+		{Role: "user", Content: "q2", MessageID: "m2"},
+	}
+	if err := r.Prompt(ctx, "c1", "u", base, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	// Turn 2: clean append (fresh latest id) -> reuse session.
+	if err := r.Prompt(ctx, "c1", "u", append(append([]Turn{}, base...),
+		Turn{Role: "bot", Content: "a2", MessageID: "b2"},
+		Turn{Role: "user", Content: "q3", MessageID: "m3"},
+	), Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&a.newSessCalls); got != 1 {
+		t.Fatalf("clean append must reuse session: NewSession calls=%d", got)
+	}
+	// Turn 3: the past BOT turn b1 is edited (content changed, latest id m3
+	// is NOT a redrive) -> diff diverges -> fresh reseed.
+	edited := []Turn{
+		{Role: "user", Content: "q1", MessageID: "m1"},
+		{Role: "bot", Content: "a1-EDITED", MessageID: "b1"},
+		{Role: "user", Content: "q2", MessageID: "m2"},
+		{Role: "bot", Content: "a2", MessageID: "b2"},
+		{Role: "user", Content: "q3", MessageID: "m3"},
+	}
+	if err := r.Prompt(ctx, "c1", "u", edited, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&a.newSessCalls); got != 2 {
+		t.Fatalf("past-turn edit must reseed a fresh session: NewSession calls=%d", got)
+	}
+}

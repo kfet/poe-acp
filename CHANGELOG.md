@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-06-13
+
+### Added
+
+- **Edit / delete / bot-edit divergence detection.** The relay now diffs the
+  full incoming Poe transcript against what each session has incorporated, via
+  an ordered (message_id, content-hash) fingerprint of **every** id-bearing
+  turn — user *and* bot. If a surviving turn's content changed (an edit of a
+  user or a bot turn), a non-front turn was removed (a delete), or the tail was
+  dropped (a redrive of an older turn), the session is reseeded fresh from the
+  current transcript (resume tier skipped, as for the existing redrive path).
+  Poe's benign front-truncation of long transcripts plus freshly appended turns
+  is recognised as non-divergent and reuses the hot session. This extends the
+  v0.23.0 redrive reseed (which only inspected the *latest* user turn) to catch
+  edits and deletes of **any past turn**, including past **bot** turns — the one
+  case no prior version could see. Empirically grounded against captured Poe
+  wire payloads: edits are in-place under the same `conversation_id` (no fork),
+  Poe re-sends the complete transcript (not a truncation to the edit point), and
+  an edited turn is assigned a new `message_id` while untouched turns keep
+  theirs.
+
 ## [0.24.0] - 2026-06-13
 
 ### Added
