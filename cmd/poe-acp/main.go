@@ -4,8 +4,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -164,14 +162,23 @@ func main() {
 	if *agentDirFlag != "" {
 		env = appendEnv(env, "FIR_AGENT_DIR="+*agentDirFlag)
 	}
-	var mcpToken, mcpSocket string
+	var mcpSocket, mcpDir string
+	var mcpReg *mcpattach.Registry
 	if *enableMCPAttach {
-		mcpToken = randToken()
-		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-		if runtimeDir == "" {
-			runtimeDir = os.TempDir()
+		mcpReg = mcpattach.NewRegistry()
+		base := os.Getenv("XDG_RUNTIME_DIR")
+		if base == "" {
+			base = os.TempDir()
 		}
-		mcpSocket = filepath.Join(runtimeDir, fmt.Sprintf("poe-acp-mcp-%d.sock", os.Getpid()))
+		// Private 0700 dir (MkdirTemp default perms) so only this uid can
+		// reach the socket; the socket file itself is further chmod'd 0600.
+		d, derr := os.MkdirTemp(base, "poe-acp-mcp-")
+		if derr != nil {
+			log.Fatalf("enable-mcp-attach: create socket dir: %v", derr)
+		}
+		mcpDir = d
+		defer os.RemoveAll(mcpDir)
+		mcpSocket = filepath.Join(mcpDir, "attach.sock")
 	}
 	selfExe, exeErr := os.Executable()
 	if *enableMCPAttach && exeErr != nil {
@@ -190,14 +197,17 @@ func main() {
 	}
 	if *enableMCPAttach {
 		clientCfg.MCPServersForSession = func(cwd string) []acp.McpServer {
+			// Mint a fresh per-session token bound to this conversation.
+			// The conv is derived server-side from the token; it is never
+			// sent by the client, so it cannot be spoofed.
+			tok := mcpReg.Register(filepath.Base(cwd))
 			return []acp.McpServer{{Stdio: &acp.McpServerStdio{
 				Name:    "poe-attach",
 				Command: selfExe,
 				Args:    []string{"mcp-attach"},
 				Env: []acp.EnvVariable{
 					{Name: mcpattach.EnvSocket, Value: mcpSocket},
-					{Name: mcpattach.EnvToken, Value: mcpToken},
-					{Name: mcpattach.EnvConv, Value: filepath.Base(cwd)},
+					{Name: mcpattach.EnvToken, Value: tok},
 				},
 			}}}
 		}
@@ -260,8 +270,8 @@ func main() {
 	// `mcp-attach` subprocess relays to. Must be up before any session
 	// is created (i.e. before serving). Token-authenticated.
 	if *enableMCPAttach {
-		ln, lerr := mcpattach.Listen(mcpSocket, mcpToken, func(req mcpattach.SocketRequest) error {
-			return rtr.AttachActive(req.Conv, req.Path, req.Name, req.Inline)
+		ln, lerr := mcpattach.Listen(mcpSocket, mcpReg.Resolve, func(conv, path, name string, inline bool) error {
+			return rtr.AttachActive(conv, path, name, inline)
 		})
 		if lerr != nil {
 			log.Fatalf("mcp-attach listener: %v", lerr)
@@ -381,16 +391,4 @@ func runUpdate(args []string) int {
 		return 1
 	}
 	return 0
-}
-
-// randToken returns a short random hex token used to authenticate the
-// mcp-attach subprocess to this process over the unix socket.
-func randToken() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		// crypto/rand failure is fatal-grade; fall back to a fixed value
-		// (the socket is also protected by 0600 perms + same-user access).
-		return "poeacp-mcp-token"
-	}
-	return hex.EncodeToString(b)
 }
