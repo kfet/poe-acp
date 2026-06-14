@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -16,11 +18,13 @@ import (
 	"syscall"
 	"time"
 
+	acp "github.com/coder/acp-go-sdk"
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/httpsrv"
+	"github.com/kfet/poe-acp/internal/mcpattach"
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
@@ -40,22 +44,35 @@ func main() {
 		os.Exit(runUpdate(os.Args[2:]))
 	}
 
+	// `mcp-attach` is the self-hosted stdio MCP server the agent spawns
+	// (configured via per-session McpServerStdio). It exposes one
+	// `attach` tool and relays calls back to this process over a unix
+	// socket. Reads its config from the env the parent set.
+	if len(os.Args) > 1 && os.Args[1] == "mcp-attach" {
+		if err := mcpattach.RunFromEnv(); err != nil {
+			fmt.Fprintln(os.Stderr, "mcp-attach:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	var (
-		httpAddr     = flag.String("http-addr", ":8080", "Poe HTTP listen address")
-		agentCmd     = flag.String("agent-cmd", "fir --mode acp", "ACP agent command (stdio)")
-		agentDirFlag = flag.String("agent-dir", "", "FIR_AGENT_DIR passed to the child agent (default: inherit)")
-		stateDirFlag = flag.String("state-dir", "", "Per-conv state dir root (default: $XDG_STATE_HOME/poe-acp)")
-		configFlag   = flag.String("config", "", "Path to JSON config (default: $XDG_CONFIG_HOME/poe-acp/config.json)")
-		accessKeyEnv = flag.String("access-key-env", "POEACP_ACCESS_KEY", "Env var holding the Poe bearer secret")
-		poePath      = flag.String("poe-path", "/poe", "HTTP path for the Poe protocol endpoint")
-		introMsg     = flag.String("introduction", "poe-acp: ACP-backed bot.", "Poe introduction message")
-		ttl          = flag.Duration("session-ttl", 10*time.Minute, "Idle TTL before a conv session is evicted")
-		gcEvery      = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
-		heartbeat    = flag.Duration("heartbeat-interval", 1500*time.Millisecond, "SSE heartbeat / spinner tick interval (0 to disable)")
-		allowAtt     = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
-		showVersion  = flag.Bool("version", false, "Print version and exit")
-		debugFlag    = flag.Bool("debug", false, "Enable verbose debug logging (also via POEACP_DEBUG=1)")
-		printCatalog = flag.Bool("print-catalog", false, "Build the merged skills catalog and print it to stdout, then exit")
+		httpAddr        = flag.String("http-addr", ":8080", "Poe HTTP listen address")
+		agentCmd        = flag.String("agent-cmd", "fir --mode acp", "ACP agent command (stdio)")
+		agentDirFlag    = flag.String("agent-dir", "", "FIR_AGENT_DIR passed to the child agent (default: inherit)")
+		stateDirFlag    = flag.String("state-dir", "", "Per-conv state dir root (default: $XDG_STATE_HOME/poe-acp)")
+		configFlag      = flag.String("config", "", "Path to JSON config (default: $XDG_CONFIG_HOME/poe-acp/config.json)")
+		accessKeyEnv    = flag.String("access-key-env", "POEACP_ACCESS_KEY", "Env var holding the Poe bearer secret")
+		poePath         = flag.String("poe-path", "/poe", "HTTP path for the Poe protocol endpoint")
+		introMsg        = flag.String("introduction", "poe-acp: ACP-backed bot.", "Poe introduction message")
+		ttl             = flag.Duration("session-ttl", 10*time.Minute, "Idle TTL before a conv session is evicted")
+		gcEvery         = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
+		heartbeat       = flag.Duration("heartbeat-interval", 1500*time.Millisecond, "SSE heartbeat / spinner tick interval (0 to disable)")
+		allowAtt        = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
+		showVersion     = flag.Bool("version", false, "Print version and exit")
+		debugFlag       = flag.Bool("debug", false, "Enable verbose debug logging (also via POEACP_DEBUG=1)")
+		printCatalog    = flag.Bool("print-catalog", false, "Build the merged skills catalog and print it to stdout, then exit")
+		enableMCPAttach = flag.Bool("enable-mcp-attach", false, "Expose a self-hosted MCP `attach` tool to the agent (deliver files to the user as Poe attachments)")
 	)
 	flag.Parse()
 
@@ -147,7 +164,20 @@ func main() {
 	if *agentDirFlag != "" {
 		env = appendEnv(env, "FIR_AGENT_DIR="+*agentDirFlag)
 	}
-	agent, err := client.Start(ctx, client.Config{
+	var mcpToken, mcpSocket string
+	if *enableMCPAttach {
+		mcpToken = randToken()
+		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+		if runtimeDir == "" {
+			runtimeDir = os.TempDir()
+		}
+		mcpSocket = filepath.Join(runtimeDir, fmt.Sprintf("poe-acp-mcp-%d.sock", os.Getpid()))
+	}
+	selfExe, exeErr := os.Executable()
+	if *enableMCPAttach && exeErr != nil {
+		log.Fatalf("enable-mcp-attach: cannot resolve own executable: %v", exeErr)
+	}
+	clientCfg := client.Config{
 		Command: argv,
 		Cwd:     stateDir, // agent proc cwd; per-session cwd is passed per NewSession
 		Env:     env,
@@ -157,7 +187,22 @@ func main() {
 			// session/update._meta. See docs/ext/status-line.md.
 			statusline.ExtensionID: map[string]any{"version": 1},
 		},
-	})
+	}
+	if *enableMCPAttach {
+		clientCfg.MCPServersForSession = func(cwd string) []acp.McpServer {
+			return []acp.McpServer{{Stdio: &acp.McpServerStdio{
+				Name:    "poe-attach",
+				Command: selfExe,
+				Args:    []string{"mcp-attach"},
+				Env: []acp.EnvVariable{
+					{Name: mcpattach.EnvSocket, Value: mcpSocket},
+					{Name: mcpattach.EnvToken, Value: mcpToken},
+					{Name: mcpattach.EnvConv, Value: filepath.Base(cwd)},
+				},
+			}}}
+		}
+	}
+	agent, err := client.Start(ctx, clientCfg)
 	if err != nil {
 		log.Fatalf("start agent: %v", err)
 	}
@@ -202,6 +247,7 @@ func main() {
 		AgentCmd:             *agentCmd,
 		StartTime:            time.Now(),
 		AccessKey:            secret,
+		MCPAttachEnabled:     *enableMCPAttach,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
@@ -209,6 +255,20 @@ func main() {
 	broker.SetController(rtr)
 	stopGC := rtr.RunGC(ctx, *gcEvery)
 	defer stopGC()
+
+	// MCP attach: start the unix-socket listener that the self-hosted
+	// `mcp-attach` subprocess relays to. Must be up before any session
+	// is created (i.e. before serving). Token-authenticated.
+	if *enableMCPAttach {
+		ln, lerr := mcpattach.Listen(mcpSocket, mcpToken, func(req mcpattach.SocketRequest) error {
+			return rtr.AttachActive(req.Conv, req.Path, req.Name, req.Inline)
+		})
+		if lerr != nil {
+			log.Fatalf("mcp-attach listener: %v", lerr)
+		}
+		defer ln.Close()
+		log.Printf("mcp-attach: listening on %s", mcpSocket)
+	}
 
 	// HTTP
 	if methods := agent.AuthMethods(); len(methods) > 0 {
@@ -321,4 +381,16 @@ func runUpdate(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// randToken returns a short random hex token used to authenticate the
+// mcp-attach subprocess to this process over the unix socket.
+func randToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failure is fatal-grade; fall back to a fixed value
+		// (the socket is also protected by 0600 perms + same-user access).
+		return "poeacp-mcp-token"
+	}
+	return hex.EncodeToString(b)
 }

@@ -190,6 +190,11 @@ type Config struct {
 	AgentCmd string
 	// StartTime is the relay process start; uptime in !relay is now-StartTime.
 	StartTime time.Time
+	// MCPAttachEnabled reports whether the self-hosted MCP `attach` tool
+	// is exposed to the agent. When true the sentinel system-prompt
+	// clause is suppressed (the tool is self-describing via MCP); the
+	// relay-side sentinel scanner remains as a silent fallback.
+	MCPAttachEnabled bool
 	// AccessKey is the Poe bot access key. When non-empty the relay can
 	// upload output attachments (poe-attach directives) and advertise
 	// them to the client via `file` SSE events. Empty disables the
@@ -221,6 +226,13 @@ type Router struct {
 	// uploader handles output-attachment uploads; nil when AccessKey
 	// is unset (feature disabled).
 	uploader *poeupload.Uploader
+
+	// active tracks the in-flight turn per conversation so the
+	// MCP `attach` tool (relayed from a subprocess) can deliver a file
+	// onto the correct live SSE stream. Set for the duration of
+	// Agent.Prompt, cleared when the turn ends.
+	activeMu sync.Mutex
+	active   map[string]activeTurn
 
 	mu        sync.Mutex
 	sessions  map[string]*sessionState
@@ -530,7 +542,7 @@ func New(cfg Config) (*Router, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "convs"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir state: %w", err)
 	}
-	r := &Router{cfg: cfg, sessions: make(map[string]*sessionState), overrides: make(map[string]string)}
+	r := &Router{cfg: cfg, sessions: make(map[string]*sessionState), overrides: make(map[string]string), active: make(map[string]activeTurn)}
 	if cfg.AccessKey != "" {
 		r.uploader = poeupload.New(cfg.AccessKey, cfg.UploadEndpoint, cfg.HTTPClient)
 	}
@@ -549,7 +561,7 @@ func (r *Router) systemPromptForSession() string {
 		return ""
 	}
 	clause := transportContractClause
-	if r.uploader != nil {
+	if r.uploader != nil && !r.cfg.MCPAttachEnabled {
 		clause += attachContractClause
 	}
 	return clause + "\n\n" + text
@@ -1035,6 +1047,9 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 		hideThinking: req.hideThinking,
 		scanner:      r.newAttachScanner(sink, st.cwd),
 	}}
+
+	r.setActiveTurn(st.convID, sink, st.cwd)
+	defer r.clearActiveTurn(st.convID)
 
 	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, blocks)
 
@@ -2238,4 +2253,67 @@ func (r *Router) Debug() []DebugInfo {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ConvID < out[j].ConvID })
 	return out
+}
+
+// activeTurn is the live sink + working dir for a conversation's
+// in-flight turn, used by the MCP attach relay.
+type activeTurn struct {
+	sink ChunkSink
+	cwd  string
+}
+
+func (r *Router) setActiveTurn(convID string, sink ChunkSink, cwd string) {
+	r.activeMu.Lock()
+	r.active[convID] = activeTurn{sink: sink, cwd: cwd}
+	r.activeMu.Unlock()
+}
+
+func (r *Router) clearActiveTurn(convID string) {
+	r.activeMu.Lock()
+	delete(r.active, convID)
+	r.activeMu.Unlock()
+}
+
+// AttachActive uploads a host file and emits it as a Poe attachment on
+// the named conversation's in-flight turn. Called by the MCP `attach`
+// tool relay (a different goroutine than the turn runner). Returns an
+// error to surface back to the agent's tool call when there is no live
+// turn, uploads are disabled, or the upload fails.
+func (r *Router) AttachActive(convID, path, name string, inline bool) error {
+	if r.uploader == nil {
+		return fmt.Errorf("attachments not enabled")
+	}
+	r.activeMu.Lock()
+	at, ok := r.active[convID]
+	r.activeMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no active turn for conversation %s", convID)
+	}
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(at.cwd, path)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	res, err := r.uploader.UploadFile(ctx, path)
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		name = res.Name
+	}
+	ref := ""
+	if inline {
+		ref = newInlineRef()
+	}
+	if err := at.sink.File(res.URL, res.MimeType, name, ref); err != nil {
+		return err
+	}
+	if inline {
+		_ = at.sink.Text(fmt.Sprintf("\n![%s][%s]\n", name, ref))
+	}
+	kitlog.Debugf("mcp attach delivered %s (%s) inline=%v conv=%s", name, res.URL, inline, convID)
+	return nil
 }
