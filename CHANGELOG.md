@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-06-14
+
+### Fixed
+
+- **Reserved `--flag` tokens in bot output no longer wedge Poe conversations.** Poe's chat client parses double-dash flag tokens in message text and binds them to this bot's declared `parameter_controls` (`model`, `provider`, `thinking`, `hide_thinking`, per-provider `model_<provider>`). Each is a strict-enum drop_down, so a freeform value fails validation and Poe rejects the *entire message before it reaches the bot* — wedging the conversation every time it is sent, quoted, or re-submitted. The relay now defuses any reserved token in assistant message output by inserting a zero-width space after the `--` (text reads identically; Poe no longer matches it). Streaming-safe via a `flagEscaper` that holds the trailing partial token across chunk boundaries.
+
 ## [0.28.0] - 2026-06-14
 
 ### Added
