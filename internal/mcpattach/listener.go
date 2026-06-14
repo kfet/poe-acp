@@ -1,37 +1,38 @@
 package mcpattach
 
 import (
+	"bufio"
 	"encoding/json"
 	"net"
 	"os"
 	"sync"
 )
 
-// AttachFunc performs the actual delivery for one validated request
-// (upload + emit the file event on the conv's active turn). Returns an
-// error to surface back to the agent's tool call.
-type AttachFunc func(req SocketRequest) error
-
-// Listener accepts attach relays from mcp-attach subprocesses over a
-// unix socket and dispatches them to an AttachFunc. Token-authenticated.
+// Listener accepts connections from mcp-attach redirector subprocesses
+// over a unix socket. Each connection opens with a newline-terminated
+// preamble line {"token":"<tok>"}; the token is resolved to a
+// conversation id (server-side, unspoofable) and the MCP loop is then
+// run over the same connection.
 type Listener struct {
-	path  string
-	token string
-	fn    AttachFunc
-	ln    net.Listener
-	wg    sync.WaitGroup
+	path    string
+	resolve func(token string) (conv string, ok bool)
+	fn      AttachFunc
+	ln      net.Listener
+	wg      sync.WaitGroup
 }
 
-// Listen creates the unix socket at path (replacing any stale one) and
-// starts accepting. Call Close to stop and remove the socket.
-func Listen(path, token string, fn AttachFunc) (*Listener, error) {
+// Listen creates the unix socket at path (replacing any stale one),
+// tightens it to 0600, and starts accepting. resolve maps a preamble
+// token to its conversation; fn performs the actual attach. Call Close
+// to stop and remove the socket.
+func Listen(path string, resolve func(token string) (conv string, ok bool), fn AttachFunc) (*Listener, error) {
 	_ = os.Remove(path) // clear stale socket from a prior run
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return nil, err
 	}
 	mustChmod(path)
-	l := &Listener{path: path, token: token, fn: fn, ln: ln}
+	l := &Listener{path: path, resolve: resolve, fn: fn, ln: ln}
 	l.wg.Add(1)
 	go l.serve()
 	return l, nil
@@ -52,22 +53,30 @@ func (l *Listener) serve() {
 	}
 }
 
+// handle reads the preamble, authenticates the token, then runs the MCP
+// loop over the SAME buffered reader so bytes the client pipelined after
+// the preamble are not lost. Any auth failure simply closes the conn.
 func (l *Listener) handle(c net.Conn) {
 	defer c.Close()
-	var req SocketRequest
-	if err := json.NewDecoder(c).Decode(&req); err != nil {
-		_ = json.NewEncoder(c).Encode(SocketResponse{Error: "bad request"})
-		return
+	br := bufio.NewReaderSize(c, 1<<20)
+	line, err := br.ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return // client hung up before sending a preamble
 	}
-	if req.Token != l.token {
-		_ = json.NewEncoder(c).Encode(SocketResponse{Error: "unauthorized"})
-		return
+	var pre struct {
+		Token string `json:"token"`
 	}
-	resp := SocketResponse{OK: true}
-	if err := l.fn(req); err != nil {
-		resp = SocketResponse{Error: err.Error()}
+	if jerr := json.Unmarshal(line, &pre); jerr != nil {
+		return // malformed preamble
 	}
-	_ = json.NewEncoder(c).Encode(resp)
+	conv, ok := l.resolve(pre.Token)
+	if !ok {
+		return // unknown token
+	}
+	bound := func(path, name string, inline bool) error {
+		return l.fn(conv, path, name, inline)
+	}
+	_ = RunMCP(br, c, bound)
 }
 
 // Path returns the socket path.

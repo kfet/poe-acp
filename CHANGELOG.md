@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-06-14
+
+### Changed
+
+- **MCP `attach` transport reworked into a dumb pipe + per-session token auth.** The spawned `poe-acp mcp-attach` subprocess is now a pure redirector: it dials the unix socket, writes one newline-terminated `{"token":...}` preamble, then `io.Copy`s stdin↔socket both directions. The full MCP state machine now runs **main-side**, once per accepted connection, after the preamble token is resolved to a conversation id — `tools/call` invokes the attach function in-process. The custom `SocketRequest`/`SocketResponse` relay round-trip is gone; the socket carries the MCP stream itself.
+
+### Security
+
+- **Per-session, server-bound conversation id.** Each ACP session is minted a fresh random token bound to its conversation in a registry; the previously process-wide token and the client-supplied `POEACP_MCP_CONV` env var are removed. The conversation is derived server-side from the token and can no longer be spoofed, so a same-uid process holding one session's token can only attach to that one conversation. The socket also lives in a private `0700` dir with a `0600` socket file.
+
 ## [0.29.1] - 2026-06-14
 
 ### Changed
