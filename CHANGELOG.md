@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-06-14
+
+### Added
+
+- **Self-hosted MCP `attach` tool (deterministic file delivery, any ACP agent).**
+  With `--enable-mcp-attach`, the relay exposes a one-tool MCP server to the
+  agent by passing a `Stdio` MCP server in `session/new` that re-execs poe-acp
+  (`poe-acp mcp-attach`). The agent's model calls `attach(path, name?, inline?)`;
+  the spawned subprocess relays the request to the main process over a `/tmp`
+  unix socket (token-authenticated), which uploads the file and emits the Poe
+  `file` event on the live turn. Stdlib-only (no MCP SDK), no agent-side change,
+  works for any ACP agent that supports MCP. Reuses the existing
+  `poeupload`/`SSEWriter.File` backend. When enabled, the text-sentinel
+  system-prompt clause is suppressed (the tool is self-describing); the sentinel
+  scanner remains as a silent fallback. New `internal/mcpattach`;
+  `router.AttachActive` + per-conversation active-turn tracking. Requires
+  acp-kit v0.2.5 (`Config.MCPServersForSession`).
+
 ## [0.27.0] - 2026-06-13
 
 ### Added
