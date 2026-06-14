@@ -135,7 +135,7 @@ func ProviderOf(modelID string) string {
 // provider id is still what's compared against in the `condition`
 // block.
 func ProviderParamName(provider string) string {
-	return "model_" + sanitiseProvider(provider)
+	return poeproto.ProviderParamPrefix + sanitiseProvider(provider)
 }
 
 // sanitiseProvider folds the provider id into [a-z0-9_], lowercased.
@@ -233,7 +233,7 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 		modelCtl := poeproto.Control{
 			Control:       "drop_down",
 			Label:         "Model",
-			ParameterName: "model",
+			ParameterName: poeproto.ParamModel,
 			Options:       modelOpts,
 		}
 		switch {
@@ -257,7 +257,7 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 		provCtl := poeproto.Control{
 			Control:       "drop_down",
 			Label:         "Provider",
-			ParameterName: "provider",
+			ParameterName: poeproto.ParamProvider,
 			Options:       provOpts,
 		}
 		if defaultProvider != "" && hasProvider(groups, defaultProvider) {
@@ -291,7 +291,7 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 				Control: "condition",
 				Condition: &poeproto.Condition{
 					Comparator: "eq",
-					Left:       poeproto.ParamOperand("provider"),
+					Left:       poeproto.ParamOperand(poeproto.ParamProvider),
 					Right:      poeproto.LiteralOperand(g.id),
 				},
 				Controls: []poeproto.Control{modelCtl},
@@ -303,14 +303,14 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 		poeproto.Control{
 			Control:       "drop_down",
 			Label:         "Thinking",
-			ParameterName: "thinking",
+			ParameterName: poeproto.ParamThinking,
 			DefaultValue:  defaults.Thinking,
 			Options:       append([]poeproto.ValueNamePair(nil), ThinkingLevels...),
 		},
 		poeproto.Control{
 			Control:       "toggle_switch",
 			Label:         "Hide thinking output",
-			ParameterName: "hide_thinking",
+			ParameterName: poeproto.ParamHideThinking,
 			DefaultValue:  defaults.HideThinking,
 		},
 	)
