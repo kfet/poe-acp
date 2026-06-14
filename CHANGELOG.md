@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-06-14
+
+### Changed
+
+- Reserved `--flag` names are now defined once in `internal/poeproto` (`ParamModel`, `ParamProvider`, `ParamThinking`, `ParamHideThinking`, `ProviderParamPrefix`) and consumed by **both** the `parameter_controls` schema builder (`internal/paramctl`) and the output escaper (`internal/router`). The escaper's matcher is assembled from these constants instead of a hardcoded duplicate, so it tracks the declared schema automatically and can never drift out of sync.
+
 ## [0.29.0] - 2026-06-14
 
 ### Fixed
