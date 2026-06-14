@@ -3,11 +3,7 @@ package mcpattach
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"io"
-	"net"
-	"os"
-	"time"
 )
 
 // rpcMessage is a minimal JSON-RPC 2.0 envelope (request, response, or
@@ -28,16 +24,25 @@ type rpcError struct {
 
 const mcpProtocolVersion = "2025-06-18"
 
-// RunStdioServer runs the MCP server loop over r/w (stdin/stdout in
-// production), relaying attach calls to socketPath. conv/token identify
-// and authenticate this session. Returns when r hits EOF.
-func RunStdioServer(r io.Reader, w io.Writer, socketPath, conv, token string) error {
-	br := bufio.NewReaderSize(r, 1<<20)
+// boundAttach is an AttachFunc with its conversation already bound (from
+// the connection's preamble token), so the MCP loop only supplies the
+// per-call path/name/inline.
+type boundAttach func(path, name string, inline bool) error
+
+// RunMCP runs the MCP server loop over r/w until r hits EOF. attach is
+// invoked in-process for each tools/call. If r is already a *bufio.Reader
+// it is reused so no bytes buffered ahead (e.g. after a preamble read)
+// are lost.
+func RunMCP(r io.Reader, w io.Writer, attach boundAttach) error {
+	br, ok := r.(*bufio.Reader)
+	if !ok {
+		br = bufio.NewReaderSize(r, 1<<20)
+	}
 	enc := json.NewEncoder(w)
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
-			if rerr := handleLine(line, enc, socketPath, conv, token); rerr != nil {
+			if rerr := handleLine(line, enc, attach); rerr != nil {
 				return rerr
 			}
 		}
@@ -50,7 +55,7 @@ func RunStdioServer(r io.Reader, w io.Writer, socketPath, conv, token string) er
 	}
 }
 
-func handleLine(line []byte, enc *json.Encoder, socketPath, conv, token string) error {
+func handleLine(line []byte, enc *json.Encoder, attach boundAttach) error {
 	var msg rpcMessage
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return nil // ignore non-JSON / blank lines
@@ -69,7 +74,7 @@ func handleLine(line []byte, enc *json.Encoder, socketPath, conv, token string) 
 	case "tools/list":
 		resp.Result = map[string]any{"tools": []any{toolSpec()}}
 	case "tools/call":
-		resp.Result = handleToolCall(msg.Params, socketPath, conv, token)
+		resp.Result = handleToolCall(msg.Params, attach)
 	case "ping":
 		resp.Result = map[string]any{}
 	default:
@@ -95,7 +100,7 @@ func toolSpec() map[string]any {
 	}
 }
 
-func handleToolCall(params json.RawMessage, socketPath, conv, token string) map[string]any {
+func handleToolCall(params json.RawMessage, attach boundAttach) map[string]any {
 	var p struct {
 		Name      string `json:"name"`
 		Arguments struct {
@@ -113,10 +118,7 @@ func handleToolCall(params json.RawMessage, socketPath, conv, token string) map[
 	if p.Arguments.Path == "" {
 		return toolError("path is required")
 	}
-	if err := relay(socketPath, SocketRequest{
-		Token: token, Conv: conv,
-		Path: p.Arguments.Path, Name: p.Arguments.Name, Inline: p.Arguments.Inline,
-	}); err != nil {
+	if err := attach(p.Arguments.Path, p.Arguments.Name, p.Arguments.Inline); err != nil {
 		return toolError("attach failed: " + err.Error())
 	}
 	disp := p.Arguments.Name
@@ -133,43 +135,4 @@ func toolError(msg string) map[string]any {
 		"content": []any{map[string]any{"type": "text", "text": msg}},
 		"isError": true,
 	}
-}
-
-// relay sends one attach request to the main process and waits for ack.
-func relay(socketPath string, req SocketRequest) error {
-	c, err := net.DialTimeout("unix", socketPath, 5*time.Second)
-	if err != nil {
-		return fmt.Errorf("dial relay: %w", err)
-	}
-	defer c.Close()
-	return exchange(c, req)
-}
-
-// exchange runs one request/response over an already-dialed conn. Split
-// from relay so the send/recv error paths are testable via net.Pipe.
-func exchange(c net.Conn, req SocketRequest) error {
-	_ = c.SetDeadline(time.Now().Add(3 * time.Minute))
-	if err := json.NewEncoder(c).Encode(&req); err != nil {
-		return fmt.Errorf("send: %w", err)
-	}
-	var resp SocketResponse
-	if err := json.NewDecoder(c).Decode(&resp); err != nil {
-		return fmt.Errorf("recv: %w", err)
-	}
-	if !resp.OK {
-		return fmt.Errorf("%s", resp.Error)
-	}
-	return nil
-}
-
-// RunFromEnv is the entry point for the `mcp-attach` subcommand: reads
-// config from the env the parent set and serves on stdin/stdout.
-func RunFromEnv() error {
-	socket := os.Getenv(EnvSocket)
-	conv := os.Getenv(EnvConv)
-	token := os.Getenv(EnvToken)
-	if socket == "" {
-		return fmt.Errorf("mcp-attach: %s not set", EnvSocket)
-	}
-	return RunStdioServer(os.Stdin, os.Stdout, socket, conv, token)
 }
