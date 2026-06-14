@@ -81,6 +81,7 @@ Prefer deterministic synchronization over `time.Sleep` and wall-clock polling:
 - **No `time.Sleep` in tests** — sleep-based tests are flaky under CI load and the race detector. If you need to wait for a goroutine, use a channel or sync primitive.
 - **`require.Eventually` is a last resort** — only for checking external state you can't subscribe to. Use short poll intervals (10ms) and generous timeouts (3–5s) when unavoidable.
 - **Callbacks in Config, not after init** — if a struct spawns goroutines on creation, callbacks must be set via the config/options struct *before* construction, not after. Setting callbacks after init races with the goroutine.
+- **Cover every branch deterministically — a flaky line fails the 100% gate at random.** The cover gate in `make all` requires 100%. If a statement is only covered when goroutine/connection timing happens to hit it (e.g. a "client hung up before sending preamble" branch in an accept loop), coverage flips between 100% and 99.9% run-to-run. The SAME commit then passes the `release` job and fails the `ci` job (both run `make all`) — it looks like "CI keeps failing" but nothing is bypassing the gate; the gate itself is non-deterministic. Never rely on timing to cover an error branch: drive it explicitly (dial then close without writing, synchronised on a channel/WaitGroup), or if it is genuinely defensive/unreachable route it through a `*_must.go` panic-helper so it is excluded from the count. Real lesson from v0.30.0 (mcpattach listener.go preamble-hangup branch).
 
 ## Agent-process concerns
 
