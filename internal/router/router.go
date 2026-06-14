@@ -502,6 +502,35 @@ type turnDef struct {
 	// scanner extracts poe-attach directives from message chunks; nil
 	// when output attachments are disabled.
 	scanner *attachScanner
+	// escaper defuses reserved double-dash flag tokens in message text
+	// before they reach the user (see flagescape.go). Always set for a
+	// normal turn; nil-safe at the call sites.
+	escaper *flagEscaper
+}
+
+// emitMessage forwards already-escaped message text to the scanner (which
+// may intercept attach directives) or straight to the sink.
+func (td *turnDef) emitMessage(s string) {
+	if s == "" {
+		return
+	}
+	if td.scanner != nil {
+		td.scanner.Feed(s)
+		return
+	}
+	_ = td.sink.Text(s)
+}
+
+// flushMessage releases any partial token the escaper is holding, then
+// flushes the scanner. Call at end of turn and before an interrupting
+// thought so held text never lands out of order.
+func (td *turnDef) flushMessage() {
+	if td.escaper != nil {
+		td.emitMessage(td.escaper.flush())
+	}
+	if td.scanner != nil {
+		td.scanner.Flush()
+	}
 }
 
 // chunkKind classifies the most recent stream chunk written to the sink.
@@ -663,8 +692,8 @@ func (s *sessionState) drainChunks() {
 				first = false
 				chunkMode = chunkNone
 			case msg.endTurn != nil:
-				if td != nil && td.scanner != nil {
-					td.scanner.Flush()
+				if td != nil {
+					td.flushMessage()
 				}
 				td = nil
 				close(msg.endTurn) // ack: Prompt can proceed
@@ -718,20 +747,22 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 		td.sink.FirstChunk()
 	}
 	if kind == chunkThought {
-		// A thought chunk interrupts message text: flush any line the
-		// scanner is holding so held text never lands after the thought.
-		if td.scanner != nil {
-			td.scanner.Flush()
-		}
+		// A thought chunk interrupts message text: release any token the
+		// escaper holds and flush the scanner so held text never lands
+		// after the thought.
+		td.flushMessage()
 		// Continue the blockquote across newlines inside the thought
 		// chunk so Poe's Markdown renderer keeps it as one block.
 		text = strings.ReplaceAll(text, "\n", "\n> ")
 	}
-	if kind == chunkMessage && td.scanner != nil {
+	if kind == chunkMessage {
 		if prefix != "" {
 			_ = td.sink.Text(prefix)
 		}
-		td.scanner.Feed(text)
+		if td.escaper != nil {
+			text = td.escaper.feed(text)
+		}
+		td.emitMessage(text)
 		return
 	}
 	_ = td.sink.Text(prefix + text)
@@ -1046,6 +1077,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 		sink:         sink,
 		hideThinking: req.hideThinking,
 		scanner:      r.newAttachScanner(sink, st.cwd),
+		escaper:      &flagEscaper{},
 	}}
 
 	r.setActiveTurn(st.convID, sink, st.cwd)
