@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,20 +163,38 @@ func TestHandler_DebugLogPath(t *testing.T) {
 	}
 }
 
-// hangAgent blocks Prompt until ctx is cancelled.
+// hangAgent emits one chunk (so the stream has user-visible output), then
+// blocks until Cancel is invoked. Models a real user Stop arriving AFTER
+// output has started: the gated-cancel path must forward session/cancel.
 type hangAgent struct {
 	*fakeAgent
 	cancelled chan struct{}
 	entered   chan struct{}
+	cancelOne sync.Once
 }
 
-func (a *hangAgent) Prompt(ctx context.Context, _ acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+func (a *hangAgent) Prompt(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+	a.fakeAgent.mu.Lock()
+	sink := a.fakeAgent.sinks[sid]
+	a.fakeAgent.mu.Unlock()
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		SessionId: sid,
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.TextBlock("pong\n"),
+			},
+		},
+	})
 	if a.entered != nil {
 		close(a.entered)
 	}
-	<-ctx.Done()
-	close(a.cancelled)
-	return acp.StopReasonCancelled, ctx.Err()
+	<-a.cancelled
+	return acp.StopReasonCancelled, nil
+}
+
+func (a *hangAgent) Cancel(_ context.Context, _ acp.SessionId) error {
+	a.cancelOne.Do(func() { close(a.cancelled) })
+	return nil
 }
 
 func TestHandler_CancelOnDisconnect(t *testing.T) {
@@ -196,18 +215,33 @@ func TestHandler_CancelOnDisconnect(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, bytes.NewReader(body))
-	go func() {
-		select {
-		case <-a.entered:
-		case <-time.After(3 * time.Second):
-		}
-		cancel()
-	}()
 	resp, err := http.DefaultClient.Do(req)
-	if err == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+	if err != nil {
+		t.Fatalf("do: %v", err)
 	}
+	// Read until the first chunk lands so realWritten is set: the
+	// post-output disconnect must then propagate as session/cancel.
+	gotChunk := make(chan struct{})
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, rerr := resp.Body.Read(buf)
+			if n > 0 && strings.Contains(string(buf[:n]), "pong") {
+				close(gotChunk)
+				return
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-gotChunk:
+	case <-time.After(3 * time.Second):
+		t.Fatal("never received first chunk")
+	}
+	cancel()
+	_ = resp.Body.Close()
 	select {
 	case <-a.cancelled:
 	case <-time.After(2 * time.Second):
@@ -261,6 +295,21 @@ func TestLatestUserTurn(t *testing.T) {
 	turns = []router.Turn{{Role: "bot", Content: "x"}}
 	if got := latestUserTurn(turns); got != "" {
 		t.Fatal(got)
+	}
+}
+
+func TestLatestUserMessageID(t *testing.T) {
+	turns := []router.Turn{
+		{Role: "user", Content: "a", MessageID: "m1"},
+		{Role: "bot", Content: "b"},
+		{Role: "user", Content: "c", MessageID: "m2"},
+	}
+	if got := latestUserMessageID(turns); got != "m2" {
+		t.Fatalf("got %q want m2", got)
+	}
+	// No user turn → "".
+	if got := latestUserMessageID([]router.Turn{{Role: "bot", Content: "x"}}); got != "" {
+		t.Fatalf("got %q want empty", got)
 	}
 }
 

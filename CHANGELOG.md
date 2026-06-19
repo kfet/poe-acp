@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Warm-session mid-conversation turns no longer drop on a pre-output Poe disconnect (~47% turn loss).** Poe tears down the bot-facing HTTP connection pre-output (~9–16ms) on a transport drop, which aborted the in-flight turn and made Poe redrive — which then *reseeded* the fir session from chat text only, losing all internal state (tool results, thinking, plan, pins). Two changes fix this:
+  - **Gated turn-decouple + answer buffering** (`httpsrv`). The prompt turn now runs on a context decoupled from the request ctx (bounded by the new `--turn-timeout`, default 5m). A client disconnect is gated on the first-output flag: a cancel *after* first output is a real user Stop (forwarded as `session/cancel`); a cancel *before* any output is a transport drop — absorbed, the turn runs to completion, and the answer is buffered keyed by conv+message_id. Poe's redrive of the same query is served verbatim from the buffer without re-running the agent (buffer evicted on serve and after `--answer-ttl`, default 2m).
+  - **Benign redrive → reuse/resume, not reseed** (`router.getOrCreate`). A pure benign redrive (latest id re-sent but the transcript has not genuinely diverged) now reuses the hot session losslessly instead of reseeding. Reseed is reserved for genuine `transcriptDiverged` (edit/delete/older-tail redrive).
+
+### Added
+
+- `--turn-timeout` flag bounding the decoupled prompt turn.
+- `--answer-ttl` flag bounding buffered-answer retention for redrives.
+
 ## [0.31.1] - 2026-06-19
 
 ### Fixed

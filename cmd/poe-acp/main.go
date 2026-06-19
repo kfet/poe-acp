@@ -67,6 +67,8 @@ func main() {
 		sessCreateTO    = flag.Duration("session-create-timeout", 60*time.Second, "Bounds session acquisition (list/resume/new); decoupled from the request ctx so a flaky first request still warms the session")
 		gcEvery         = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
 		heartbeat       = flag.Duration("heartbeat-interval", 1500*time.Millisecond, "SSE heartbeat / spinner tick interval (0 to disable)")
+		turnTimeout     = flag.Duration("turn-timeout", 5*time.Minute, "Bounds a prompt turn run on a context decoupled from the request ctx; a pre-output transport drop lets the turn finish so its answer can be buffered for the redrive")
+		answerTTL       = flag.Duration("answer-ttl", 2*time.Minute, "How long a buffered (absorbed) turn answer is held for a redrive before discard")
 		allowAtt        = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
 		showVersion     = flag.Bool("version", false, "Print version and exit")
 		debugFlag       = flag.Bool("debug", false, "Enable verbose debug logging (also via POEACP_DEBUG=1)")
@@ -299,6 +301,8 @@ func main() {
 			IntroductionMessage:   *introMsg,
 		},
 		HeartbeatInterval: *heartbeat,
+		TurnTimeout:       *turnTimeout,
+		AnswerTTL:         *answerTTL,
 		ParameterControlsProvider: func() *poeproto.ParameterControls {
 			m, _ := agent.Models()
 			return paramctl.Build(m, defaults)
