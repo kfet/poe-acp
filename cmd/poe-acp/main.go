@@ -64,6 +64,7 @@ func main() {
 		poePath         = flag.String("poe-path", "/poe", "HTTP path for the Poe protocol endpoint")
 		introMsg        = flag.String("introduction", "poe-acp: ACP-backed bot.", "Poe introduction message")
 		ttl             = flag.Duration("session-ttl", 10*time.Minute, "Idle TTL before a conv session is evicted")
+		sessCreateTO    = flag.Duration("session-create-timeout", 60*time.Second, "Bounds session acquisition (list/resume/new); decoupled from the request ctx so a flaky first request still warms the session")
 		gcEvery         = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
 		heartbeat       = flag.Duration("heartbeat-interval", 1500*time.Millisecond, "SSE heartbeat / spinner tick interval (0 to disable)")
 		allowAtt        = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
@@ -250,6 +251,7 @@ func main() {
 		Agent:                agent,
 		StateDir:             stateDir,
 		SessionTTL:           *ttl,
+		SessionCreateTimeout: *sessCreateTO,
 		Defaults:             defaults,
 		SystemPromptProvider: systemPromptProvider(cfgPath),
 		AuthErrorHint:        broker.OfferLogin,

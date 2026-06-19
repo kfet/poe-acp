@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-06-19
+
+### Fixed
+
+- **First message on a new thread no longer wedges on a fast Poe disconnect.** Session acquisition (list/resume/new) in `router.getOrCreate` now runs on a context decoupled from the HTTP request ctx (`context.WithoutCancel`, bounded by the new `--session-create-timeout`, default 60s). If Poe drops the bot-facing connection during a cold start the session still warms in the background, so the user's retry lands on a hot session instead of cold-starting again. The request ctx still cancels token-burning work (attachment download, the turn/prompt) promptly.
+
+### Added
+
+- Permanent (always-on) `WARN fast client disconnect` log when the request context is canceled sooner than `fastCancelThreshold` (2s) — a debug-independent signal of the fast-cancel pathology for operators.
+- `--session-create-timeout` flag bounding session acquisition.
+
 ## [0.30.0] - 2026-06-14
 
 ### Changed
