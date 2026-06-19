@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-06-19
+
 ### Fixed
 
 - **Warm-session mid-conversation turns no longer drop on a pre-output Poe disconnect (~47% turn loss).** Poe tears down the bot-facing HTTP connection pre-output (~9–16ms) on a transport drop, which aborted the in-flight turn and made Poe redrive — which then *reseeded* the fir session from chat text only, losing all internal state (tool results, thinking, plan, pins). Two changes fix this:
