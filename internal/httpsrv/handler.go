@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	kitlog "github.com/kfet/acp-kit/log"
@@ -45,7 +46,27 @@ type Config struct {
 	// and pasted redirect URLs from in-flight logins before they reach
 	// the router. Optional; nil disables the command surface.
 	Commands CommandHandler
+	// TurnTimeout bounds a prompt turn run on a context DECOUPLED from
+	// the request ctx. Poe tears down the bot-facing HTTP connection
+	// pre-output on a transport drop; decoupling lets the in-flight turn
+	// finish so its answer can be buffered and served on the redrive,
+	// instead of aborting and losing the work. <=0 falls back to
+	// defaultTurnTimeout (5m).
+	TurnTimeout time.Duration
+	// AnswerTTL bounds how long a buffered (absorbed) turn answer is held
+	// for a redrive before it is discarded. <=0 falls back to
+	// defaultAnswerTTL (2m).
+	AnswerTTL time.Duration
 }
+
+// defaultTurnTimeout bounds a decoupled prompt turn when Config.TurnTimeout
+// is unset.
+const defaultTurnTimeout = 5 * time.Minute
+
+// defaultAnswerTTL bounds buffered-answer retention when Config.AnswerTTL
+// is unset. Poe redrives a transport drop within a few seconds; 2m is
+// generous headroom while keeping memory bounded.
+const defaultAnswerTTL = 2 * time.Minute
 
 // CommandHandler is the surface httpsrv depends on; *command.Broker
 // implements it. Extracted so tests can inject handlers that return
@@ -60,13 +81,21 @@ type CommandHandler interface {
 
 // Handler serves the /poe endpoint.
 type Handler struct {
-	cfg Config
+	cfg     Config
+	answers *answerBuffer
 }
 
 // New creates a Handler. HeartbeatInterval <=0 disables heartbeat;
 // otherwise no defaulting is applied — pass an explicit value.
+// TurnTimeout and AnswerTTL default when <=0 (see their docs).
 func New(cfg Config) *Handler {
-	return &Handler{cfg: cfg}
+	if cfg.TurnTimeout <= 0 {
+		cfg.TurnTimeout = defaultTurnTimeout
+	}
+	if cfg.AnswerTTL <= 0 {
+		cfg.AnswerTTL = defaultAnswerTTL
+	}
+	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL)}
 }
 
 // ServeHTTP implements http.Handler.
@@ -200,30 +229,83 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	s.SetProviderEmoji(statusline.ProviderEmojiForModel(opts.Model))
 	defer s.stop()
 
-	// Cancel propagation: if the HTTP client goes away while a prompt
-	// is in flight, issue ACP session/cancel so the agent stops burning
-	// tokens. Once the prompt returns (clean or error), stop watching —
-	// we don't want to cancel a session that has already completed.
+	// Redrive fast-path: if Poe re-sends a query whose original response
+	// we absorbed (client dropped pre-output) and we buffered, serve the
+	// completed answer from the buffer instead of re-running the agent.
+	// Keyed by conv + latest user message_id (stable across a redrive).
+	key := answerKey(req.ConversationID, latestUserMessageID(turns))
+	if key != "" {
+		if calls, ok := h.answers.take(key); ok {
+			kitlog.Debugf("redrive served from buffer: conv=%s msg=%s", req.ConversationID, req.MessageID)
+			replay(calls, s)
+			return
+		}
+	}
+
+	// Decouple the prompt turn from the request ctx: Poe drops the
+	// bot-facing HTTP connection pre-output on a transport drop, which
+	// would otherwise abort the in-flight turn. Run on a context that
+	// drops the caller's cancellation but is bounded by TurnTimeout so a
+	// pre-output drop lets the turn finish and its answer get buffered.
+	turnCtx, cancelTurn := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.TurnTimeout)
+	defer cancelTurn()
+
+	rec := &answerRecorder{inner: s}
+
+	// Gated cancel propagation. When the HTTP client goes away mid-turn:
+	//   - first output ALREADY landed (realWritten) → a real user Stop;
+	//     forward session/cancel so the agent stops burning tokens.
+	//   - no output yet → a transport drop (all observed drops are
+	//     pre-output at 9–16ms); ABSORB it: do not cancel, let the
+	//     decoupled turn finish, and buffer the answer for the redrive.
+	// Poe has no cancel signal, so a user Stop and a transport drop are
+	// indistinguishable upstream — the first-output gate is the
+	// discriminator, with the redrive-absence backstop discarding a
+	// mis-absorbed Stop's buffer when no redrive arrives (it TTL-expires).
+	var absorbed atomic.Bool
 	done := make(chan struct{})
+	watcherDone := make(chan struct{})
 	start := time.Now()
 	go func() {
+		defer close(watcherDone)
 		select {
 		case <-ctx.Done():
 			elapsed := time.Since(start)
 			if elapsed < fastCancelThreshold {
 				log.Printf("WARN fast client disconnect: conv=%s elapsed=%s — Poe dropped the bot connection before the turn started", req.ConversationID, elapsed.Round(time.Millisecond))
 			}
-			_ = h.cfg.Router.Cancel(context.Background(), req.ConversationID)
+			// Latch the decision at the instant the client went away:
+			// realWritten then is the discriminator. (Re-reading it after
+			// the turn completes would be wrong — output lands by then.)
+			if s.realWritten() {
+				_ = h.cfg.Router.Cancel(context.Background(), req.ConversationID)
+			} else {
+				absorbed.Store(true)
+			}
+			if absorbDecidedHook != nil {
+				absorbDecidedHook()
+			}
 		case <-done:
 		}
 	}()
 
-	err = h.cfg.Router.Prompt(ctx, req.ConversationID, req.UserID, turns, opts, s)
+	err = h.cfg.Router.Prompt(turnCtx, req.ConversationID, req.UserID, turns, opts, rec)
 	close(done)
+	<-watcherDone
 	if err != nil {
 		log.Printf("router prompt (conv=%s): %v", req.ConversationID, err)
 	}
+	if absorbed.Load() && key != "" {
+		h.answers.put(key, rec.snapshot())
+		kitlog.Debugf("absorbed pre-output drop: buffered answer conv=%s msg=%s", req.ConversationID, req.MessageID)
+	}
 }
+
+// absorbDecidedHook, when non-nil, is invoked after the disconnect watcher
+// latches its absorb/cancel decision. Test-only seam so a test can release
+// a blocked turn only AFTER the decision is latched, avoiding a race
+// between client-disconnect and turn-completion. nil in production.
+var absorbDecidedHook func()
 
 // sink adapts SSEWriter to router.ChunkSink, with an animated
 // `> _Thinking._` spinner that runs until the first user-visible write
@@ -472,6 +554,16 @@ func (s *sink) stop() {
 // from orderedWriter, not from this call.
 func (s *sink) FirstChunk() { s.stop() }
 
+// realWritten reports whether the first user-visible write has landed on
+// the stream. The handler's gated-cancel path uses this to distinguish a
+// real user Stop (output already streaming) from a pre-output transport
+// drop (nothing written yet → absorb + buffer).
+func (s *sink) realWritten() bool {
+	s.o.mu.Lock()
+	defer s.o.mu.Unlock()
+	return s.o.realWritten
+}
+
 func (s *sink) Text(t string) error      { return s.o.userText(s.maybePrependHeader(t)) }
 func (s *sink) Replace(t string) error   { return s.o.userReplace(t) }
 func (s *sink) Error(t, et string) error { s.stop(); return s.o.userError(t, et) }
@@ -582,6 +674,19 @@ func latestUserTurn(turns []router.Turn) string {
 	for i := len(turns) - 1; i >= 0; i-- {
 		if turns[i].Role == "user" {
 			return turns[i].Content
+		}
+	}
+	return ""
+}
+
+// latestUserMessageID returns the Poe message_id of the most recent user
+// turn, or "" if there isn't one (or it carries no id). Used to key the
+// answer buffer so a redrive of the same query maps to its buffered
+// response.
+func latestUserMessageID(turns []router.Turn) string {
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].Role == "user" {
+			return turns[i].MessageID
 		}
 	}
 	return ""

@@ -1294,3 +1294,48 @@ func TestRouter_EditPastTurnReseeds(t *testing.T) {
 		t.Fatalf("past-turn edit must reseed a fresh session: NewSession calls=%d", got)
 	}
 }
+
+// A PURE BENIGN redrive — the latest user id is re-sent but the transcript
+// has not genuinely diverged (no edit, delete, or tail-drop) — must REUSE
+// the hot session losslessly, never reseeding. This preserves the agent's
+// internal state (tool results, thinking, plan, pins) across a Poe redrive
+// of a transport-dropped turn.
+func TestRouter_BenignRedriveReusesSession(t *testing.T) {
+	a := newFakeAgent(func(_ context.Context, fa *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		fa.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	r, _ := New(Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	ctx := context.Background()
+
+	base := []Turn{
+		{Role: "user", Content: "q1", MessageID: "m1"},
+		{Role: "bot", Content: "a1", MessageID: "b1"},
+		{Role: "user", Content: "q2", MessageID: "m2"},
+	}
+	// Turn 1: new session incorporating the transcript.
+	if err := r.Prompt(ctx, "c1", "u", base, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	sid1 := r.sessions["c1"].sessionID
+	r.mu.Unlock()
+
+	// Turn 2: an EXACT redrive of the same transcript (latest id m2 re-sent,
+	// nothing changed). Benign: reuse the hot session, no reseed.
+	if err := r.Prompt(ctx, "c1", "u", base, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&a.newSessCalls); got != 1 {
+		t.Fatalf("benign redrive must reuse session: NewSession calls=%d", got)
+	}
+	if got := atomic.LoadInt32(&a.resumeCalls); got != 0 {
+		t.Fatalf("benign redrive must not resume: resumeCalls=%d", got)
+	}
+	r.mu.Lock()
+	sid2 := r.sessions["c1"].sessionID
+	r.mu.Unlock()
+	if sid1 != sid2 {
+		t.Fatalf("benign redrive replaced the session: %q -> %q", sid1, sid2)
+	}
+}

@@ -1973,19 +1973,22 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	latest, _ := latestUserTurnRef(query)
 	r.mu.Lock()
 	if existing, ok := r.sessions[convID]; ok {
-		// Two divergence signals, both meaning the agent's memory is now
-		// stale vs Poe's transcript: (1) the latest user turn redrove an
-		// already-incorporated id; (2) the full-transcript diff shows an
-		// edit/delete of any PAST turn (user or bot). A clean append trips
-		// neither, so the hot session is reused.
+		// Reseed only on GENUINE divergence: an edit/delete of a past turn
+		// or a tail-drop (redrive of an older turn) — transcriptDiverged
+		// catches all three by diffing the full id+hash fingerprint. A
+		// pure benign redrive (latest id re-sent but the transcript is
+		// otherwise unchanged) is NOT divergence: the hot session is reused
+		// losslessly, preserving the agent's internal state (tool results,
+		// thinking, plan, pins) rather than reseeding from chat text only.
+		// isRedrive is kept for diagnostics; it no longer forces a reseed.
 		redrive := isRedrive(existing.seenUserIDs, latest)
-		if !redrive && !transcriptDiverged(existing.seenTurns, incomingFP) {
+		if !transcriptDiverged(existing.seenTurns, incomingFP) {
 			for id := range incomingIDs {
 				existing.seenUserIDs[id] = struct{}{}
 			}
 			existing.seenTurns = incomingFP
 			r.mu.Unlock()
-			kitlog.Debugf("getOrCreate conv=%s -> hit (sid=%s)", convID, string(existing.sessionID))
+			kitlog.Debugf("getOrCreate conv=%s -> hit (sid=%s redrive=%v)", convID, string(existing.sessionID), redrive)
 			return existing, false, nil
 		}
 		// Diverged: the user redrove, edited, or deleted an earlier turn, so
