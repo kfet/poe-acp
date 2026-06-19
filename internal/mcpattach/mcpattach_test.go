@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -344,7 +345,23 @@ func TestListener_HangupBeforePreamble(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Close() // hang up immediately, no preamble
+	defer c.Close()
+	// Half-close the write side so the server's ReadBytes sees EOF with an
+	// empty line (the len(line)==0 hangup branch in handle). Then block on a
+	// read until the server closes its end (io.EOF), which proves handle()
+	// actually ran before the test returns and tears down the listener —
+	// otherwise the accept→handle goroutine could race l.Close() and the
+	// hangup branch would be flaky-uncovered.
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		t.Fatalf("want *net.UnixConn, got %T", c)
+	}
+	if err := uc.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+	if _, err := io.Copy(io.Discard, c); err != nil {
+		t.Fatalf("read until server close: %v", err)
+	}
 }
 
 func TestListener_RemovesSocketOnClose(t *testing.T) {
