@@ -15,16 +15,19 @@ import (
 )
 
 // startSignalAgent signals when Prompt is entered, then blocks until the
-// turn's context is canceled. Lets the test cancel mid-turn deterministically.
+// test releases it. With the gated turn-decouple a pre-output client
+// disconnect is absorbed (not cancelled), so the turn ctx is NOT cancelled
+// mid-turn — the test drives completion via the release channel instead.
 type startSignalAgent struct {
 	*fakeAgent
 	started chan struct{}
+	release chan struct{}
 }
 
-func (a *startSignalAgent) Prompt(ctx context.Context, _ acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+func (a *startSignalAgent) Prompt(_ context.Context, _ acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
 	close(a.started)
-	<-ctx.Done()
-	return acp.StopReasonCancelled, ctx.Err()
+	<-a.release
+	return acp.StopReasonEndTurn, nil
 }
 
 func runFastCancel(t *testing.T, threshold time.Duration) string {
@@ -38,7 +41,7 @@ func runFastCancel(t *testing.T, threshold time.Duration) string {
 	log.SetOutput(&buf)
 	defer log.SetOutput(origOut)
 
-	sa := &startSignalAgent{fakeAgent: &fakeAgent{}, started: make(chan struct{})}
+	sa := &startSignalAgent{fakeAgent: &fakeAgent{}, started: make(chan struct{}), release: make(chan struct{})}
 	rtr, err := router.New(router.Config{Agent: sa, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +62,9 @@ func runFastCancel(t *testing.T, threshold time.Duration) string {
 	}()
 	<-sa.started
 	cancel()
+	// Pre-output disconnect is absorbed: release the agent so the
+	// decoupled turn completes and ServeHTTP returns.
+	close(sa.release)
 	<-done
 
 	// The disconnect-watch goroutine may log after ServeHTTP returns; give
