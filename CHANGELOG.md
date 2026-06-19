@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-06-19
+
+### Fixed
+
+- **CI 100% coverage gate is now deterministic.** `TestListener_HangupBeforePreamble` (mcpattach) dialled then immediately full-closed the connection, racing the accept→`handle` spawn against listener teardown; when teardown won, the preamble-hangup branch (`listener.go:64`) went uncovered and the aggregate gate flipped to 99.9%, failing `ci` since v0.30.0. The test now half-closes the write side and reads until EOF, synchronising on `handle()` completion so the branch is always covered.
+
 ## [0.31.0] - 2026-06-19
 
 ### Fixed
