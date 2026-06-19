@@ -17,6 +17,13 @@ import (
 	"github.com/kfet/poe-acp/internal/statusline"
 )
 
+// fastCancelThreshold is the elapsed-time floor below which a client
+// disconnect during a turn is logged as a permanent (always-on) WARN:
+// Poe dropped the bot-facing connection before the turn could realistically
+// start. See handleQuery. Declared as a var so tests can tighten/loosen it
+// deterministically without wall-clock waits.
+var fastCancelThreshold = 2 * time.Second
+
 // Config configures a Handler.
 type Config struct {
 	Router *router.Router
@@ -198,9 +205,14 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// tokens. Once the prompt returns (clean or error), stop watching —
 	// we don't want to cancel a session that has already completed.
 	done := make(chan struct{})
+	start := time.Now()
 	go func() {
 		select {
 		case <-ctx.Done():
+			elapsed := time.Since(start)
+			if elapsed < fastCancelThreshold {
+				log.Printf("WARN fast client disconnect: conv=%s elapsed=%s — Poe dropped the bot connection before the turn started", req.ConversationID, elapsed.Round(time.Millisecond))
+			}
 			_ = h.cfg.Router.Cancel(context.Background(), req.ConversationID)
 		case <-done:
 		}

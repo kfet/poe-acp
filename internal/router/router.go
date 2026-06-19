@@ -133,6 +133,13 @@ type Config struct {
 	StateDir string
 	// SessionTTL: sessions idle longer than this are dropped from the map.
 	SessionTTL time.Duration
+	// SessionCreateTimeout bounds session ACQUISITION (list/resume/new)
+	// in getOrCreate. Acquisition runs on a context derived via
+	// context.WithoutCancel from the request ctx, so a flaky/disconnected
+	// first request still WARMS the session in the background instead of
+	// aborting it; the user's retry lands on a hot session. Zero falls
+	// back to defaultSessionCreateTimeout (60s).
+	SessionCreateTimeout time.Duration
 	// Defaults are the values the Poe UI shows when the user hasn't
 	// touched the Options panel. ParseOptions overlays user-supplied
 	// keys on top of these so the agent always converges to the
@@ -552,6 +559,9 @@ func New(cfg Config) (*Router, error) {
 	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = 2 * time.Hour
+	}
+	if cfg.SessionCreateTimeout == 0 {
+		cfg.SessionCreateTimeout = defaultSessionCreateTimeout
 	}
 	if cfg.AttachmentTTL == 0 {
 		cfg.AttachmentTTL = defaultAttachmentTTL
@@ -2027,12 +2037,21 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	// Tier 1: try resume if the agent supports list+resume. Skipped on a
 	// divergence rebuild (forceFresh) — resuming would reload the stale
 	// on-disk session we are deliberately discarding.
+	// Session acquisition (list/resume/new) is decoupled from the caller's
+	// request ctx: Poe can drop the bot-facing HTTP connection during a
+	// cold start, which would otherwise cancel session creation mid-flight
+	// and leave the conversation wedged. Derive a bounded context that
+	// drops the caller's cancellation but is capped by SessionCreateTimeout,
+	// so a flaky first request still WARMS the session in the background.
+	acqCtx, cancelAcq := context.WithTimeout(context.WithoutCancel(ctx), r.cfg.SessionCreateTimeout)
+	defer cancelAcq()
+
 	caps := r.cfg.Agent.Caps()
 	if !forceFresh && caps.ListSessions && caps.ResumeSession {
-		sessions, lerr := r.cfg.Agent.ListSessions(ctx, cwd)
+		sessions, lerr := r.cfg.Agent.ListSessions(acqCtx, cwd)
 		if lerr == nil && len(sessions) > 0 {
 			sid := acp.SessionId(sessions[0].SessionId)
-			if rerr := r.cfg.Agent.ResumeSession(ctx, cwd, sid, st); rerr == nil {
+			if rerr := r.cfg.Agent.ResumeSession(acqCtx, cwd, sid, st); rerr == nil {
 				st.sessionID = sid
 				// Resume: the previous session may have had the system
 				// prompt installed, but we have no way to confirm. On
@@ -2059,7 +2078,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	if st.systemPrompt != "" && caps.SystemPrompt {
 		sysBlocks = []acp.ContentBlock{acp.TextBlock(st.systemPrompt)}
 	}
-	sid, nerr := r.cfg.Agent.NewSession(ctx, cwd, st, sysBlocks)
+	sid, nerr := r.cfg.Agent.NewSession(acqCtx, cwd, st, sysBlocks)
 	if nerr != nil {
 		return nil, false, fmt.Errorf("acp new session: %w", nerr)
 	}
@@ -2182,6 +2201,10 @@ func (r *Router) gcOnce() {
 // releaseTimeout bounds the best-effort session/release RPC issued when a
 // session is garbage-collected.
 const releaseTimeout = 10 * time.Second
+
+// defaultSessionCreateTimeout bounds session acquisition (list/resume/new)
+// in getOrCreate when Config.SessionCreateTimeout is unset.
+const defaultSessionCreateTimeout = 60 * time.Second
 
 // sweepAttachmentsOnce walks <StateDir>/convs/*/.poe-attachments/ and
 // removes files whose mtime is older than AttachmentTTL. Empty message
