@@ -96,7 +96,7 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 - **Missed restart** — replacing the binary on disk does not reload the running process. Always restart the supervisor.
 - **launchd label varies** — embeds the deploying user (`dev.<user>.poe-acp`). Read it from the plist, don't guess.
 - **Mixed install methods** — a host may have both `~/.local/bin/poe-acp` and a brew copy; the supervisor's `ExecStart` pins one. Upgrade whichever the unit/plist points at.
-- **Active conversations drop** — restart kills in-flight SSE; Poe will retry. Avoid during peak use if avoidable.
+- **In-flight turn interrupts briefly** — a restart ends the open SSE response; Poe retries and the conversation redrives from transcript, so nothing is lost. Avoid during peak use if avoidable.
 - **Do not mutate launchd for config-only changes** — if only `config.json`, env, or the binary changed, restart with `launchctl kickstart -k gui/$UID/<label>`. Do not edit plist, create one-shot reloader jobs, or run bootout/bootstrap unless first installing/removing a service or intentionally changing the plist registration.
 
 ## Checklist
