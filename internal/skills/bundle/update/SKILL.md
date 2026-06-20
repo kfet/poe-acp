@@ -53,6 +53,8 @@ Find `<label>` in `~/Library/LaunchAgents/dev.*.poe-acp.plist` (e.g. `dev.<user>
 
 Never schedule a delayed reloader and never use `launchctl bootout` + `bootstrap` for a routine restart. `kickstart -k` stops and immediately relaunches the already-registered job without changing the plist or racing launchd registration.
 
+**Graceful (zero-downtime) restart.** To upgrade without dropping in-flight Poe SSE replies, signal the relay to re-exec instead of hard-restarting: `launchctl kill SIGHUP gui/$UID/<label>` (launchd) or `systemctl --user reload poe-acp` (systemd, requires `ExecReload=/bin/kill -HUP $MAINPID` in the unit). The old process drains in-flight streams to completion, hands the listener to the new binary, then exits — no `ECONNREFUSED`, no truncated replies. Swap the binary on disk first, then SIGHUP. Use plain `restart`/`kickstart -k` only when mid-stream survival does not matter.
+
 **Brew + systemd (typical Linux):**
 ```bash
 brew update && brew upgrade poe-acp
@@ -96,7 +98,7 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 - **Missed restart** — replacing the binary on disk does not reload the running process. Always restart the supervisor.
 - **launchd label varies** — embeds the deploying user (`dev.<user>.poe-acp`). Read it from the plist, don't guess.
 - **Mixed install methods** — a host may have both `~/.local/bin/poe-acp` and a brew copy; the supervisor's `ExecStart` pins one. Upgrade whichever the unit/plist points at.
-- **In-flight turn interrupts briefly** — a restart ends the open SSE response; Poe retries and the conversation redrives from transcript, so nothing is lost. Avoid during peak use if avoidable.
+- **In-flight turn interrupts briefly** — a plain `restart`/`kickstart -k` ends the open SSE response; Poe retries and the conversation redrives from transcript, so nothing is lost. Prefer the graceful SIGHUP re-exec (see §3) to preserve mid-stream replies; otherwise avoid hard-restarting during peak use if avoidable.
 - **Do not mutate launchd for config-only changes** — if only `config.json`, env, or the binary changed, restart with `launchctl kickstart -k gui/$UID/<label>`. Do not edit plist, create one-shot reloader jobs, or run bootout/bootstrap unless first installing/removing a service or intentionally changing the plist registration.
 
 ## Checklist

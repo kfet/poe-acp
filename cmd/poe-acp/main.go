@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/config"
+	"github.com/kfet/poe-acp/internal/graceful"
 	"github.com/kfet/poe-acp/internal/httpsrv"
 	"github.com/kfet/poe-acp/internal/mcpattach"
 	"github.com/kfet/poe-acp/internal/paramctl"
@@ -68,6 +71,7 @@ func main() {
 		gcEvery         = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
 		heartbeat       = flag.Duration("heartbeat-interval", 1500*time.Millisecond, "SSE heartbeat / spinner tick interval (0 to disable)")
 		turnTimeout     = flag.Duration("turn-timeout", 5*time.Minute, "Bounds a prompt turn run on a context decoupled from the request ctx; a pre-output transport drop lets the turn finish so its answer can be buffered for the redrive")
+		idleWriteTO     = flag.Duration("idle-write-timeout", 2*time.Minute, "Per-stream wedged-turn backstop: cancel a turn that writes no agent output within this window (heartbeat keepalives do not reset it). The only force-kill path during a graceful drain")
 		answerTTL       = flag.Duration("answer-ttl", 2*time.Minute, "How long a buffered (absorbed) turn answer is held for a redrive before discard")
 		allowAtt        = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
 		showVersion     = flag.Bool("version", false, "Print version and exit")
@@ -302,6 +306,7 @@ func main() {
 		},
 		HeartbeatInterval: *heartbeat,
 		TurnTimeout:       *turnTimeout,
+		IdleWriteTimeout:  *idleWriteTO,
 		AnswerTTL:         *answerTTL,
 		ParameterControlsProvider: func() *poeproto.ParameterControls {
 			m, _ := agent.Models()
@@ -332,26 +337,125 @@ func main() {
 	}
 	mux.Handle("/debug/sessions", poeproto.BearerAuth(secret, httpsrv.DebugHandler(rtr)))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, "ok sessions=%d\n", rtr.Len())
+		fmt.Fprintf(w, "ok pid=%d sessions=%d\n", os.Getpid(), rtr.Len())
 	})
 
+	// Acquire the serving listener: cold (net.Listen) or, when this
+	// process is a graceful-restart child, recover the inherited fd.
+	ln, isChild, err := graceful.Listen(*httpAddr)
+	if err != nil {
+		log.Fatalf("listen: %v", err)
+	}
+
 	srv := &http.Server{
-		Addr:              *httpAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	// drainCh is closed when a graceful upgrade child has signalled it is
+	// live (SIGUSR1) and this (parent) process should drain + exit.
+	drainCh := make(chan struct{})
+	var drainOnce sync.Once
+
+	// Manager owns the parent-side upgrade (preflight + fd handoff + fork).
+	exe, _ := os.Executable()
+	mgr := graceful.New(graceful.Config{Listener: ln, BinPath: exe})
+
+	triggerUpgrade := func() {
+		proc, uerr := mgr.Upgrade()
+		if uerr != nil {
+			log.Printf("graceful: upgrade failed: %v", uerr)
+			return
+		}
+		log.Printf("graceful: spawned child pid=%d", proc.Pid)
+		go func() {
+			state, _ := proc.Wait()
+			select {
+			case <-drainCh:
+				// Child exited after we began draining (it owns the
+				// listener now) — expected, nothing to do.
+				return
+			default:
+			}
+			// Child died before signalling ready: stay in serve mode so
+			// the operator can retry. Parent never stopped serving.
+			log.Printf("graceful: child pid=%d exited before ready (%v); staying in serve mode", proc.Pid, state)
+			mgr.Reset()
+		}()
+	}
+
+	// SIGUSR1 (from a ready child) → begin draining this parent.
+	usr1 := make(chan os.Signal, 1)
+	signal.Notify(usr1, syscall.SIGUSR1)
 	go func() {
-		log.Printf("listening on %s", *httpAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		for range usr1 {
+			log.Printf("graceful: child signalled ready; draining in-flight streams")
+			drainOnce.Do(func() { close(drainCh) })
+		}
+	}()
+
+	// SIGHUP → initiate a graceful upgrade (systemd ExecReload-friendly).
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for range hup {
+			log.Printf("SIGHUP: initiating graceful upgrade")
+			triggerUpgrade()
+		}
+	}()
+
+	// Optional admin trigger for shell-less automated update flows.
+	if adminTok := os.Getenv("ADMIN_TOKEN"); adminTok != "" {
+		mux.HandleFunc("/admin/reexec", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if subtle.ConstantTimeCompare([]byte(tok), []byte(adminTok)) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			log.Printf("/admin/reexec: initiating graceful upgrade")
+			w.WriteHeader(http.StatusAccepted)
+			go triggerUpgrade()
+		})
+		log.Printf("admin reexec endpoint enabled at /admin/reexec")
+	}
+
+	go func() {
+		log.Printf("listening on %s (graceful child=%v)", ln.Addr(), isChild)
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http: %v", err)
 		}
 	}()
 
-	<-ctx.Done()
-	shutdownCtx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer scancel()
-	_ = srv.Shutdown(shutdownCtx)
-	log.Println("bye")
+	// If we inherited the listener from a parent, tell it that we are now
+	// serving and it may drain. The kernel accept queue covers the gap
+	// between Serve launch and this signal.
+	if isChild {
+		if err := graceful.NotifyParentReady(); err != nil {
+			log.Printf("graceful: notify parent failed: %v", err)
+		} else {
+			log.Printf("graceful: signalled parent ready")
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+		// SIGINT/SIGTERM: bounded shutdown (matches prior behaviour).
+		shutdownCtx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer scancel()
+		_ = srv.Shutdown(shutdownCtx)
+		log.Println("bye")
+	case <-drainCh:
+		// Graceful handoff: drain in-flight streams with no wall-clock
+		// cap. The per-stream idle-write backstop is the only force-kill.
+		log.Printf("graceful: draining (unbounded; idle-write backstop active)")
+		_ = graceful.Drain(srv)
+		log.Printf("graceful: drain complete, exiting")
+		os.Exit(0)
+	}
 }
 
 // runUpdate implements the `poe-acp update` subcommand: download the
