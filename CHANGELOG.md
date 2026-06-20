@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-06-20
+
 ### Fixed
 
 - **"Fast client disconnect" at ~15ms killed nearly every turn.** Poe dropped the bot-facing HTTP connection ~11–18ms after it arrived — before any response bytes reached it — and showed the user a red error card. Root cause: the small initial SSE `meta` event was being held in an intermediary proxy's (Tailscale Funnel) response buffer and never forwarded to Poe during the ~400ms session resume, so Poe saw no first byte and abandoned the connection. Two changes:
