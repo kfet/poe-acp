@@ -188,6 +188,58 @@ type errFlushWriter struct {
 func (e *errFlushWriter) Write(b []byte) (int, error) { return 0, io.ErrShortWrite }
 func (e *errFlushWriter) Flush()                      {}
 
+func TestSSEWriter_Preamble(t *testing.T) {
+	rec := httptest.NewRecorder()
+	s, err := NewSSEWriter(rec)
+	if err != nil {
+		t.Fatalf("NewSSEWriter: %v", err)
+	}
+	// X-Accel-Buffering: no must be set to defeat proxy buffering.
+	if got := rec.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("X-Accel-Buffering=%q, want no", got)
+	}
+	if err := s.Preamble(); err != nil {
+		t.Fatalf("Preamble: %v", err)
+	}
+	body := rec.Body.String()
+	// Must be a comment frame: ": " + padding + "\n\n".
+	if !strings.HasPrefix(body, ": ") {
+		t.Fatalf("preamble must start with comment marker, got %q", body[:min(8, len(body))])
+	}
+	if !strings.HasSuffix(body, "\n\n") {
+		t.Fatalf("preamble must end with blank line, got %q", body)
+	}
+	if len(body) < preamblePadding {
+		t.Fatalf("preamble too short: %d bytes, want >= %d", len(body), preamblePadding)
+	}
+	// Meta after preamble still works and appends a valid event.
+	if err := s.Meta(); err != nil {
+		t.Fatalf("Meta after preamble: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "event: meta") {
+		t.Fatalf("meta event missing after preamble")
+	}
+}
+
+func TestSSEWriter_PreambleAfterClose(t *testing.T) {
+	rec := httptest.NewRecorder()
+	s, _ := NewSSEWriter(rec)
+	if err := s.Done(); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	if err := s.Preamble(); err == nil {
+		t.Fatal("expected closed error from Preamble after Done")
+	}
+}
+
+func TestSSEWriter_PreambleWriteError(t *testing.T) {
+	w := &errFlushWriter{}
+	s := &SSEWriter{w: w, f: w}
+	if err := s.Preamble(); err == nil {
+		t.Fatal("expected write error from Preamble")
+	}
+}
+
 func TestSSEWriter_EventWriteError(t *testing.T) {
 	w := &errFlushWriter{}
 	s := &SSEWriter{w: w, f: w}

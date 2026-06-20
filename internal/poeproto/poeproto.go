@@ -4,6 +4,7 @@
 package poeproto
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -277,8 +278,54 @@ func NewSSEWriter(w http.ResponseWriter) (*SSEWriter, error) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Defeat response buffering in any intermediary proxy (Tailscale
+	// Funnel, nginx, …). Without this a small first event can sit in the
+	// proxy's buffer and never reach Poe, which then drops the bot
+	// connection within ~15ms (the "fast client disconnect"). nginx and
+	// several proxies honour X-Accel-Buffering: no by disabling buffering
+	// for this response. See also Preamble.
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	return &SSEWriter{w: w, f: f}, nil
+}
+
+// preamblePadding is the byte length of the padding written by Preamble.
+// A single ~50-byte meta event can sit in an intermediary proxy's
+// response buffer and never be forwarded to Poe until more bytes
+// accumulate — so Poe sees no first byte and drops the connection
+// ~11–18ms in (logged as "fast client disconnect"). 4KB exceeds the
+// common proxy first-buffer threshold (nginx proxy_buffer_size defaults
+// to 4–8KB), forcing an immediate flush to the client. SSE comment lines
+// (": …") are ignored by all conformant clients, so the padding is
+// invisible and cannot corrupt the stream.
+const preamblePadding = 4096
+
+// preambleFrame is the constant padded SSE comment frame, built once.
+// ": " + padding spaces + "\n\n".
+var preambleFrame = func() []byte {
+	frame := make([]byte, 0, preamblePadding+4)
+	frame = append(frame, ':', ' ')
+	frame = append(frame, bytes.Repeat([]byte{' '}, preamblePadding)...)
+	frame = append(frame, '\n', '\n')
+	return frame
+}()
+
+// Preamble writes a padded SSE comment frame and flushes it immediately,
+// forcing any buffering proxy between the relay and Poe to forward the
+// first bytes right away — before the ~400ms session resume. Call once,
+// before Meta. A comment frame changes nothing in the event sequence that
+// follows.
+func (s *SSEWriter) Preamble() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("sse: closed")
+	}
+	if _, err := s.w.Write(preambleFrame); err != nil {
+		return err
+	}
+	s.f.Flush()
+	return nil
 }
 
 // event writes one SSE event frame.
