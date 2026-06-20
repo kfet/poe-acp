@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Fast client disconnect" at ~15ms killed nearly every turn.** Poe dropped the bot-facing HTTP connection ~11–18ms after it arrived — before any response bytes reached it — and showed the user a red error card. Root cause: the small initial SSE `meta` event was being held in an intermediary proxy's (Tailscale Funnel) response buffer and never forwarded to Poe during the ~400ms session resume, so Poe saw no first byte and abandoned the connection. Two changes:
+  - **Padded SSE preamble + `X-Accel-Buffering: no`** (`poeproto`). The relay now flushes a ~2KB SSE comment frame (ignored by clients) the instant the request is accepted, before any session work, and sets `X-Accel-Buffering: no` on the response — forcing any buffering proxy to forward first bytes to Poe immediately.
+  - **Verified graceful reseed backstop** (`httpsrv`). Confirmed (with a new test) that when a pre-output drop is absorbed and the user sends a brand-new message, the hot session is reused and the new turn answers cleanly with no user-visible error card.
+
+
 ## [0.32.1] - 2026-06-20
 
 ### Changed
