@@ -57,6 +57,16 @@ type Config struct {
 	// for a redrive before it is discarded. <=0 falls back to
 	// defaultAnswerTTL (2m).
 	AnswerTTL time.Duration
+	// IdleWriteTimeout is the per-stream backstop for a WEDGED turn: the
+	// agent has hung, no SSE content byte has been written, and the
+	// client never disconnected. If no user-visible chunk lands within
+	// this window the single wedged turn is cancelled so it cannot block
+	// a graceful drain forever; every other in-flight stream keeps
+	// draining. Heartbeat keepalive frames do NOT reset it — only real
+	// agent output does — so a genuinely wedged turn is detected even
+	// though its spinner keeps ticking. <=0 falls back to
+	// defaultIdleWriteTimeout (2m).
+	IdleWriteTimeout time.Duration
 }
 
 // defaultTurnTimeout bounds a decoupled prompt turn when Config.TurnTimeout
@@ -67,6 +77,11 @@ const defaultTurnTimeout = 5 * time.Minute
 // is unset. Poe redrives a transport drop within a few seconds; 2m is
 // generous headroom while keeping memory bounded.
 const defaultAnswerTTL = 2 * time.Minute
+
+// defaultIdleWriteTimeout bounds a wedged turn when Config.IdleWriteTimeout
+// is unset. Generous enough that a slow-to-first-token model is not cut,
+// tight enough that a hung agent cannot stall a drain indefinitely.
+const defaultIdleWriteTimeout = 2 * time.Minute
 
 // CommandHandler is the surface httpsrv depends on; *command.Broker
 // implements it. Extracted so tests can inject handlers that return
@@ -94,6 +109,9 @@ func New(cfg Config) *Handler {
 	}
 	if cfg.AnswerTTL <= 0 {
 		cfg.AnswerTTL = defaultAnswerTTL
+	}
+	if cfg.IdleWriteTimeout <= 0 {
+		cfg.IdleWriteTimeout = defaultIdleWriteTimeout
 	}
 	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL)}
 }
@@ -297,9 +315,20 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		}
 	}()
 
+	// Wedged-turn backstop. The agent has hung if no user-visible byte
+	// lands within IdleWriteTimeout while the client is still connected
+	// (a caller-cancel is handled by the watcher above). When it fires we
+	// cancel this one turn so it cannot block a graceful drain forever;
+	// every other in-flight stream keeps draining. Heartbeat keepalives
+	// do not reset the idle clock (see sink.touch), so the spinner
+	// ticking does not mask a wedge. Exits when done is closed.
+	idleDone := make(chan struct{})
+	go func() { defer close(idleDone); h.watchIdle(cancelTurn, s, done, req.ConversationID) }()
+
 	err = h.cfg.Router.Prompt(turnCtx, req.ConversationID, req.UserID, turns, opts, rec)
 	close(done)
 	<-watcherDone
+	<-idleDone
 	if err != nil {
 		log.Printf("router prompt (conv=%s): %v", req.ConversationID, err)
 	}
@@ -307,6 +336,46 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		h.answers.put(key, rec.snapshot())
 		kitlog.Debugf("absorbed pre-output drop: buffered answer conv=%s msg=%s", req.ConversationID, req.MessageID)
 	}
+}
+
+// watchIdle is the wedged-turn backstop goroutine. It polls the sink's
+// idle clock and cancels the turn if no user-visible byte has landed
+// within IdleWriteTimeout. It exits as soon as the turn completes (done
+// closed) — so a turn that ends normally, or is cut by TurnTimeout, never
+// trips the idle path. idleWriteCancelHook is a test-only seam fired when
+// the idle path cancels.
+func (h *Handler) watchIdle(cancelTurn context.CancelFunc, s *sink, done <-chan struct{}, convID string) {
+	t := time.NewTicker(idleCheckInterval(h.cfg.IdleWriteTimeout))
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+			if s.idleSince() >= h.cfg.IdleWriteTimeout {
+				log.Printf("WARN idle-write timeout: conv=%s no agent output in %s — cutting wedged stream",
+					convID, h.cfg.IdleWriteTimeout)
+				cancelTurn()
+				if idleWriteCancelHook != nil {
+					idleWriteCancelHook()
+				}
+				return
+			}
+		}
+	}
+}
+
+// idleWriteCancelHook, when non-nil, is invoked after watchIdle cancels a
+// wedged turn. Test-only seam. nil in production.
+var idleWriteCancelHook func()
+
+// idleCheckInterval derives the idle poll cadence from the timeout: a
+// quarter of the window, floored at 10ms so tiny test timeouts still tick.
+func idleCheckInterval(timeout time.Duration) time.Duration {
+	if iv := timeout / 4; iv >= 10*time.Millisecond {
+		return iv
+	}
+	return 10 * time.Millisecond
 }
 
 // absorbDecidedHook, when non-nil, is invoked after the disconnect watcher
@@ -461,6 +530,13 @@ func (o *orderedWriter) hbReplace(s string) (gateOpen bool, err error) {
 type sink struct {
 	o *orderedWriter
 
+	// lastWrite is the unix-nano timestamp of the most recent
+	// user-visible write (real agent output: Text/Replace/Error/Done/
+	// File). Heartbeat keepalive frames deliberately do NOT update it,
+	// so the idle-write watchdog measures genuine agent silence — a
+	// wedged turn is detected even while its spinner keeps ticking.
+	lastWrite atomic.Int64
+
 	// hbDone is closed exactly once via hbStop to wake the heartbeat
 	// goroutine for prompt shutdown (Done / Error / FirstChunk). The
 	// heartbeat ALSO self-exits on its next tick when the orderedWriter
@@ -492,6 +568,7 @@ func newSink(w *poeproto.SSEWriter, hb time.Duration) *sink {
 		hbDone:   make(chan struct{}),
 		hbExited: make(chan struct{}),
 	}
+	s.lastWrite.Store(time.Now().UnixNano())
 	if hb > 0 {
 		go s.heartbeat(hb)
 	} else {
@@ -572,12 +649,22 @@ func (s *sink) realWritten() bool {
 	return s.o.realWritten
 }
 
-func (s *sink) Text(t string) error      { return s.o.userText(s.maybePrependHeader(t)) }
-func (s *sink) Replace(t string) error   { return s.o.userReplace(t) }
-func (s *sink) Error(t, et string) error { s.stop(); return s.o.userError(t, et) }
-func (s *sink) Done() error              { s.stop(); return s.o.userDone() }
+// touch records the wall-clock time of a user-visible write, resetting
+// the idle-write watchdog. Heartbeat frames never call it.
+func (s *sink) touch() { s.lastWrite.Store(time.Now().UnixNano()) }
+
+// idleSince reports how long since the last user-visible write.
+func (s *sink) idleSince() time.Duration {
+	return time.Since(time.Unix(0, s.lastWrite.Load()))
+}
+
+func (s *sink) Text(t string) error      { s.touch(); return s.o.userText(s.maybePrependHeader(t)) }
+func (s *sink) Replace(t string) error   { s.touch(); return s.o.userReplace(t) }
+func (s *sink) Error(t, et string) error { s.touch(); s.stop(); return s.o.userError(t, et) }
+func (s *sink) Done() error              { s.touch(); s.stop(); return s.o.userDone() }
 
 func (s *sink) File(url, contentType, name, inlineRef string) error {
+	s.touch()
 	s.stop()
 	return s.o.userFile(url, contentType, name, inlineRef)
 }
