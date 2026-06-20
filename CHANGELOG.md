@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-06-20
+
 ### Fixed
 
 - **Graceful restart bricked the service under systemd.** v0.34.0's zero-downtime restart was correct at the process level but caused a permanent outage under systemd (`sea-fir` on sea-racknerd, 2026-06-20): systemd tracks the original parent as `MainPID`, so when the parent drained and exited 0 after a `systemctl reload`, systemd considered the service stopped, tore down the cgroup, killed the freshly-promoted child, and (clean exit) did not trigger `Restart=on-failure` — leaving the unit `inactive (dead)`. Fix: new `internal/sdnotify/` implements the `sd_notify(3)` `MAINPID` handshake (no new dependency — writes datagrams to `$NOTIFY_SOCKET` directly, abstract-`@` aware, no-op when unset). On a graceful re-exec the child now sends `MAINPID=<child>\nREADY=1` to systemd *before* signalling the parent to drain, so systemd re-targets `MainPID` onto the successor and never reaps it. A normal (cold) start sends `READY=1` once listening. Requires the unit to be `Type=notify` with `NotifyAccess=all` (deploy skill updated). The first cutover onto a fixed binary must still be a `restart` (the old running binary drives the handoff); subsequent `reload`s are seamless.
