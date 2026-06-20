@@ -53,7 +53,11 @@ Find `<label>` in `~/Library/LaunchAgents/dev.*.poe-acp.plist` (e.g. `dev.<user>
 
 Never schedule a delayed reloader and never use `launchctl bootout` + `bootstrap` for a routine restart. `kickstart -k` stops and immediately relaunches the already-registered job without changing the plist or racing launchd registration.
 
-**Graceful (zero-downtime) restart.** To upgrade without dropping in-flight Poe SSE replies, signal the relay to re-exec instead of hard-restarting: `launchctl kill SIGHUP gui/$UID/<label>` (launchd) or `systemctl --user reload poe-acp` (systemd, requires `ExecReload=/bin/kill -HUP $MAINPID` in the unit). The old process drains in-flight streams to completion, hands the listener to the new binary, then exits — no `ECONNREFUSED`, no truncated replies. Swap the binary on disk first, then SIGHUP. Use plain `restart`/`kickstart -k` only when mid-stream survival does not matter.
+**Graceful (zero-downtime) restart.** To upgrade without dropping in-flight Poe SSE replies, signal the relay to re-exec instead of hard-restarting: `launchctl kill SIGHUP gui/$UID/<label>` (launchd) or `systemctl --user reload poe-acp` (systemd). The old process drains in-flight streams to completion, hands the listener to the new binary, then exits — no `ECONNREFUSED`, no truncated replies. Swap the binary on disk first, then SIGHUP/reload.
+
+> **systemd reload requires poe-acp ≥ 0.35.0 and a `Type=notify` + `NotifyAccess=all` + `ExecReload=/bin/kill -HUP $MAINPID` unit.** A plain `ExecReload` on an older unit (or reloading *through* a pre-0.35.0 binary) leaves the service `inactive (dead)` — a permanent outage. The handoff is driven by the *currently running* binary, so the **first cutover onto a fixed binary must be a `systemctl --user restart`** (brief blip); only after the fixed binary is running do subsequent `reload`s become seamless. See the deploy skill's "Seamless upgrades" section. (launchd has no such trap — `SIGHUP` re-exec is always safe there.)
+
+Use plain `restart`/`kickstart -k` when mid-stream survival does not matter.
 
 **Brew + systemd (typical Linux):**
 ```bash

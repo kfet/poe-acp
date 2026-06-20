@@ -1,15 +1,67 @@
 # Graceful Restart — design
 
-Status: **implemented** (v0.34.0). In-flight Poe SSE streams now survive
-a binary upgrade: the parent hands its listener fd to a re-exec'd child,
-keeps serving its already-accepted connections to natural completion (or
-caller-cancel), then exits. New POSTs during the handoff window are
-served by the child — zero `ECONNREFUSED`, zero mid-stream truncation.
-Triggered by `SIGHUP` (`kill -HUP $MAINPID`, systemd `ExecReload`) or
-`POST /admin/reexec` gated by `ADMIN_TOKEN`. Implementation lives in
-`internal/graceful/` (generic fd-handoff/process-swap) and
-`internal/httpsrv/` (Poe SSE drain + per-stream idle-write backstop).
-The design body below is retained as the rationale of record.
+Status: **implemented** (v0.34.0; systemd MAINPID handshake added in
+v0.35.0). In-flight Poe SSE streams now survive a binary upgrade: the
+parent hands its listener fd to a re-exec'd child, keeps serving its
+already-accepted connections to natural completion (or caller-cancel),
+then exits. New POSTs during the handoff window are served by the child
+— zero `ECONNREFUSED`, zero mid-stream truncation. Triggered by `SIGHUP`
+(`kill -HUP $MAINPID`, systemd `ExecReload`) or `POST /admin/reexec`
+gated by `ADMIN_TOKEN`. Implementation lives in `internal/graceful/`
+(generic fd-handoff/process-swap), `internal/sdnotify/` (the systemd
+MAINPID handshake) and `internal/httpsrv/` (Poe SSE drain + per-stream
+idle-write backstop). The design body below is retained as the rationale
+of record.
+
+## systemd compatibility — the MAINPID handshake (v0.35.0)
+
+The bare two-process swap above is correct at the process level but was
+**broken under systemd** (caused a permanent `sea-fir` outage on
+2026-06-20). systemd tracks a service by its `MainPID` — the original
+parent. When the parent drains and exits **0**, systemd considers the
+service stopped, tears down the cgroup, `SIGTERM`s the freshly-promoted
+child, and — because the exit was clean — `Restart=on-failure` does NOT
+fire. Result: `inactive (dead)`, a permanent outage after every
+`systemctl reload`.
+
+Fix: implement the `sd_notify(3)` `MAINPID` handshake so systemd
+re-targets tracking onto the child **before** the parent exits.
+
+- `internal/sdnotify/` writes datagrams to `$NOTIFY_SOCKET` directly
+  (AF_UNIX `SOCK_DGRAM`, leading `@` → abstract namespace). **No new
+  dependency.** Every call is a no-op when `NOTIFY_SOCKET` is unset, so
+  launchd / bare-process paths are unaffected.
+- **Cold start** (non-graceful): the initial process sends `READY=1`
+  once it is listening. `Type=notify` *requires* this — without it
+  systemd hangs in `activating` until the start timeout.
+- **Graceful child**: once serving, the child sends
+  `MAINPID=<child_pid>\nREADY=1` to `$NOTIFY_SOCKET` **first**, and only
+  then signals the parent (`SIGUSR1`) to begin draining. The child is
+  the sender (not the parent) because at that instant the child is the
+  successor systemd must adopt; `NotifyAccess=all` lets systemd accept a
+  notification from a process that is not (yet) the tracked main PID.
+  Ordering guarantees systemd is told the new MainPID before the parent
+  even starts draining, so at no instant does systemd see the tracked
+  PID exit without already knowing its successor. The unbounded parent
+  drain gives systemd ample time to process the datagram.
+
+**Unit requirements** (see deploy SKILL): `Type=notify`,
+`NotifyAccess=all`, `ExecReload=/bin/kill -HUP $MAINPID`.
+
+**Seamless-upgrade caveat:** the *old running binary* drives the
+handoff. A binary that predates v0.35.0 lacks the handshake, so the
+FIRST cutover onto a fixed binary must be a `systemctl restart` (a brief
+blip). Only once the fixed binary is the running one do subsequent
+`systemctl reload`s become truly seamless.
+
+**launchd:** launchd has no `sd_notify` equivalent and no built-in
+reload; `KeepAlive` simply respawns on exit. The graceful path is a
+no-op there (`NOTIFY_SOCKET` unset) and the two-process swap still works
+for a `kill -HUP`, but there is no supervisor MainPID-tracking problem
+to solve in the first place. Normal restart (`launchctl kickstart -k`)
+remains the supported flow on macOS.
+
+
 
 ## Problem
 

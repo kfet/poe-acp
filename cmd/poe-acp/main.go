@@ -29,6 +29,7 @@ import (
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
+	"github.com/kfet/poe-acp/internal/sdnotify"
 	"github.com/kfet/poe-acp/internal/selfupdate"
 	"github.com/kfet/poe-acp/internal/statusline"
 )
@@ -430,14 +431,33 @@ func main() {
 		}
 	}()
 
-	// If we inherited the listener from a parent, tell it that we are now
-	// serving and it may drain. The kernel accept queue covers the gap
-	// between Serve launch and this signal.
+	// Readiness notification for systemd (Type=notify). No-op unless
+	// NOTIFY_SOCKET is set, so launchd/bare-process paths are unaffected.
 	if isChild {
+		// Graceful-restart child: tell systemd the NEW MainPID and that
+		// we are ready BEFORE signalling the parent to drain+exit, so
+		// systemd never sees the tracked MainPID disappear without
+		// already knowing its successor (otherwise it reaps us and the
+		// service goes inactive). Requires NotifyAccess=all on the unit.
+		if sent, err := sdnotify.ReadyMainPID(os.Getpid()); err != nil {
+			log.Printf("sdnotify: MAINPID handshake failed: %v", err)
+		} else if sent {
+			log.Printf("sdnotify: notified systemd of new MainPID=%d", os.Getpid())
+		}
+		// Then tell the parent it may drain. The kernel accept queue
+		// covers the gap between Serve launch and this signal.
 		if err := graceful.NotifyParentReady(); err != nil {
 			log.Printf("graceful: notify parent failed: %v", err)
 		} else {
 			log.Printf("graceful: signalled parent ready")
+		}
+	} else {
+		// Cold start: Type=notify requires the initial process to signal
+		// readiness once listening, or systemd hangs in "activating".
+		if sent, err := sdnotify.Ready(); err != nil {
+			log.Printf("sdnotify: readiness notify failed: %v", err)
+		} else if sent {
+			log.Printf("sdnotify: notified systemd ready")
 		}
 	}
 

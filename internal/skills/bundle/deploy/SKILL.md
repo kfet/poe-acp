@@ -90,6 +90,8 @@ After=network-online.target
 
 [Service]
 EnvironmentFile=%h/.config/poe-acp/env
+Type=notify
+NotifyAccess=all
 ExecStart=%h/.local/bin/poe-acp -http-addr 127.0.0.1:8080 -agent-cmd "fir --mode acp"
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
@@ -99,7 +101,27 @@ RestartSec=2s
 WantedBy=default.target
 ```
 
+`Type=notify` + `NotifyAccess=all` are **required** (poe-acp ≥ 0.35.0): on a graceful re-exec the new child notifies systemd of its PID (`MAINPID=<child>\nREADY=1`) before the old parent drains and exits, so systemd re-targets `MainPID` onto the child instead of declaring the service dead. Without these two lines a `systemctl reload` leaves the service `inactive (dead)` — a permanent outage. (`Type=notify` also means the initial process must signal readiness, which poe-acp does once it is listening; `NotifyAccess=all` lets systemd accept the readiness/MAINPID datagram from the forked child.)
+
 `ExecReload=/bin/kill -HUP $MAINPID` enables **graceful zero-downtime restart**: `systemctl --user reload poe-acp` re-execs the binary in place, handing the listening socket to the new process. In-flight Poe SSE replies finish on the old process (no truncation), new POSTs hit the new one (no `ECONNREFUSED`). Use `reload` after swapping the binary on disk when you want to preserve mid-stream conversations; a plain `restart` still works but drops in-flight streams. The old process exits on its own once drained.
+
+##### Seamless upgrades (the cutover rule)
+
+The **old running binary drives the handoff**, so the seamless `reload`
+only works once the running binary already has the fix:
+
+1. `make deploy HOST=<host>` — scp the new binary onto the host.
+2. **FIRST cutover onto a v0.35.0+ binary must be a `restart`, not a
+   `reload`:** `systemctl --user restart poe-acp` (a brief blip). The
+   currently-running old binary lacks the MAINPID handshake, so reloading
+   *through* it would brick the service exactly as before.
+3. **Only after the fixed binary is the running one** do subsequent
+   `systemctl --user reload poe-acp` become truly seamless (in-flight
+   streams preserved, no blip).
+
+In short: restart once to get onto the fixed binary; reload forever after.
+
+
 
 For prefix layout, swap the `ExecStart` to match:
 
@@ -269,15 +291,21 @@ After=network-online.target
 
 [Service]
 EnvironmentFile=%h/.config/poe-acp/bot-foo/env
+Type=notify
+NotifyAccess=all
 ExecStart=%h/.local/bin/poe-acp \
   --http-addr 127.0.0.1:8347 \
   --poe-path /foo \
   --config %h/.config/poe-acp/bot-foo/config.json
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 
 [Install]
 WantedBy=default.target
 ```
+
+(`Type=notify` + `NotifyAccess=all` + `ExecReload` are required for graceful reload to work under systemd — see the single-bot notes and the "Seamless upgrades" cutover rule above. The same restart-once-then-reload-forever rule applies per bot.)
+
 
 ```bash
 systemctl --user daemon-reload
