@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-06-20
+
+### Changed
+
+- **`update` skill: corrected the restart-impact note.** Dropped the inaccurate "active conversations drop" / "kills in-flight SSE" wording; a restart briefly interrupts the open SSE response, but Poe retries and the conversation redrives from transcript losslessly (see the v0.32.0 warm-session resilience fix).
+
 ## [0.32.0] - 2026-06-19
 
 ### Fixed
