@@ -1,10 +1,15 @@
-# Graceful Restart — design (future)
+# Graceful Restart — design
 
-Status: **deferred.** Not implemented. This document captures the design
-so it can be picked up when in-flight stream survival across binary
-upgrades becomes a real pain point. Until then, restart is whatever the
-supervisor (systemd / launchd) does on `kickstart -k` / `restart`, and
-in-flight Poe SSE responses are dropped on the floor.
+Status: **implemented** (v0.34.0). In-flight Poe SSE streams now survive
+a binary upgrade: the parent hands its listener fd to a re-exec'd child,
+keeps serving its already-accepted connections to natural completion (or
+caller-cancel), then exits. New POSTs during the handoff window are
+served by the child — zero `ECONNREFUSED`, zero mid-stream truncation.
+Triggered by `SIGHUP` (`kill -HUP $MAINPID`, systemd `ExecReload`) or
+`POST /admin/reexec` gated by `ADMIN_TOKEN`. Implementation lives in
+`internal/graceful/` (generic fd-handoff/process-swap) and
+`internal/httpsrv/` (Poe SSE drain + per-stream idle-write backstop).
+The design body below is retained as the rationale of record.
 
 ## Problem
 

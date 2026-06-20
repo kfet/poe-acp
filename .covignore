@@ -15,3 +15,6 @@
 # Reference: slack-acp's AGENTS.md "Coverage" section.
 ^github.com/kfet/poe-acp/cmd/[^/]+/main\.go:
 _must\.go:
+
+# Integration-test helper agent — not shipped, no unit tests.
+^github.com/kfet/poe-acp/test/

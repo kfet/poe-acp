@@ -91,12 +91,15 @@ After=network-online.target
 [Service]
 EnvironmentFile=%h/.config/poe-acp/env
 ExecStart=%h/.local/bin/poe-acp -http-addr 127.0.0.1:8080 -agent-cmd "fir --mode acp"
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
 
 [Install]
 WantedBy=default.target
 ```
+
+`ExecReload=/bin/kill -HUP $MAINPID` enables **graceful zero-downtime restart**: `systemctl --user reload poe-acp` re-execs the binary in place, handing the listening socket to the new process. In-flight Poe SSE replies finish on the old process (no truncation), new POSTs hit the new one (no `ECONNREFUSED`). Use `reload` after swapping the binary on disk when you want to preserve mid-stream conversations; a plain `restart` still works but drops in-flight streams. The old process exits on its own once drained.
 
 For prefix layout, swap the `ExecStart` to match:
 
@@ -156,6 +159,15 @@ launchctl bootout   gui/$UID/dev.<you>.poe-acp                                 #
 launchctl print     gui/$UID/dev.<you>.poe-acp | head                          # status
 tail -f ~/Library/Logs/poe-acp.err.log                                         # logs
 ```
+
+**Graceful restart on macOS.** launchd has no built-in reload, but the relay implements graceful re-exec on `SIGHUP`. To upgrade without dropping in-flight Poe SSE replies, send the signal instead of `kickstart -k`:
+
+```bash
+launchctl kill SIGHUP gui/$UID/dev.<you>.poe-acp     # graceful re-exec (preserves in-flight streams)
+# or: kill -HUP $(launchctl print gui/$UID/dev.<you>.poe-acp | awk '/pid =/{print $3}')
+```
+
+The old process drains in-flight streams to completion, then exits; launchd sees the same job. `kickstart -k` is still fine when you do not care about mid-stream survival (it hard-restarts).
 
 ### 5. Seed agent notes (if repo paths known)
 
