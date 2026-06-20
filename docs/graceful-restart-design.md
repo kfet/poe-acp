@@ -21,6 +21,14 @@ has two visible failure modes:
 
 Goal of this design: zero of both, without adding library dependencies.
 
+**Cancellation semantics (confirmed).** Poe has no app-level cancel
+event — `fastapi_poe`'s `BaseRequest` has five types, none of them
+cancel. A user pressing **Stop** is simply Poe **closing the HTTP
+request**, which `net/http` surfaces as `r.Context()` cancellation. So
+drain needs no cancel protocol: a stream ends either by completing
+naturally or by the caller's connection dropping. (Source: redrive
+research, poe-acp v0.32.0.)
+
 ## Why not tableflip / endless / grace / overseer
 
 Considered and rejected for v1:
@@ -110,9 +118,11 @@ exec because we capture the pid before fork.)
 7. `cmd.Start()` and remember `cmd.Process.Pid`.
 8. Install a SIGUSR1 handler (one-shot) that flips parent into "drain
    mode": stop calling `Accept()` (close the listener — parent doesn't
-   need it any more, child has its own dup), start a wait-for-active
-   loop, `os.Exit(0)` once the active count hits zero or a hard
-   timeout (90s default) fires.
+   need it any more, child has its own dup), then drain in-flight
+   streams to their natural end (see *Drain semantics* below) and
+   `os.Exit(0)` once the active count hits zero. No wall-clock cap on a
+   live stream — the only backstop is a per-stream idle-write timeout
+   for a wedged turn.
 9. If `cmd.Process.Wait()` returns *before* SIGUSR1 — child died during
    startup. Parent stays running, logs the failure, and the upgrade is
    considered failed. Operator retries. (No automatic rollback needed
@@ -135,15 +145,47 @@ exec because we capture the pid before fork.)
      accept queue absorbs the gap.
 5. Continue serving. The parent will exit on its own once drained.
 
-#### Active-request tracking (parent)
+#### Drain semantics (parent)
 
-`http.Server` doesn't expose a direct in-flight counter, but we can
-wrap the handler:
+A draining stream ends exactly two legitimate ways, neither of which is
+a wall clock:
+
+1. **Natural completion** — the agent emits `agent_end`, the final SSE
+   flushes, the handler returns.
+2. **Caller cancel** — the user presses **Stop** in Poe. Poe has *no*
+   app-level cancel event (`fastapi_poe` `BaseRequest` has 5 types,
+   none cancel); a Stop is simply Poe **closing the HTTP request**.
+   `net/http` cancels `r.Context()` on that disconnect, the SSE loop
+   observes `Done()` and returns. (A dead client is also surfaced by
+   the next heartbeat write failing — so the heartbeat goroutine is
+   load-bearing for prompt cancel detection.)
+
+So drain is just "wait until every accepted request has returned":
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+// Optional idle-stream backstop only — NOT a global cap.
+_ = srv.Shutdown(ctx)
+```
+
+Use `http.Server.Shutdown(context.Background())` (unbounded). It closes
+the listener (already closed) and waits for active conns to finish,
+respecting hijacked SSE connections. A turn legitimately streaming for
+ten minutes survives; a Stopped turn ends the instant the connection
+drops.
+
+The **only** force-kill path is a *wedged* turn — fir hung, no tokens,
+and the client never disconnected. Bound that with a per-stream
+**idle-write timeout** ("no SSE byte written in N s"), enforced inside
+the SSE loop, not with a restart-wide deadline. When it fires, that one
+handler returns; everyone else keeps draining.
+
+If you want an explicit in-flight gauge for logging/health, wrap the
+handler:
 
 ```go
 var inflight atomic.Int64
-mux := http.NewServeMux()
-// register handlers...
 wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
     inflight.Add(1)
     defer inflight.Add(-1)
@@ -151,32 +193,15 @@ wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 })
 ```
 
-Drain loop:
-
-```go
-deadline := time.Now().Add(90 * time.Second)
-for inflight.Load() > 0 && time.Now().Before(deadline) {
-    time.Sleep(100 * time.Millisecond)
-}
-// Optional: connection-draining via http.Server.Shutdown(ctx) instead
-// of the polling loop above. Shutdown closes the listener (already
-// closed) and waits for active conns to finish.
-```
-
-Prefer `http.Server.Shutdown(ctx)` with a 90s timeout — it does
-exactly the right thing, including respecting hijacked SSE
-connections via `ConnState` callbacks if registered.
-
 ### SSE-specific gotchas
 
 - SSE handlers in poe-acp run a long-lived `for` loop draining the
-  router channel. They must observe `r.Context().Done()` and return
-  promptly when the request is cancelled. Verify that
-  `internal/httpsrv/handler.go`'s SSE writer respects ctx cancellation
-  before relying on `Server.Shutdown(ctx)` — if it doesn't, drain will
-  block until the agent finishes the prompt naturally (which is
-  actually the desired behaviour for our case, but means the 90s cap
-  matters).
+  router channel. They **must** observe `r.Context().Done()` and return
+  promptly — this is what makes caller-cancel (Poe closing the request)
+  work, and what lets `Server.Shutdown` complete. Confirm
+  `internal/httpsrv/handler.go`'s SSE writer respects ctx cancellation;
+  if it doesn't, a Stopped turn would keep streaming into a dead socket
+  until a write fails.
 - Heartbeat goroutines started by `newSink` must shut down when the
   request ends. They already do (`s.stop()` on context end).
 - The agent (fir) child of poe-acp is **not** restarted by this flow.
@@ -207,7 +232,8 @@ recommended — it'd let any Poe user trigger relay restarts.
 | New binary missing/corrupt | Preflight stat fails, parent logs, no fork, keeps serving |
 | Child crashes before SIGUSR1 | Parent observes `cmd.Wait()` return, stays in serve mode, logs |
 | Child crashes after SIGUSR1 | Parent already in drain mode; once drained it exits, supervisor restarts → temporary outage but matches today's behaviour |
-| Drain timeout hits | Parent calls `Server.Close()` (force) and exits; remaining SSE clients see RST |
+| Wedged turn (idle-write timeout) | That one handler's idle backstop fires, its stream gets RST; all other streams keep draining |
+| Parent never drains (all turns wedged) | Supervisor's own stop timeout eventually `Server.Close()`s the parent; matches today's behaviour |
 | Two upgrades in flight | Reject second SIGHUP if a child PID is already tracked |
 
 ### Files to touch (when implemented)
@@ -217,8 +243,9 @@ recommended — it'd let any Poe user trigger relay restarts.
 - New `internal/graceful/` package — ~150 LOC: `Listen()`, `Upgrade()`,
   `Drain()`, env-var contract, signal handling. Self-contained, easy
   to delete or replace with tableflip later.
-- `internal/httpsrv/handler.go` — wrap `ServeHTTP` with the inflight
-  counter (or move to `Server.Shutdown` for drain).
+- `internal/httpsrv/handler.go` — ensure the SSE loop honours
+  `r.Context().Done()` (caller-cancel + `Shutdown`), and add a
+  per-stream idle-write timeout as the only force-kill backstop.
 - Supervisor docs (`internal/skills/bundle/{deploy,update}/SKILL.md`):
   add `ExecReload=/bin/kill -HUP $MAINPID` to the systemd unit and the
   equivalent launchd note (launchd doesn't have a built-in reload —
