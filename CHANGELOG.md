@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-06-20
+
 ### Added
 
 - **Graceful zero-downtime restart.** A binary upgrade no longer drops in-flight Poe SSE replies or refuses new connections during the swap. On `SIGHUP` (systemd `ExecReload=/bin/kill -HUP $MAINPID`, or `launchctl kill SIGHUP …`) or `POST /admin/reexec` (gated by `ADMIN_TOKEN`), the relay re-execs in place: the parent hands its listening socket fd to the child, the child takes new connections, and the parent drains its already-accepted streams to natural completion (or caller-cancel) before exiting. Zero `ECONNREFUSED`, zero mid-stream truncation. New `internal/graceful/` package (generic fd-handoff/process-swap, unix-only); Poe-specific SSE drain stays in `internal/httpsrv`. Design: `docs/graceful-restart-design.md` (now implemented).
