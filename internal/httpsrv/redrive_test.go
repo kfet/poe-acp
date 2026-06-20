@@ -99,6 +99,99 @@ func TestHandler_PreOutputDropBuffersAndRedriveServes(t *testing.T) {
 	}
 }
 
+// gatedAgent blocks the FIRST prompt until released, then answers every
+// subsequent prompt immediately. Models a turn whose client dropped
+// pre-output, followed by the user sending a brand-new message (a normal
+// next turn) rather than a same-message redrive.
+type gatedAgent struct {
+	*fakeAgent
+	entered     chan struct{}
+	release     chan struct{}
+	promptCalls int32
+}
+
+func (a *gatedAgent) Prompt(_ context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+	n := atomic.AddInt32(&a.promptCalls, 1)
+	a.fakeAgent.mu.Lock()
+	sink := a.fakeAgent.sinks[sid]
+	a.fakeAgent.mu.Unlock()
+	if n == 1 {
+		close(a.entered)
+		<-a.release
+	}
+	_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+		SessionId: sid,
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.TextBlock("answer-" + string(rune('0'+n)) + "\n"),
+			},
+		},
+	})
+	return acp.StopReasonEndTurn, nil
+}
+
+// After a pre-output drop is absorbed, the user's NEXT message (a new turn,
+// not a same-message redrive) must answer cleanly from the reused session
+// with NO user-visible error card. This is the common production case the
+// buffer alone does not cover. Verifies the reseed/reuse path is graceful.
+func TestHandler_NewMessageAfterAbsorbedDropAnswersCleanly(t *testing.T) {
+	a := &gatedAgent{fakeAgent: &fakeAgent{}, entered: make(chan struct{}), release: make(chan struct{})}
+	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr, HeartbeatInterval: 0})
+
+	body1 := mustJSON(map[string]any{
+		"type": "query", "conversation_id": "c1", "user_id": "u", "message_id": "req1",
+		"query": []map[string]any{{"role": "user", "content": "first", "message_id": "m1"}},
+	})
+
+	decided := make(chan struct{})
+	absorbDecidedHook = func() { close(decided) }
+	defer func() { absorbDecidedHook = nil }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rec1 := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body1)).WithContext(ctx)
+		h.ServeHTTP(rec1, req)
+		close(done)
+	}()
+	<-a.entered
+	cancel()         // pre-output transport drop on turn 1
+	<-decided        // watcher latched absorb decision
+	close(a.release) // let the decoupled turn 1 finish + buffer
+	<-done
+
+	// Turn 2: the user sends a brand-new message. The transcript carries
+	// the prior (dropped) user turn plus the new one — a benign append, so
+	// the hot session is reused and the new turn answers cleanly.
+	body2 := mustJSON(map[string]any{
+		"type": "query", "conversation_id": "c1", "user_id": "u", "message_id": "req2",
+		"query": []map[string]any{
+			{"role": "user", "content": "first", "message_id": "m1"},
+			{"role": "user", "content": "second", "message_id": "m2"},
+		},
+	})
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body2)))
+	out := rec2.Body.String()
+	if strings.Contains(out, "event: error") {
+		t.Fatalf("new turn after absorbed drop surfaced an error card: %q", out)
+	}
+	if !strings.Contains(out, "answer-2") {
+		t.Fatalf("new turn did not answer cleanly: %q", out)
+	}
+	if !strings.Contains(out, "event: done") {
+		t.Fatalf("new turn missing done event: %q", out)
+	}
+	if got := atomic.LoadInt32(&a.promptCalls); got != 2 {
+		t.Fatalf("expected 2 prompt calls (turn1 + turn2), got %d", got)
+	}
+}
+
 // A prompt that returns an error (here: an empty user message rejected by
 // the router) is logged by the handler. Covers the err != nil branch.
 func TestHandler_PromptErrorLogged(t *testing.T) {

@@ -151,6 +151,14 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Flush a padded SSE comment immediately, before any session work, so
+	// a buffering proxy (Tailscale Funnel) forwards first bytes to Poe
+	// right away. Without this Poe sees nothing during the ~400ms session
+	// resume and drops the bot connection at ~15ms. See SSEWriter.Preamble.
+	if err := sse.Preamble(); err != nil {
+		log.Printf("sse preamble: %v", err)
+		return
+	}
 	if err := sse.Meta(); err != nil {
 		log.Printf("sse meta: %v", err)
 		return

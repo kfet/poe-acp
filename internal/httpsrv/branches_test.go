@@ -112,7 +112,7 @@ func TestHandler_HandleQuery_NotFlushable(t *testing.T) {
 }
 
 // errorMetaResp returns an http.ResponseWriter where Write fails immediately,
-// so even the first SSE event (Meta) fails.
+// so even the first SSE write (the preamble) fails.
 type errorMetaResp struct {
 	hdr http.Header
 }
@@ -122,13 +122,48 @@ func (r *errorMetaResp) Write([]byte) (int, error) { return 0, io.ErrShortWrite 
 func (r *errorMetaResp) WriteHeader(int)           {}
 func (r *errorMetaResp) Flush()                    {}
 
-func TestHandler_HandleQuery_MetaError(t *testing.T) {
+func TestHandler_HandleQuery_PreambleError(t *testing.T) {
 	rtr, err := router.New(router.Config{Agent: &fakeAgent{}, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := New(Config{Router: rtr})
 	w := &errorMetaResp{hdr: http.Header{}}
+	body := mustJSON(map[string]any{
+		"type": "query", "conversation_id": "c1",
+		"query": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
+	h.ServeHTTP(w, req)
+	// Just exercising the path; the handler logs and returns.
+}
+
+// failSecondWriteResp succeeds on the first Write (the preamble) and fails
+// on every subsequent Write, so the Meta event — the second write — fails
+// while the preamble lands. Covers the handler's Meta-error branch.
+type failSecondWriteResp struct {
+	hdr   http.Header
+	wrote int
+}
+
+func (r *failSecondWriteResp) Header() http.Header { return r.hdr }
+func (r *failSecondWriteResp) Write(b []byte) (int, error) {
+	r.wrote++
+	if r.wrote == 1 {
+		return len(b), nil
+	}
+	return 0, io.ErrShortWrite
+}
+func (r *failSecondWriteResp) WriteHeader(int) {}
+func (r *failSecondWriteResp) Flush()          {}
+
+func TestHandler_HandleQuery_MetaError(t *testing.T) {
+	rtr, err := router.New(router.Config{Agent: &fakeAgent{}, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr})
+	w := &failSecondWriteResp{hdr: http.Header{}}
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c1",
 		"query": []map[string]any{{"role": "user", "content": "hi"}},
