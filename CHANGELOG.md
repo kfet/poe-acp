@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Graceful restart is now a master/worker supervisor shim** (replaces the v0.34.0 two-process re-exec and the v0.35.0 systemd MAINPID handshake). The process the init system tracks is now a tiny **supervisor S** that binds the listen socket once and **never exits during an upgrade**; it forks **worker** processes (detected by `POE_ACP_WORKER_FD`) that recover the inherited listener and run all the relay logic. A `SIGHUP` to S (systemd `ExecReload`, `launchctl kill SIGHUP`, or `POST /admin/reexec`) forks a new worker on the new binary, lets it start accepting, then drains the old worker's in-flight Poe SSE streams to completion before it exits — full drain, zero refusal, **identical and safe on both systemd and launchd**. New `internal/supervisor/` package (transport-generic fd-owning master + worker fork/drain/reap/self-reexec, unix-only); Poe SSE drain semantics stay in `internal/httpsrv`. A rare supervisor self-upgrade (`SIGUSR2` / `?scope=supervisor`) re-execs S in place while quiescent. Each worker holds a parent-liveness pipe to S and exits if S dies, freeing the socket. Design: `docs/graceful-restart-design.md` (rewritten).
+
+### Fixed
+
+- **launchd graceful restart now works.** Under the pre-0.36.0 "server-is-PID" model, a `SIGHUP` re-exec self-exited; launchd's `KeepAlive` then relaunched the job, which cold-bound the port and hit `EADDRINUSE` because the surviving drainer still held the socket — a crash-loop. The skills shipped a **false claim** that "launchd has no such trap; SIGHUP re-exec is always safe there." With the stable supervisor S, `EADDRINUSE`-on-relaunch is structurally impossible on any OS. The false doc claim has been removed and the deploy/update skills corrected.
+
+### Removed
+
+- **Retired the v0.35.0 systemd `MAINPID` handshake and `NotifyAccess=all` requirement.** With a stable supervisor `MainPID`, systemd never needs to adopt a successor. S still sends `READY=1` once its first worker is serving (`Type=notify` ordering retained); `sdnotify.ReadyMainPID` and the `internal/graceful` package are removed. **First cutover onto 0.36.0 must be a plain restart** (`systemctl --user restart` / `launchctl kickstart -k`) because the running ≤ 0.35.0 binary cannot perform a shim swap; SIGHUP/reload are seamless worker swaps thereafter.
+
 ## [0.35.0] - 2026-06-20
 
 ### Fixed
