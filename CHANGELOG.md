@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **No absolute turn timeout by default — an actively-progressing turn is never cut.** `--turn-timeout` now defaults to `0` (off): a prompt turn has no wall-clock ceiling and is bounded *solely* by the progress-resetting `--idle-write-timeout` (2m) backstop. While the agent keeps producing user-visible output the turn runs as long as it needs; only a genuinely *wedged* turn (no output within the idle window) is cancelled. Previously a hard 5m ceiling (`context deadline exceeded`, JSON-RPC `-32603`) guillotined long-but-active turns — e.g. a multi-step investigation doing many slow tool calls — regardless of steady progress. The absolute cap is now opt-in (`--turn-timeout >0`) for operators who deliberately want a hard upper bound irrespective of progress; it is not a wedge guard (that is `--idle-write-timeout`'s job). `internal/httpsrv`: `Config.TurnTimeout<=0` skips the `context.WithTimeout` wrapper entirely (plain `WithCancel`), so the idle backstop's `cancelTurn` is the only cancellation path.
+
+
 ## [0.36.0] - 2026-06-21
 
 ### Changed

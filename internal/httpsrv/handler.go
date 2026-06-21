@@ -46,12 +46,20 @@ type Config struct {
 	// and pasted redirect URLs from in-flight logins before they reach
 	// the router. Optional; nil disables the command surface.
 	Commands CommandHandler
-	// TurnTimeout bounds a prompt turn run on a context DECOUPLED from
-	// the request ctx. Poe tears down the bot-facing HTTP connection
-	// pre-output on a transport drop; decoupling lets the in-flight turn
-	// finish so its answer can be buffered and served on the redrive,
-	// instead of aborting and losing the work. <=0 falls back to
-	// defaultTurnTimeout (5m).
+	// TurnTimeout is an OPTIONAL absolute wall-clock ceiling on a prompt
+	// turn run on a context DECOUPLED from the request ctx. Poe tears
+	// down the bot-facing HTTP connection pre-output on a transport drop;
+	// decoupling lets the in-flight turn finish so its answer can be
+	// buffered and served on the redrive, instead of aborting and losing
+	// the work.
+	//
+	// <=0 (the default) means NO absolute ceiling: a turn is bounded
+	// SOLELY by the progress-resetting IdleWriteTimeout backstop. While
+	// the agent keeps producing user-visible output the turn runs for as
+	// long as it needs — a long, actively-working turn is never cut. The
+	// absolute cap is opt-in for operators who deliberately want a hard
+	// upper bound regardless of progress; it is NOT a wedge guard (that
+	// is IdleWriteTimeout's job).
 	TurnTimeout time.Duration
 	// AnswerTTL bounds how long a buffered (absorbed) turn answer is held
 	// for a redrive before it is discarded. <=0 falls back to
@@ -69,9 +77,9 @@ type Config struct {
 	IdleWriteTimeout time.Duration
 }
 
-// defaultTurnTimeout bounds a decoupled prompt turn when Config.TurnTimeout
-// is unset.
-const defaultTurnTimeout = 5 * time.Minute
+// TurnTimeout has no default: <=0 means no absolute ceiling, leaving the
+// progress-resetting IdleWriteTimeout backstop as the sole guard (see the
+// Config.TurnTimeout doc).
 
 // defaultAnswerTTL bounds buffered-answer retention when Config.AnswerTTL
 // is unset. Poe redrives a transport drop within a few seconds; 2m is
@@ -102,11 +110,10 @@ type Handler struct {
 
 // New creates a Handler. HeartbeatInterval <=0 disables heartbeat;
 // otherwise no defaulting is applied — pass an explicit value.
-// TurnTimeout and AnswerTTL default when <=0 (see their docs).
+// AnswerTTL and IdleWriteTimeout default when <=0 (see their docs).
+// TurnTimeout is NOT defaulted: <=0 means no absolute turn ceiling, so the
+// progress-resetting IdleWriteTimeout backstop is the sole guard.
 func New(cfg Config) *Handler {
-	if cfg.TurnTimeout <= 0 {
-		cfg.TurnTimeout = defaultTurnTimeout
-	}
 	if cfg.AnswerTTL <= 0 {
 		cfg.AnswerTTL = defaultAnswerTTL
 	}
@@ -271,9 +278,18 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// Decouple the prompt turn from the request ctx: Poe drops the
 	// bot-facing HTTP connection pre-output on a transport drop, which
 	// would otherwise abort the in-flight turn. Run on a context that
-	// drops the caller's cancellation but is bounded by TurnTimeout so a
-	// pre-output drop lets the turn finish and its answer get buffered.
-	turnCtx, cancelTurn := context.WithTimeout(context.WithoutCancel(ctx), h.cfg.TurnTimeout)
+	// drops the caller's cancellation. By default there is NO absolute
+	// deadline — an actively-progressing turn is never cut; the
+	// progress-resetting idle-write backstop (watchIdle, below) is the
+	// sole guard and cancels only a genuinely wedged turn. An operator
+	// may opt into a hard wall-clock ceiling via TurnTimeout>0.
+	var turnCtx context.Context
+	var cancelTurn context.CancelFunc
+	if h.cfg.TurnTimeout > 0 {
+		turnCtx, cancelTurn = context.WithTimeout(context.WithoutCancel(ctx), h.cfg.TurnTimeout)
+	} else {
+		turnCtx, cancelTurn = context.WithCancel(context.WithoutCancel(ctx))
+	}
 	defer cancelTurn()
 
 	rec := &answerRecorder{inner: s}
@@ -341,8 +357,8 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 // watchIdle is the wedged-turn backstop goroutine. It polls the sink's
 // idle clock and cancels the turn if no user-visible byte has landed
 // within IdleWriteTimeout. It exits as soon as the turn completes (done
-// closed) — so a turn that ends normally, or is cut by TurnTimeout, never
-// trips the idle path. idleWriteCancelHook is a test-only seam fired when
+// closed) — so a turn that ends normally, or is cut by an opt-in
+// TurnTimeout ceiling, never trips the idle path. idleWriteCancelHook is a test-only seam fired when
 // the idle path cancels.
 func (h *Handler) watchIdle(cancelTurn context.CancelFunc, s *sink, done <-chan struct{}, convID string) {
 	t := time.NewTicker(idleCheckInterval(h.cfg.IdleWriteTimeout))
