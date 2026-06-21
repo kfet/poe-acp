@@ -606,19 +606,30 @@ func TestSink_HeartbeatSelfDisarmsViaGate(t *testing.T) {
 
 	s := newSink(w, time.Millisecond)
 
-	<-inTick // goroutine paused inside the tick body, before hbReplace
+	// Let tick #0 (the immediate pre-loop frame) emit with the gate
+	// still open, so the goroutine enters the ticker loop.
+	<-inTick              // paused inside tick #0's hook, before hbReplace
+	proceed <- struct{}{} // tick #0 emits a spinner frame, gate open → loop
+
+	<-inTick // paused inside tick #1's hook (ticker-driven), before hbReplace
 	// Close the gate via a user write while the goroutine is paused.
 	// We deliberately do NOT call s.stop() / s.Done(): the hbDone
 	// channel stays open so the only way for the goroutine to exit
-	// is via the gateOpen=false self-disarm branch.
+	// is via the gateOpen=false self-disarm branch INSIDE the loop.
 	if err := s.Replace("user content"); err != nil {
 		t.Fatal(err)
 	}
-	close(proceed) // let the goroutine continue → hbReplace → gate closed → return
-	<-s.hbExited   // race-free: goroutine has fully returned via self-disarm
-	// Sanity: no spinner / heartbeat frame in the recorded stream.
-	if strings.Contains(rec.Body.String(), "Thinking") {
-		t.Fatalf("heartbeat must not have written after gate closed:\n%s", rec.Body.String())
+	proceed <- struct{}{} // let the goroutine continue → hbReplace → gate closed → return
+	<-s.hbExited          // race-free: goroutine has fully returned via self-disarm
+
+	// Sanity: the tick #0 spinner frame may legitimately precede the
+	// user content, but NO heartbeat frame may appear AFTER it — the
+	// loop self-disarmed on tick #1 before writing. Assert the last
+	// content frame on the wire is the user write, not a stale spinner.
+	events := parseSSE(t, rec.Body.String())
+	last := events[len(events)-1]
+	if last.event != "replace_response" || last.text != "user content" {
+		t.Fatalf("expected final frame to be the user write, got %+v:\n%s", last, rec.Body.String())
 	}
 }
 

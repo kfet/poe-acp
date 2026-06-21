@@ -607,38 +607,50 @@ func (s *sink) heartbeat(every time.Duration) {
 	defer t.Stop()
 	// spinTick is owned solely by this goroutine; no synchronisation.
 	var spinTick int
-	for {
+	// Emit tick #0 IMMEDIATELY (the loop condition's first evaluation),
+	// before waiting on the ticker, so a real `replace_response`
+	// content frame lands within milliseconds of `meta`. Poe drops a
+	// new-conversation bot connection that sees only the preamble +
+	// meta (a non-content event) during the 0..HeartbeatInterval gap —
+	// emitting the first spinner frame at t≈0 closes that
+	// content-starvation window. Each subsequent ticker tick re-evaluates
+	// the condition, emitting the next animation frame. emitSpinnerFrame
+	// returns false (ending the loop) the moment a user write has landed
+	// or the stream is closed — the heartbeat's single self-disarm path.
+	for s.emitSpinnerFrame(&spinTick) {
 		select {
 		case <-s.hbDone:
 			return
 		case <-t.C:
-			if heartbeatTickHook != nil {
-				heartbeatTickHook()
-			}
-			spinTick++
-			dots := strings.Repeat(".", 1+(spinTick-1)%3)
-			// replace_response overwrites the prior frame so the
-			// dots animate in place rather than accumulating. We use
-			// replace (not text-append) for keepalive too: text events
-			// would *append* each tick's payload, which Poe's Markdown
-			// renderer then sees as leading content and can mis-parse
-			// subsequent headings, lists or fenced blocks emitted by
-			// the agent. Replace + spinner doubles as user-visible
-			// liveness AND keepalive, so one path covers both.
-			//
-			// Spinner frame now carries the dev.acp-kit.status-line/v1
-			// header (provider emoji, mood, plan) so mobile users see
-			// fir-style indicators they'd miss without a TUI.
-			frame := statusline.Spinner(s.snapshotStatus(), dots)
-			gateOpen, _ := s.o.hbReplace(frame)
-			if !gateOpen {
-				// A user write has landed (or the stream is closed):
-				// any further tick would be a wasted mutex acquire.
-				// Self-disarm.
-				return
-			}
 		}
 	}
+}
+
+// emitSpinnerFrame writes one heartbeat spinner frame and advances the
+// animation counter. It fires heartbeatTickHook (so tick #0 is observed
+// by tests just like ticker-driven ticks) and returns gateOpen as
+// reported by orderedWriter.hbReplace — false means a user write has
+// landed or the stream is closed and the heartbeat goroutine should
+// self-disarm. *spinTick is the goroutine-private animation counter.
+//
+// replace_response overwrites the prior frame so the dots animate in
+// place rather than accumulating. We use replace (not text-append) for
+// keepalive too: text events would *append* each tick's payload, which
+// Poe's Markdown renderer then sees as leading content and can
+// mis-parse subsequent headings, lists or fenced blocks emitted by the
+// agent. Replace + spinner doubles as user-visible liveness AND
+// keepalive, so one path covers both. The spinner frame carries the
+// dev.acp-kit.status-line/v1 header (provider emoji, mood, plan) so
+// mobile users see fir-style indicators they'd miss without a TUI.
+func (s *sink) emitSpinnerFrame(spinTick *int) (gateOpen bool) {
+	if heartbeatTickHook != nil {
+		heartbeatTickHook()
+	}
+	*spinTick++
+	dots := strings.Repeat(".", 1+(*spinTick-1)%3)
+	frame := statusline.Spinner(s.snapshotStatus(), dots)
+	gateOpen, _ = s.o.hbReplace(frame)
+	return gateOpen
 }
 
 // stop wakes the heartbeat goroutine for prompt shutdown. Idempotent.
