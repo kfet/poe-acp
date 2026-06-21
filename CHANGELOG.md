@@ -2,10 +2,15 @@
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-06-22
+
 ### Changed
 
 - **No absolute turn timeout by default — an actively-progressing turn is never cut.** `--turn-timeout` now defaults to `0` (off): a prompt turn has no wall-clock ceiling and is bounded *solely* by the progress-resetting `--idle-write-timeout` (2m) backstop. While the agent keeps producing user-visible output the turn runs as long as it needs; only a genuinely *wedged* turn (no output within the idle window) is cancelled. Previously a hard 5m ceiling (`context deadline exceeded`, JSON-RPC `-32603`) guillotined long-but-active turns — e.g. a multi-step investigation doing many slow tool calls — regardless of steady progress. The absolute cap is now opt-in (`--turn-timeout >0`) for operators who deliberately want a hard upper bound irrespective of progress; it is not a wedge guard (that is `--idle-write-timeout`'s job). `internal/httpsrv`: `Config.TurnTimeout<=0` skips the `context.WithTimeout` wrapper entirely (plain `WithCancel`), so the idle backstop's `cancelTurn` is the only cancellation path.
 
+### Fixed
+
+- **Pre-output content-starvation on new conversations.** On a fresh conversation Poe opened the bot HTTP connection, received only the SSE preamble + `meta` (a non-content event), and dropped the connection ~13ms in — sometimes surfacing an aiohttp `TransferEncodingError` and giving up instead of redriving. Root cause: the first real *content* SSE event (a heartbeat-driven `replace_response` spinner frame) was not emitted until the heartbeat ticker's first tick at `t = HeartbeatInterval` (default 1500ms), leaving a 0–1500ms window in which Poe saw no content event. The heartbeat now emits tick #0 **immediately** (the loop condition's first evaluation, at t≈0), so a real content frame lands within milliseconds of `meta` and closes the starvation window; subsequent frames keep the ticker cadence. The Tailscale-Funnel preamble is unchanged — it could not fix the Caddy path where all bytes already reach Poe instantly. Adds an e2e regression guard (`firstframe_test.go`) asserting the first content frame arrives far below one heartbeat interval.
 
 ## [0.36.0] - 2026-06-21
 
