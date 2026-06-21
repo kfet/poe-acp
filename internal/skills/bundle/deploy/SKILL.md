@@ -91,7 +91,6 @@ After=network-online.target
 [Service]
 EnvironmentFile=%h/.config/poe-acp/env
 Type=notify
-NotifyAccess=all
 ExecStart=%h/.local/bin/poe-acp -http-addr 127.0.0.1:8080 -agent-cmd "fir --mode acp"
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
@@ -101,25 +100,42 @@ RestartSec=2s
 WantedBy=default.target
 ```
 
-`Type=notify` + `NotifyAccess=all` are **required** (poe-acp ≥ 0.35.0): on a graceful re-exec the new child notifies systemd of its PID (`MAINPID=<child>\nREADY=1`) before the old parent drains and exits, so systemd re-targets `MainPID` onto the child instead of declaring the service dead. Without these two lines a `systemctl reload` leaves the service `inactive (dead)` — a permanent outage. (`Type=notify` also means the initial process must signal readiness, which poe-acp does once it is listening; `NotifyAccess=all` lets systemd accept the readiness/MAINPID datagram from the forked child.)
+`Type=notify` (poe-acp ≥ 0.36.0): the process systemd launches and tracks
+as `MainPID` is the **supervisor S** — a tiny master that binds the listen
+socket once and forks a worker to run the relay. S signals readiness
+(`READY=1`) once its first worker is serving, so systemd does not hang in
+`activating`. `MainPID` is **stable across upgrades**: S never exits during
+a worker swap, so the v0.35.0 `NotifyAccess=all` + `MAINPID` re-point
+handshake is gone — **do not add `NotifyAccess=all`**.
 
-`ExecReload=/bin/kill -HUP $MAINPID` enables **graceful zero-downtime restart**: `systemctl --user reload poe-acp` re-execs the binary in place, handing the listening socket to the new process. In-flight Poe SSE replies finish on the old process (no truncation), new POSTs hit the new one (no `ECONNREFUSED`). Use `reload` after swapping the binary on disk when you want to preserve mid-stream conversations; a plain `restart` still works but drops in-flight streams. The old process exits on its own once drained.
+`ExecReload=/bin/kill -HUP $MAINPID` enables **graceful zero-downtime
+restart**: `systemctl --user reload poe-acp` sends `SIGHUP` to S, which
+forks a NEW worker (the new on-disk binary) on the same socket, lets it
+start accepting, then tells the old worker to stop accepting and drain its
+in-flight Poe SSE replies to completion before exiting. In-flight streams
+finish (no truncation), new POSTs hit the new worker (no `ECONNREFUSED`),
+and S — the tracked `MainPID` — never moves. A plain `restart` still works
+but drops in-flight streams.
 
 ##### Seamless upgrades (the cutover rule)
 
-The **old running binary drives the handoff**, so the seamless `reload`
-only works once the running binary already has the fix:
+A `SIGHUP`-driven worker swap is handled by the **currently running**
+supervisor, so it only works once the running binary already speaks the
+shim protocol (≥ 0.36.0):
 
 1. `make deploy HOST=<host>` — scp the new binary onto the host.
-2. **FIRST cutover onto a v0.35.0+ binary must be a `restart`, not a
+2. **FIRST cutover onto a v0.36.0 binary must be a `restart`, not a
    `reload`:** `systemctl --user restart poe-acp` (a brief blip). The
-   currently-running old binary lacks the MAINPID handshake, so reloading
-   *through* it would brick the service exactly as before.
-3. **Only after the fixed binary is the running one** do subsequent
-   `systemctl --user reload poe-acp` become truly seamless (in-flight
-   streams preserved, no blip).
+   currently-running ≤ 0.35.0 binary uses the old server-is-PID model and
+   does not know how to fork/drain a worker, so reloading *through* it
+   would not perform a shim swap.
+3. **Only after the v0.36.0 supervisor is the running one** do subsequent
+   `systemctl --user reload poe-acp` become true zero-downtime worker
+   swaps (in-flight streams preserved, `MainPID` unchanged, no blip).
 
-In short: restart once to get onto the fixed binary; reload forever after.
+In short: restart once to get onto the shim; reload forever after. The
+identical rule applies on launchd (`kickstart -k` once, then
+`launchctl kill SIGHUP`) — see the macOS section.
 
 
 
@@ -182,14 +198,37 @@ launchctl print     gui/$UID/dev.<you>.poe-acp | head                          #
 tail -f ~/Library/Logs/poe-acp.err.log                                         # logs
 ```
 
-**Graceful restart on macOS.** launchd has no built-in reload, but the relay implements graceful re-exec on `SIGHUP`. To upgrade without dropping in-flight Poe SSE replies, send the signal instead of `kickstart -k`:
+**Graceful (zero-downtime) restart on macOS.** poe-acp ≥ 0.36.0 runs a
+master/worker supervisor, so `SIGHUP` to the launchd-tracked process (the
+supervisor S) triggers a **drained worker swap** — identical behaviour to
+systemd `reload`, and safe on launchd because S never exits, so launchd
+never sees its tracked PID vanish and never KeepAlive-relaunches into an
+`EADDRINUSE` crash-loop. To upgrade without dropping in-flight Poe SSE
+replies, send the signal instead of `kickstart -k`:
 
 ```bash
-launchctl kill SIGHUP gui/$UID/dev.<you>.poe-acp     # graceful re-exec (preserves in-flight streams)
+launchctl kill SIGHUP gui/$UID/dev.<you>.poe-acp     # drained worker swap (preserves in-flight streams)
 # or: kill -HUP $(launchctl print gui/$UID/dev.<you>.poe-acp | awk '/pid =/{print $3}')
 ```
 
-The old process drains in-flight streams to completion, then exits; launchd sees the same job. `kickstart -k` is still fine when you do not care about mid-stream survival (it hard-restarts).
+S forks a new worker on the new on-disk binary, lets it start accepting,
+then drains the old worker to completion; launchd sees the same job and the
+same PID throughout. `kickstart -k` still hard-restarts when you do not care
+about mid-stream survival.
+
+> **Cutover rule (same as systemd):** the swap is driven by the running
+> supervisor, so the **first cutover onto a v0.36.0 binary must be a
+> `launchctl kickstart -k`** (restart) — the older ≤ 0.35.0 binary used the
+> server-is-PID model and, critically, its `SIGHUP` re-exec self-exits,
+> which under launchd's `KeepAlive` raced the relaunch into `EADDRINUSE`.
+> Only after 0.36.0 is the running supervisor does `launchctl kill SIGHUP`
+> become a seamless worker swap. Restart once; SIGHUP-swap forever after.
+
+A rare **supervisor self-upgrade** (when S's own tiny code changes) is a
+distinct trigger: `launchctl kill USR2 gui/$UID/dev.<you>.poe-acp` drains
+the current worker, then re-execs S in place on the same socket while
+quiescent. Default updates are worker swaps (`SIGHUP`); reach for `USR2`
+only when the supervisor binary itself changed.
 
 ### 5. Seed agent notes (if repo paths known)
 
@@ -292,7 +331,6 @@ After=network-online.target
 [Service]
 EnvironmentFile=%h/.config/poe-acp/bot-foo/env
 Type=notify
-NotifyAccess=all
 ExecStart=%h/.local/bin/poe-acp \
   --http-addr 127.0.0.1:8347 \
   --poe-path /foo \
@@ -304,7 +342,7 @@ Restart=on-failure
 WantedBy=default.target
 ```
 
-(`Type=notify` + `NotifyAccess=all` + `ExecReload` are required for graceful reload to work under systemd — see the single-bot notes and the "Seamless upgrades" cutover rule above. The same restart-once-then-reload-forever rule applies per bot.)
+(`Type=notify` + `ExecReload` are required for graceful reload to work under systemd — see the single-bot notes and the "Seamless upgrades" cutover rule above. `NotifyAccess=all` is **no longer used** (poe-acp ≥ 0.36.0): the supervisor is a stable `MainPID`. The same restart-once-then-SIGHUP-swap-forever rule applies per bot, on both systemd and launchd.)
 
 
 ```bash

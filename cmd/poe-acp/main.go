@@ -30,8 +30,8 @@ import (
 	"github.com/kfet/poe-acp/internal/router"
 	"github.com/kfet/poe-acp/internal/sdnotify"
 	"github.com/kfet/poe-acp/internal/selfupdate"
-	"github.com/kfet/poe-acp/internal/supervisor"
 	"github.com/kfet/poe-acp/internal/statusline"
+	"github.com/kfet/poe-acp/internal/supervisor"
 )
 
 // version is set via -ldflags at build time.
@@ -581,7 +581,6 @@ func runSupervisor(addr, version string) {
 		}
 	}
 }
-
 
 // runUpdate implements the `poe-acp update` subcommand: download the
 // latest (or pinned) release, verify its sha256, and atomically replace
