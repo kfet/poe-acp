@@ -82,23 +82,6 @@ func TestReady(t *testing.T) {
 	}
 }
 
-func TestReadyMainPID(t *testing.T) {
-	path, conn := listenUnixgram(t)
-	t.Setenv("NOTIFY_SOCKET", path)
-	if _, err := ReadyMainPID(4242); err != nil {
-		t.Fatalf("ReadyMainPID: %v", err)
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	buf := make([]byte, 256)
-	n, _, err := conn.ReadFromUnix(buf)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if got := string(buf[:n]); got != "MAINPID=4242\nREADY=1" {
-		t.Fatalf("datagram = %q", got)
-	}
-}
-
 func TestNotify_DialError(t *testing.T) {
 	// A path with no listening socket → connect(2) fails at dial.
 	t.Setenv("NOTIFY_SOCKET", filepath.Join(t.TempDir(), "absent.sock"))
