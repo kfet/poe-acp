@@ -1,65 +1,103 @@
 # Graceful Restart — design
 
-Status: **implemented** (v0.34.0; systemd MAINPID handshake added in
-v0.35.0). In-flight Poe SSE streams now survive a binary upgrade: the
-parent hands its listener fd to a re-exec'd child, keeps serving its
-already-accepted connections to natural completion (or caller-cancel),
-then exits. New POSTs during the handoff window are served by the child
-— zero `ECONNREFUSED`, zero mid-stream truncation. Triggered by `SIGHUP`
-(`kill -HUP $MAINPID`, systemd `ExecReload`) or `POST /admin/reexec`
-gated by `ADMIN_TOKEN`. Implementation lives in `internal/graceful/`
-(generic fd-handoff/process-swap), `internal/sdnotify/` (the systemd
-MAINPID handshake) and `internal/httpsrv/` (Poe SSE drain + per-stream
-idle-write backstop). The design body below is retained as the rationale
-of record.
+Status: **implemented** as a master/worker supervisor shim (v0.36.0;
+supersedes the v0.34.0 two-process re-exec and the v0.35.0 systemd
+MAINPID handshake). In-flight Poe SSE streams survive a binary upgrade,
+and the model is now **structurally identical and safe on both systemd
+and launchd**.
 
-## systemd compatibility — the MAINPID handshake (v0.35.0)
+## The master/worker supervisor model (v0.36.0)
 
-The bare two-process swap above is correct at the process level but was
-**broken under systemd** (caused a permanent `sea-fir` outage on
-2026-06-20). systemd tracks a service by its `MainPID` — the original
-parent. When the parent drains and exits **0**, systemd considers the
-service stopped, tears down the cgroup, `SIGTERM`s the freshly-promoted
-child, and — because the exit was clean — `Restart=on-failure` does NOT
-fire. Result: `inactive (dead)`, a permanent outage after every
-`systemctl reload`.
+The same binary runs in one of two modes, selected at startup:
 
-Fix: implement the `sd_notify(3)` `MAINPID` handshake so systemd
-re-targets tracking onto the child **before** the parent exits.
+- **Supervisor S** is the process the init system launches and tracks
+  (systemd `MainPID` / launchd job PID). It binds the listen socket
+  **once** (`net.Listen`) and **never rebinds or exits during an
+  upgrade**. It forks worker processes, handing each the listener fd
+  (cleared of `O_CLOEXEC`, delivered as `POE_ACP_WORKER_FD=3`) plus the
+  read end of a parent-liveness pipe (`POE_ACP_DEATH_FD=4`). S is tiny
+  and rarely changes. Implementation: `internal/supervisor/`.
+- **Worker W** is detected by `POE_ACP_WORKER_FD` being set. It recovers
+  the listener via `net.FileListener` and runs ALL the relay logic
+  (`httpsrv`/`router`/agent). This is where churn lives.
 
-- `internal/sdnotify/` writes datagrams to `$NOTIFY_SOCKET` directly
-  (AF_UNIX `SOCK_DGRAM`, leading `@` → abstract namespace). **No new
-  dependency.** Every call is a no-op when `NOTIFY_SOCKET` is unset, so
-  launchd / bare-process paths are unaffected.
-- **Cold start** (non-graceful): the initial process sends `READY=1`
-  once it is listening. `Type=notify` *requires* this — without it
-  systemd hangs in `activating` until the start timeout.
-- **Graceful child**: once serving, the child sends
-  `MAINPID=<child_pid>\nREADY=1` to `$NOTIFY_SOCKET` **first**, and only
-  then signals the parent (`SIGUSR1`) to begin draining. The child is
-  the sender (not the parent) because at that instant the child is the
-  successor systemd must adopt; `NotifyAccess=all` lets systemd accept a
-  notification from a process that is not (yet) the tracked main PID.
-  Ordering guarantees systemd is told the new MainPID before the parent
-  even starts draining, so at no instant does systemd see the tracked
-  PID exit without already knowing its successor. The unbounded parent
-  drain gives systemd ample time to process the datagram.
+**Why this unifies launchd + systemd.** The v0.35.0 model was "the
+server IS the supervised PID, so on upgrade it must exit." That is
+unfixable-with-drain under launchd: launchd tracks the spawned PID and
+`KeepAlive`-relaunches on its exit; the relaunched instance cold-binds
+the port and hits `EADDRINUSE` because the surviving drainer still holds
+the socket → crash-loop. With a stable supervisor S that never exits
+during a worker swap, the init system never observes the tracked PID
+vanish — so **`EADDRINUSE`-on-relaunch is structurally impossible on any
+OS**, and the systemd-specific MAINPID re-point handshake is no longer
+needed.
+
+### Hot upgrade — the common path (worker swap)
+
+Trigger: `SIGHUP` to S (systemd `ExecReload=/bin/kill -HUP $MAINPID`;
+launchd `launchctl kill SIGHUP`), or `POST /admin/reexec` (the worker
+relays this to S as a `SIGHUP`).
+
+1. S forks a NEW worker W2 with the SAME fd (W2 = the new on-disk
+   binary). W2 recovers the listener and starts accepting; the kernel
+   accept queue covers any gap, so no connection is refused.
+2. W2 signals S it is ready (`SIGUSR1`).
+3. S tells W1 to stop accepting and **drain** its in-flight SSE to
+   natural completion / caller-cancel (`SIGTERM`, which W maps to
+   `http.Server.Shutdown`; the per-stream idle-write backstop in
+   `internal/httpsrv` is the only force-kill).
+4. W1 exits; S reaps it.
+
+Full drain, zero refusal, identical on launchd and systemd. S stays on
+its old in-memory code throughout — intended and fine, because S is tiny
+and the relay logic lives entirely in the worker.
+
+### Parent-death detection
+
+Each worker holds the read end of a pipe whose write end S keeps open.
+If S dies, the read end EOFs and the worker exits, freeing the socket so
+the init system relaunches S cleanly (a brief cold blip) rather than
+orphan-locking the port.
+
+### Shim self-upgrade — the rare path
+
+S's own code seldom changes. When it must, S re-execs ITSELF in place
+via `syscall.Exec` (same PID, inheriting the listen fd via
+`POE_ACP_SUPERVISOR_FD` so it does not rebind) — but **only when
+quiescent**: the trigger (`SIGUSR2` to S, distinct from the worker-swap
+`SIGHUP`; or `POST /admin/reexec?scope=supervisor`) first drains and
+reaps the current worker, so nothing in-flight is dropped, then re-execs.
+
+### Readiness (systemd)
+
+`internal/sdnotify/` still sends `READY=1` (Type=notify ordering) — but
+now from **S**, once its first worker is serving. The v0.35.0
+`MAINPID=<pid>` re-point datagram and the `NotifyAccess=all` unit
+requirement are **retired**: S is a stable `MainPID`, so systemd never
+needs to adopt a successor.
 
 **Unit requirements** (see deploy SKILL): `Type=notify`,
-`NotifyAccess=all`, `ExecReload=/bin/kill -HUP $MAINPID`.
+`ExecReload=/bin/kill -HUP $MAINPID`. Do **not** add `NotifyAccess=all`.
+launchd: `KeepAlive=true` + `RunAtLoad` (S owns the socket; no `Sockets`
+key needed).
 
-**Seamless-upgrade caveat:** the *old running binary* drives the
-handoff. A binary that predates v0.35.0 lacks the handshake, so the
-FIRST cutover onto a fixed binary must be a `systemctl restart` (a brief
-blip). Only once the fixed binary is the running one do subsequent
-`systemctl reload`s become truly seamless.
+### First-cutover caveat
 
-**launchd:** launchd has no `sd_notify` equivalent and no built-in
-reload; `KeepAlive` simply respawns on exit. The graceful path is a
-no-op there (`NOTIFY_SOCKET` unset) and the two-process swap still works
-for a `kill -HUP`, but there is no supervisor MainPID-tracking problem
-to solve in the first place. Normal restart (`launchctl kickstart -k`)
-remains the supported flow on macOS.
+The swap is driven by the **currently running** binary. Upgrading from
+≤ 0.35.0 (server-is-PID model) to 0.36.0 (shim) cannot be a seamless
+reload — the running old binary does not speak the shim protocol. So the
+FIRST cutover to 0.36.0 is a plain restart (`systemctl --user restart` /
+`launchctl kickstart -k`); only AFTER 0.36.0 is running do
+`reload`/`SIGHUP` become seamless worker swaps. (Worse: under the
+pre-0.36.0 launchd path, `SIGHUP` self-exit raced `KeepAlive` into the
+`EADDRINUSE` crash-loop described above — which is why the old skill
+claim that "launchd SIGHUP re-exec is always safe" was wrong and has
+been removed.)
+
+---
+
+*The sections below are retained as the original rationale of record for
+the drain semantics, which the worker still implements unchanged.*
 
 
 
