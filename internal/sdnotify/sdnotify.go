@@ -1,21 +1,15 @@
 //go:build unix
 
 // Package sdnotify implements the minimal subset of the sd_notify(3)
-// protocol needed to make graceful restart survive under systemd, with
-// no external dependencies.
+// protocol needed to signal readiness under systemd, with no external
+// dependencies.
 //
-// systemd tracks a Type=notify service by its MainPID. poe-acp's
-// zero-downtime restart (see internal/graceful) forks a child, hands it
-// the listener, and lets the old parent drain and exit. Without telling
-// systemd, the parent IS the tracked MainPID: when it exits cleanly
-// systemd considers the service stopped, tears down the cgroup, and
-// kills the freshly-promoted child — a permanent outage after a reload.
-//
-// The fix is the MAINPID handshake: the child notifies systemd of the
-// new MainPID (and READY) BEFORE the parent exits, so systemd never sees
-// the tracked PID disappear without already knowing its successor. This
-// requires NotifyAccess=all on the unit (so systemd accepts a notify
-// from a process that is not yet the tracked main PID).
+// Under the master/worker supervisor model (see internal/supervisor) the
+// supervisor S is the process systemd tracks as MainPID. S is stable
+// across worker upgrades — it binds the socket once and never exits
+// during a worker swap — so the v0.35.0 MAINPID re-point handshake is no
+// longer needed. S simply sends READY=1 once its first worker is serving
+// (Type=notify ordering), and NotifyAccess=all is no longer required.
 //
 // All functions are no-ops returning (false, nil) when NOTIFY_SOCKET is
 // unset, so launchd and bare-process deployments are unaffected.
@@ -61,17 +55,8 @@ func Notify(state string) (bool, error) {
 }
 
 // Ready notifies systemd that startup is complete (READY=1). For a
-// Type=notify unit the initial process must call this once it is
-// listening, or systemd hangs in "activating" until the start timeout.
+// Type=notify unit the supervisor must call this once its first worker
+// is serving, or systemd hangs in "activating" until the start timeout.
 func Ready() (bool, error) {
 	return Notify("READY=1")
-}
-
-// ReadyMainPID tells systemd the new main PID and that it is ready in a
-// single datagram (MAINPID=<pid>\nREADY=1). A graceful-restart child
-// calls this before signalling the old parent to drain, so systemd
-// re-targets MainPID onto the successor and does not reap it when the
-// parent exits. Requires NotifyAccess=all on the unit.
-func ReadyMainPID(pid int) (bool, error) {
-	return Notify(fmt.Sprintf("MAINPID=%d\nREADY=1", pid))
 }
