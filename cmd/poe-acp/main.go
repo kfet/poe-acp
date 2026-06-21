@@ -23,7 +23,6 @@ import (
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/config"
-	"github.com/kfet/poe-acp/internal/graceful"
 	"github.com/kfet/poe-acp/internal/httpsrv"
 	"github.com/kfet/poe-acp/internal/mcpattach"
 	"github.com/kfet/poe-acp/internal/paramctl"
@@ -31,6 +30,7 @@ import (
 	"github.com/kfet/poe-acp/internal/router"
 	"github.com/kfet/poe-acp/internal/sdnotify"
 	"github.com/kfet/poe-acp/internal/selfupdate"
+	"github.com/kfet/poe-acp/internal/supervisor"
 	"github.com/kfet/poe-acp/internal/statusline"
 )
 
@@ -141,6 +141,19 @@ func main() {
 		return
 	}
 
+	// Master/worker split. The default invocation is the SUPERVISOR: it
+	// binds the listen socket once and forks worker processes, never
+	// exiting during an upgrade so the init system's tracked PID is
+	// stable (no EADDRINUSE-on-relaunch on launchd or systemd). A worker
+	// is detected by POE_ACP_WORKER_FD being set; it recovers the
+	// inherited listener and runs all the relay logic below. The
+	// supervisor is tiny and never reaches the agent/router setup.
+	if !supervisor.IsWorker() {
+		runSupervisor(*httpAddr, version)
+		return
+	}
+	log.Printf("worker mode (pid=%d, supervisor=%d)", os.Getpid(), os.Getppid())
+
 	stateDir := *stateDirFlag
 	if stateDir == "" {
 		if cfgExplicit {
@@ -156,13 +169,6 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		s := <-sigCh
-		log.Printf("shutdown signal: %v", s)
-		cancel()
-	}()
 
 	// Agent process
 	argv := strings.Fields(*agentCmd)
@@ -341,71 +347,44 @@ func main() {
 		fmt.Fprintf(w, "ok pid=%d sessions=%d\n", os.Getpid(), rtr.Len())
 	})
 
-	// Acquire the serving listener: cold (net.Listen) or, when this
-	// process is a graceful-restart child, recover the inherited fd.
-	ln, isChild, err := graceful.Listen(*httpAddr)
+	// Worker: recover the serving listener handed down by the supervisor
+	// (it owns the bound socket; we never bind).
+	ln, err := supervisor.WorkerListener()
 	if err != nil {
-		log.Fatalf("listen: %v", err)
+		log.Fatalf("worker listener: %v", err)
 	}
+
+	// If the supervisor dies, the parent-liveness pipe EOFs; relinquish
+	// the socket so the init system can relaunch the supervisor cleanly
+	// rather than orphan-locking the port.
+	supervisor.WatchParent(func() {
+		log.Printf("supervisor gone; worker exiting to free socket")
+		os.Exit(0)
+	})
 
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// drainCh is closed when a graceful upgrade child has signalled it is
-	// live (SIGUSR1) and this (parent) process should drain + exit.
+	// SIGTERM from the supervisor = stop accepting, drain in-flight
+	// streams to natural completion (the per-stream idle-write backstop
+	// is the only force-kill), then exit cleanly.
 	drainCh := make(chan struct{})
 	var drainOnce sync.Once
-
-	// Manager owns the parent-side upgrade (preflight + fd handoff + fork).
-	exe, _ := os.Executable()
-	mgr := graceful.New(graceful.Config{Listener: ln, BinPath: exe})
-
-	triggerUpgrade := func() {
-		proc, uerr := mgr.Upgrade()
-		if uerr != nil {
-			log.Printf("graceful: upgrade failed: %v", uerr)
-			return
-		}
-		log.Printf("graceful: spawned child pid=%d", proc.Pid)
-		go func() {
-			state, _ := proc.Wait()
-			select {
-			case <-drainCh:
-				// Child exited after we began draining (it owns the
-				// listener now) — expected, nothing to do.
-				return
-			default:
-			}
-			// Child died before signalling ready: stay in serve mode so
-			// the operator can retry. Parent never stopped serving.
-			log.Printf("graceful: child pid=%d exited before ready (%v); staying in serve mode", proc.Pid, state)
-			mgr.Reset()
-		}()
-	}
-
-	// SIGUSR1 (from a ready child) → begin draining this parent.
-	usr1 := make(chan os.Signal, 1)
-	signal.Notify(usr1, syscall.SIGUSR1)
+	term := make(chan os.Signal, 1)
+	signal.Notify(term, syscall.SIGTERM)
 	go func() {
-		for range usr1 {
-			log.Printf("graceful: child signalled ready; draining in-flight streams")
+		for range term {
+			log.Printf("SIGTERM: draining in-flight streams (unbounded; idle-write backstop active)")
 			drainOnce.Do(func() { close(drainCh) })
 		}
 	}()
 
-	// SIGHUP → initiate a graceful upgrade (systemd ExecReload-friendly).
-	hup := make(chan os.Signal, 1)
-	signal.Notify(hup, syscall.SIGHUP)
-	go func() {
-		for range hup {
-			log.Printf("SIGHUP: initiating graceful upgrade")
-			triggerUpgrade()
-		}
-	}()
-
-	// Optional admin trigger for shell-less automated update flows.
+	// Optional admin trigger for shell-less automated update flows. A
+	// worker cannot upgrade itself; it asks the supervisor. POST
+	// /admin/reexec -> SIGHUP supervisor (drained worker swap, the common
+	// path); ?scope=supervisor -> SIGUSR2 supervisor (self-upgrade, rare).
 	if adminTok := os.Getenv("ADMIN_TOKEN"); adminTok != "" {
 		mux.HandleFunc("/admin/reexec", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
@@ -417,66 +396,192 @@ func main() {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			log.Printf("/admin/reexec: initiating graceful upgrade")
+			sig := syscall.SIGHUP
+			scope := "worker-swap"
+			if r.URL.Query().Get("scope") == "supervisor" {
+				sig = syscall.SIGUSR2
+				scope = "supervisor-self-upgrade"
+			}
+			log.Printf("/admin/reexec: requesting %s from supervisor", scope)
+			if err := syscall.Kill(os.Getppid(), sig); err != nil {
+				http.Error(w, "signal supervisor: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 			w.WriteHeader(http.StatusAccepted)
-			go triggerUpgrade()
 		})
 		log.Printf("admin reexec endpoint enabled at /admin/reexec")
 	}
 
 	go func() {
-		log.Printf("listening on %s (graceful child=%v)", ln.Addr(), isChild)
+		log.Printf("worker listening on %s (pid=%d)", ln.Addr(), os.Getpid())
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http: %v", err)
 		}
 	}()
 
-	// Readiness notification for systemd (Type=notify). No-op unless
-	// NOTIFY_SOCKET is set, so launchd/bare-process paths are unaffected.
-	if isChild {
-		// Graceful-restart child: tell systemd the NEW MainPID and that
-		// we are ready BEFORE signalling the parent to drain+exit, so
-		// systemd never sees the tracked MainPID disappear without
-		// already knowing its successor (otherwise it reaps us and the
-		// service goes inactive). Requires NotifyAccess=all on the unit.
-		if sent, err := sdnotify.ReadyMainPID(os.Getpid()); err != nil {
-			log.Printf("sdnotify: MAINPID handshake failed: %v", err)
-		} else if sent {
-			log.Printf("sdnotify: notified systemd of new MainPID=%d", os.Getpid())
-		}
-		// Then tell the parent it may drain. The kernel accept queue
-		// covers the gap between Serve launch and this signal.
-		if err := graceful.NotifyParentReady(); err != nil {
-			log.Printf("graceful: notify parent failed: %v", err)
-		} else {
-			log.Printf("graceful: signalled parent ready")
-		}
+	// Tell the supervisor this worker's Serve is live so it may drain a
+	// previous worker. The kernel accept queue covers the gap until
+	// Serve runs, so no connection is ever refused.
+	if err := supervisor.NotifyReady(); err != nil {
+		log.Printf("worker: notify supervisor ready failed: %v", err)
 	} else {
-		// Cold start: Type=notify requires the initial process to signal
-		// readiness once listening, or systemd hangs in "activating".
-		if sent, err := sdnotify.Ready(); err != nil {
-			log.Printf("sdnotify: readiness notify failed: %v", err)
-		} else if sent {
-			log.Printf("sdnotify: notified systemd ready")
+		log.Printf("worker: signalled supervisor ready")
+	}
+
+	<-drainCh
+	// Unbounded drain: http.Server.Shutdown respects hijacked SSE
+	// connections, so a legitimately streaming turn survives; the
+	// idle-write backstop force-kills a wedged turn.
+	_ = srv.Shutdown(context.Background())
+	log.Printf("worker: drain complete, exiting")
+	cancel() // stop the agent + GC via deferred Close()
+}
+
+// runSupervisor is the master process: it binds the listen socket once
+// and forks/manages worker processes. It is intentionally tiny and rarely
+// changes, so the init system's tracked PID stays stable across worker
+// upgrades — making EADDRINUSE-on-relaunch structurally impossible on both
+// launchd and systemd. It does not return: it os.Exit()s on shutdown, or
+// re-execs itself in place on a supervisor self-upgrade.
+func runSupervisor(addr, version string) {
+	sup, err := supervisor.New(supervisor.Config{Addr: addr})
+	if err != nil {
+		log.Fatalf("supervisor: %v", err)
+	}
+	log.Printf("supervisor %s on %s (pid=%d)", version, sup.Addr(), os.Getpid())
+
+	// SIGUSR1 from a freshly spawned worker => it is ready to serve.
+	readySig := make(chan os.Signal, 8)
+	signal.Notify(readySig, syscall.SIGUSR1)
+	readyCh := make(chan struct{}, 8)
+	go func() {
+		for range readySig {
+			select {
+			case readyCh <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	// Worker exits funnel here as pids (one waiter goroutine per worker).
+	exitCh := make(chan int, 8)
+
+	// spawnReady forks a worker and blocks until it signals ready or dies.
+	spawnReady := func() (*os.Process, error) {
+		// Drain stale ready tokens so a previous worker's signal can't
+		// prematurely satisfy this wait.
+		for {
+			select {
+			case <-readyCh:
+				continue
+			default:
+			}
+			break
+		}
+		p, err := sup.Spawn()
+		if err != nil {
+			return nil, err
+		}
+		dead := make(chan struct{})
+		go func() {
+			_, _ = p.Wait()
+			close(dead)
+			exitCh <- p.Pid
+		}()
+		switch supervisor.WaitReady(readyCh, dead, 90*time.Second, nil) {
+		case supervisor.ReadyOK:
+			return p, nil
+		case supervisor.ReadyDied:
+			return nil, fmt.Errorf("worker %d exited before ready", p.Pid)
+		default:
+			return nil, fmt.Errorf("worker %d not ready within budget", p.Pid)
 		}
 	}
 
-	select {
-	case <-ctx.Done():
-		// SIGINT/SIGTERM: bounded shutdown (matches prior behaviour).
-		shutdownCtx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer scancel()
-		_ = srv.Shutdown(shutdownCtx)
-		log.Println("bye")
-	case <-drainCh:
-		// Graceful handoff: drain in-flight streams with no wall-clock
-		// cap. The per-stream idle-write backstop is the only force-kill.
-		log.Printf("graceful: draining (unbounded; idle-write backstop active)")
-		_ = graceful.Drain(srv)
-		log.Printf("graceful: drain complete, exiting")
-		os.Exit(0)
+	// waitExit blocks until the given pid's exit is observed, logging any
+	// other reaped worker exits seen meanwhile.
+	waitExit := func(pid int) {
+		for got := range exitCh {
+			if got == pid {
+				return
+			}
+			log.Printf("supervisor: reaped worker %d", got)
+		}
+	}
+
+	current, err := spawnReady()
+	if err != nil {
+		log.Fatalf("supervisor: initial worker: %v", err)
+	}
+	sup.SetCurrent(current)
+	log.Printf("supervisor: worker pid=%d serving", current.Pid)
+
+	// Now that a worker is serving, tell systemd we are up (Type=notify).
+	// No-op when NOTIFY_SOCKET is unset (launchd / bare process).
+	if sent, err := sdnotify.Ready(); err != nil {
+		log.Printf("sdnotify: readiness notify failed: %v", err)
+	} else if sent {
+		log.Printf("sdnotify: notified systemd ready")
+	}
+
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	usr2 := make(chan os.Signal, 1)
+	signal.Notify(usr2, syscall.SIGUSR2)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	for {
+		select {
+		case <-hup:
+			log.Printf("SIGHUP: worker swap")
+			nw, err := spawnReady()
+			if err != nil {
+				log.Printf("supervisor: swap aborted, keeping worker %d: %v", current.Pid, err)
+				continue
+			}
+			old := current
+			current = nw
+			sup.SetCurrent(nw)
+			log.Printf("supervisor: worker %d serving; draining old worker %d", nw.Pid, old.Pid)
+			if err := sup.Drain(old); err != nil {
+				log.Printf("supervisor: drain worker %d: %v", old.Pid, err)
+			}
+		case <-usr2:
+			log.Printf("SIGUSR2: supervisor self-upgrade (draining worker %d first)", current.Pid)
+			if err := sup.Drain(current); err != nil {
+				log.Printf("supervisor: drain worker %d: %v", current.Pid, err)
+			}
+			waitExit(current.Pid)
+			log.Printf("supervisor: quiescent; re-exec self")
+			if err := sup.SelfReexec(); err != nil {
+				log.Fatalf("supervisor: self-reexec: %v", err)
+			}
+		case s := <-stop:
+			log.Printf("supervisor: %v; draining worker %d then exiting", s, current.Pid)
+			if err := sup.Drain(current); err != nil {
+				log.Printf("supervisor: drain worker %d: %v", current.Pid, err)
+			}
+			waitExit(current.Pid)
+			log.Printf("supervisor: bye")
+			os.Exit(0)
+		case pid := <-exitCh:
+			if pid != current.Pid {
+				log.Printf("supervisor: reaped worker %d", pid)
+				continue
+			}
+			log.Printf("supervisor: serving worker %d died unexpectedly; respawning", pid)
+			nw, err := spawnReady()
+			if err != nil {
+				log.Fatalf("supervisor: respawn failed: %v", err)
+			}
+			current = nw
+			sup.SetCurrent(nw)
+			log.Printf("supervisor: worker pid=%d serving", nw.Pid)
+		}
 	}
 }
+
 
 // runUpdate implements the `poe-acp update` subcommand: download the
 // latest (or pinned) release, verify its sha256, and atomically replace
