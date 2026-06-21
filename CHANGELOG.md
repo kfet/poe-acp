@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-06-21
+
 ### Changed
 
 - **Graceful restart is now a master/worker supervisor shim** (replaces the v0.34.0 two-process re-exec and the v0.35.0 systemd MAINPID handshake). The process the init system tracks is now a tiny **supervisor S** that binds the listen socket once and **never exits during an upgrade**; it forks **worker** processes (detected by `POE_ACP_WORKER_FD`) that recover the inherited listener and run all the relay logic. A `SIGHUP` to S (systemd `ExecReload`, `launchctl kill SIGHUP`, or `POST /admin/reexec`) forks a new worker on the new binary, lets it start accepting, then drains the old worker's in-flight Poe SSE streams to completion before it exits — full drain, zero refusal, **identical and safe on both systemd and launchd**. New `internal/supervisor/` package (transport-generic fd-owning master + worker fork/drain/reap/self-reexec, unix-only); Poe SSE drain semantics stay in `internal/httpsrv`. A rare supervisor self-upgrade (`SIGUSR2` / `?scope=supervisor`) re-execs S in place while quiescent. Each worker holds a parent-liveness pipe to S and exits if S dies, freeing the socket. Design: `docs/graceful-restart-design.md` (rewritten).
