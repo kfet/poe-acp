@@ -3,6 +3,7 @@ package httpsrv
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -70,6 +71,103 @@ func TestHandler_IdleWriteTimeout_CutsWedgedTurn(t *testing.T) {
 	case <-a.returned:
 	case <-time.After(3 * time.Second):
 		t.Fatal("wedged prompt never returned after idle cancel")
+	}
+	<-done
+}
+
+// progressAgent emits a user-visible chunk every `gap` for `count`
+// iterations, then ends the turn. Each chunk resets the idle clock, so a
+// turn whose total runtime far exceeds IdleWriteTimeout must NOT be cut as
+// long as output keeps flowing. Models a long, actively-working turn.
+type progressAgent struct {
+	*fakeAgent
+	gap       time.Duration
+	count     int
+	completed chan struct{} // closed iff the turn ran to completion (never cancelled)
+	once      sync.Once
+}
+
+func (a *progressAgent) Prompt(ctx context.Context, sid acp.SessionId, _ []acp.ContentBlock) (acp.StopReason, error) {
+	a.fakeAgent.mu.Lock()
+	sink := a.fakeAgent.sinks[sid]
+	a.fakeAgent.mu.Unlock()
+	for i := 0; i < a.count; i++ {
+		select {
+		case <-ctx.Done():
+			return acp.StopReasonCancelled, ctx.Err()
+		case <-time.After(a.gap):
+		}
+		_ = sink.OnUpdate(context.Background(), acp.SessionNotification{
+			SessionId: sid,
+			Update: acp.SessionUpdate{
+				AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+					Content: acp.TextBlock("tick\n"),
+				},
+			},
+		})
+	}
+	a.once.Do(func() { close(a.completed) })
+	return acp.StopReasonEndTurn, nil
+}
+
+// TestHandler_NoTurnCeiling_ProgressKeepsTurnAlive locks the contract that
+// with TurnTimeout==0 (no absolute ceiling) a turn producing periodic
+// output survives well past IdleWriteTimeout — the progress-resetting idle
+// backstop is the sole guard and never fires while output flows.
+func TestHandler_NoTurnCeiling_ProgressKeepsTurnAlive(t *testing.T) {
+	a := &progressAgent{
+		fakeAgent: &fakeAgent{},
+		gap:       20 * time.Millisecond,
+		count:     12, // ~240ms total, far beyond the 50ms idle window
+		completed: make(chan struct{}),
+	}
+	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No TurnTimeout (0 => unbounded). Short idle window: each emitted
+	// chunk must reset it, so the wedge backstop must NOT fire.
+	h := New(Config{Router: rtr, IdleWriteTimeout: 50 * time.Millisecond})
+
+	idleFired := make(chan struct{})
+	old := idleWriteCancelHook
+	idleWriteCancelHook = func() { close(idleFired) }
+	defer func() { idleWriteCancelHook = old }()
+
+	body := mustJSON(map[string]any{
+		"type": "query", "conversation_id": "c-progress",
+		"query": []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(body))
+		resp, derr := http.DefaultClient.Do(req)
+		if derr == nil {
+			// Drain the SSE stream: a real Poe client keeps the
+			// connection open and reads, so emitted chunks land and
+			// reset the idle clock. Closing early would disconnect and
+			// wrongly trip the wedge backstop.
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+
+	select {
+	case <-a.completed:
+	case <-idleFired:
+		t.Fatal("idle-write backstop cut an actively-progressing turn")
+	case <-time.After(5 * time.Second):
+		t.Fatal("progressing turn never completed")
+	}
+	// Ensure the idle hook did not also fire in a late race.
+	select {
+	case <-idleFired:
+		t.Fatal("idle-write backstop fired despite continuous progress")
+	default:
 	}
 	<-done
 }

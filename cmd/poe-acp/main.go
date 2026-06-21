@@ -71,7 +71,7 @@ func main() {
 		sessCreateTO    = flag.Duration("session-create-timeout", 60*time.Second, "Bounds session acquisition (list/resume/new); decoupled from the request ctx so a flaky first request still warms the session")
 		gcEvery         = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
 		heartbeat       = flag.Duration("heartbeat-interval", 1500*time.Millisecond, "SSE heartbeat / spinner tick interval (0 to disable)")
-		turnTimeout     = flag.Duration("turn-timeout", 5*time.Minute, "Bounds a prompt turn run on a context decoupled from the request ctx; a pre-output transport drop lets the turn finish so its answer can be buffered for the redrive")
+		turnTimeout     = flag.Duration("turn-timeout", 0, "OPTIONAL absolute wall-clock ceiling on a single prompt turn. 0 (default) = no ceiling: an actively-progressing turn is NEVER cut, and only -idle-write-timeout (progress-resetting) can cancel a wedged turn. Set >0 only if you deliberately want a hard upper bound regardless of progress")
 		idleWriteTO     = flag.Duration("idle-write-timeout", 2*time.Minute, "Per-stream wedged-turn backstop: cancel a turn that writes no agent output within this window (heartbeat keepalives do not reset it). The only force-kill path during a graceful drain")
 		answerTTL       = flag.Duration("answer-ttl", 2*time.Minute, "How long a buffered (absorbed) turn answer is held for a redrive before discard")
 		allowAtt        = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
