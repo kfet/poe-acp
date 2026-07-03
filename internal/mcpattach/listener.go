@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// Listener accepts connections from mcp-attach redirector subprocesses
+// Listener accepts connections from mcp-serve redirector subprocesses
 // over a unix socket. Each connection opens with a newline-terminated
 // preamble line {"token":"<tok>"}; the token is resolved to a
 // conversation id (server-side, unspoofable) and the MCP loop is then
@@ -16,23 +16,24 @@ import (
 type Listener struct {
 	path    string
 	resolve func(token string) (conv string, ok bool)
-	fn      AttachFunc
+	attach  AttachFunc
+	suggest SuggestFunc
 	ln      net.Listener
 	wg      sync.WaitGroup
 }
 
 // Listen creates the unix socket at path (replacing any stale one),
 // tightens it to 0600, and starts accepting. resolve maps a preamble
-// token to its conversation; fn performs the actual attach. Call Close
-// to stop and remove the socket.
-func Listen(path string, resolve func(token string) (conv string, ok bool), fn AttachFunc) (*Listener, error) {
+// token to its conversation; attach and suggest perform the actual tool
+// actions. Call Close to stop and remove the socket.
+func Listen(path string, resolve func(token string) (conv string, ok bool), attach AttachFunc, suggest SuggestFunc) (*Listener, error) {
 	_ = os.Remove(path) // clear stale socket from a prior run
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return nil, err
 	}
 	mustChmod(path)
-	l := &Listener{path: path, resolve: resolve, fn: fn, ln: ln}
+	l := &Listener{path: path, resolve: resolve, attach: attach, suggest: suggest, ln: ln}
 	l.wg.Add(1)
 	go l.serve()
 	return l, nil
@@ -73,10 +74,15 @@ func (l *Listener) handle(c net.Conn) {
 	if !ok {
 		return // unknown token
 	}
-	bound := func(path, name string, inline bool) error {
-		return l.fn(conv, path, name, inline)
+	h := Handlers{
+		Attach: func(path, name string, inline bool) error {
+			return l.attach(conv, path, name, inline)
+		},
+		Suggest: func(replies []string) error {
+			return l.suggest(conv, replies)
+		},
 	}
-	_ = RunMCP(br, c, bound)
+	_ = RunMCP(br, c, h)
 }
 
 // Path returns the socket path.
