@@ -1120,6 +1120,18 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 				return
 			}
 		}
+		// Client-driven cancellation: Poe dropped the bot-facing HTTP
+		// connection mid-turn (the chronic cold-start redrive race), which
+		// cancels req.ctx and surfaces here as context.Canceled — often
+		// wrapped by the agent as JSON-RPC -32800 "Request cancelled". The
+		// client has abandoned this attempt; Poe’s redrive carries the real
+		// answer. Emitting event:error here is exactly what Poe renders as the
+		// spurious "first response failed", so finalise quietly instead.
+		if ctx.Err() != nil {
+			_ = sink.Done()
+			req.err = err
+			return
+		}
 		_ = sink.Error(fmt.Sprintf("acp prompt: %v", err), "user_caused_error")
 		_ = sink.Done()
 		req.err = err
