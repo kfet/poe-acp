@@ -215,6 +215,7 @@ type captureSink struct {
 	errType     string
 	replaceText string
 	files       []capturedFile
+	replies     []string
 	done        bool
 	firstCalled bool
 	// dev.acp-kit.status-line/v1 — last values seen.
@@ -246,6 +247,12 @@ type capturedFile struct{ url, ct, name, ref string }
 func (s *captureSink) File(url, ct, name, ref string) error {
 	s.mu.Lock()
 	s.files = append(s.files, capturedFile{url, ct, name, ref})
+	s.mu.Unlock()
+	return nil
+}
+func (s *captureSink) SuggestedReply(text string) error {
+	s.mu.Lock()
+	s.replies = append(s.replies, text)
 	s.mu.Unlock()
 	return nil
 }
@@ -1827,3 +1834,5 @@ func (s *recordingEmojiSink) Text(t string) error {
 	s.mu.Unlock()
 	return s.captureSink.Text(t)
 }
+
+func (s *eventSink) SuggestedReply(string) error { return nil }
