@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-07-03
+
+### Added
+
+- **Suggested-reply chips — the agent can now post tappable follow-ups (e.g. Yes / No / Tell me more) under its reply.** The self-hosted MCP server (renamed `poe`, since it is now a generic path for pushing things into the live Poe reply) gains a second tool, `suggest(replies)`, alongside `attach`. On call it rides the same token-authenticated unix-socket → active-turn plumbing as attachments and emits Poe `suggested_reply` events on the in-flight turn; tapping a chip sends that exact text as the user's next message. `router.SuggestActive` trims/drops empty replies and caps them (≤5 chips, ≤64 runes each). Agent guidance lives in the tool description (2–4 short chips, once, right before finishing) — no skill needed. Buffered turns replay chips on redrive. The tool is exposed only when the MCP server is enabled.
+
+### Changed
+
+- **The self-hosted MCP feature is now enabled per-bot via config `poe_mcp: true`** (in `config.json`) instead of only the `--enable-mcp-attach` CLI flag, which is retained as a deprecated alias (effective = flag OR config). The MCP server advertised to the agent is renamed `poe-attach` → `poe` (tools `mcp__poe__attach`, `mcp__poe__suggest`); the spawned subcommand `mcp-attach` → `mcp-serve` (old name still accepted); `serverInfo.name` → `poe-acp`; socket file → `mcp.sock`. Existing flag-based deployments keep working unchanged.
+
+### Fixed
+
+- **No spurious "first response failed" when Poe drops the bot connection mid-turn.** On a cold-start turn Poe frequently opens the bot HTTP connection, then abandons it ~10–15ms in and redrives (an upstream race we cannot stop). On the abandoned attempt the request context is cancelled and `Agent.Prompt` returns `context.Canceled` — often wrapped by the agent as JSON-RPC `-32800` "Request cancelled". `router.runOneTurn` was translating that into a user-facing `event: error` (`user_caused_error`), which Poe rendered to the user as a failed first response before the redrive silently delivered the real answer ("fails then works"). The error emit is now guarded by `ctx.Err()!=nil`: on client-driven cancellation the turn is finalised quietly (`Done` only) and the redrive carries the answer cleanly. Explicit user cancellation is unaffected (it flows through `Agent.Cancel` → `StopReasonCancelled` → `_(cancelled)_`, a different path), and genuine agent-side errors — which occur without a cancelled request context — still surface as before. Adds `TestRouter_ClientCancelSuppressesErrorEvent` (verified to fail without the guard).
+
 ## [0.37.0] - 2026-06-22
 
 ### Changed
