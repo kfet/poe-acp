@@ -386,6 +386,14 @@ func (s *SSEWriter) File(url, contentType, name, inlineRef string) error {
 	})
 }
 
+// SuggestedReply emits a Poe `suggested_reply` event: one tappable
+// follow-up chip rendered under the bot's message. text is sent verbatim
+// as the user's next message if the chip is tapped. Emit these on the
+// turn they belong to, before Done — Poe collects them for the turn.
+func (s *SSEWriter) SuggestedReply(text string) error {
+	return s.event("suggested_reply", map[string]any{"text": text})
+}
+
 // Error emits an error event.
 func (s *SSEWriter) Error(text, errorType string) error {
 	data := map[string]any{"allow_retry": true, "text": text}
