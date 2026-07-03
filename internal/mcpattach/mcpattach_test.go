@@ -555,3 +555,12 @@ func TestListener_SuggestThroughMCP(t *testing.T) {
 		t.Fatalf("suggest not routed: conv=%q replies=%v", gotConv, gotReplies)
 	}
 }
+
+func TestMCP_Attach_BadArgs(t *testing.T) {
+	r := driveMCP(t, noopAttach,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"attach","arguments":{"path":123}}}`,
+	)
+	if r[0]["result"].(map[string]any)["isError"] != true {
+		t.Fatal("want isError on bad attach args")
+	}
+}
