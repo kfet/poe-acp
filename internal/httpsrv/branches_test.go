@@ -1167,3 +1167,26 @@ func TestSink_File(t *testing.T) {
 		t.Fatalf("File after done: %v", err)
 	}
 }
+
+func TestSink_SuggestedReply(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, err := poeproto.NewSSEWriter(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Meta(); err != nil {
+		t.Fatal(err)
+	}
+	s := newSink(w, 0)
+	if err := s.SuggestedReply("Yes"); err != nil {
+		t.Fatalf("SuggestedReply: %v", err)
+	}
+	if !strings.Contains(rec.Body.String(), "event: suggested_reply") {
+		t.Fatalf("want suggested_reply event, got %q", rec.Body.String())
+	}
+	// After Done the gate is closed → no-op, no error.
+	_ = s.Done()
+	if err := s.SuggestedReply("No"); err != nil {
+		t.Fatalf("SuggestedReply after done: %v", err)
+	}
+}

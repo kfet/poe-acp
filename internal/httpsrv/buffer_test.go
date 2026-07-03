@@ -11,6 +11,7 @@ type recordSink struct {
 	texts    []string
 	replaces []string
 	files    [][4]string
+	suggests []string
 	errs     [][2]string
 	done     int
 	first    int
@@ -22,6 +23,10 @@ func (r *recordSink) Text(s string) error    { r.texts = append(r.texts, s); ret
 func (r *recordSink) Replace(s string) error { r.replaces = append(r.replaces, s); return nil }
 func (r *recordSink) File(u, c, n, i string) error {
 	r.files = append(r.files, [4]string{u, c, n, i})
+	return nil
+}
+func (r *recordSink) SuggestedReply(t string) error {
+	r.suggests = append(r.suggests, t)
 	return nil
 }
 func (r *recordSink) Error(t, e string) error { r.errs = append(r.errs, [2]string{t, e}); return nil }
@@ -177,5 +182,21 @@ func TestAnswerBuffer_PutOverwriteKeepsCap(t *testing.T) {
 	got, ok := b.take("k")
 	if !ok || got[0].s1 != "2" {
 		t.Fatalf("overwrite failed: %v ok=%v", got, ok)
+	}
+}
+
+func TestAnswerRecorder_Suggest(t *testing.T) {
+	inner := &recordSink{}
+	rec := &answerRecorder{inner: inner}
+	if err := rec.SuggestedReply("Yes"); err != nil {
+		t.Fatal(err)
+	}
+	if len(inner.suggests) != 1 || inner.suggests[0] != "Yes" {
+		t.Fatalf("inner suggests=%v", inner.suggests)
+	}
+	out := &recordSink{}
+	replay(rec.snapshot(), out)
+	if len(out.suggests) != 1 || out.suggests[0] != "Yes" {
+		t.Fatalf("replay suggests=%v", out.suggests)
 	}
 }
