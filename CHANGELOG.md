@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-07-03
+
+### Added
+
+- **Suggested-reply chips — the agent can now post tappable follow-ups (e.g. Yes / No / Tell me more) under its reply.** The self-hosted MCP server (renamed `poe`, since it is now a generic path for pushing things into the live Poe reply) gains a second tool, `suggest(replies)`, alongside `attach`. On call it rides the same token-authenticated unix-socket → active-turn plumbing as attachments and emits Poe `suggested_reply` events on the in-flight turn; tapping a chip sends that exact text as the user's next message. `router.SuggestActive` trims/drops empty replies and caps them (≤5 chips, ≤64 runes each). Agent guidance lives in the tool description (2–4 short chips, once, right before finishing) — no skill needed. Buffered turns replay chips on redrive. The tool is exposed only when the MCP server is enabled.
+
+### Changed
+
+- **The self-hosted MCP feature is now enabled per-bot via config `poe_mcp: true`** (in `config.json`) instead of only the `--enable-mcp-attach` CLI flag, which is retained as a deprecated alias (effective = flag OR config). The MCP server advertised to the agent is renamed `poe-attach` → `poe` (tools `mcp__poe__attach`, `mcp__poe__suggest`); the spawned subcommand `mcp-attach` → `mcp-serve` (old name still accepted); `serverInfo.name` → `poe-acp`; socket file → `mcp.sock`. Existing flag-based deployments keep working unchanged.
+
 ## [0.37.0] - 2026-06-22
 
 ### Changed
