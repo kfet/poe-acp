@@ -1827,3 +1827,39 @@ func (s *recordingEmojiSink) Text(t string) error {
 	s.mu.Unlock()
 	return s.captureSink.Text(t)
 }
+
+// TestRouter_ClientCancelSuppressesErrorEvent guards the chronic
+// "first response failed" symptom: when Poe drops the bot-facing HTTP
+// connection mid-turn, the request context is cancelled and Agent.Prompt
+// returns context.Canceled. The relay must NOT translate that into a
+// user-facing event:error (which Poe renders as a failed first response);
+// it must finalise quietly and let Poe's redrive carry the real answer.
+func TestRouter_ClientCancelSuppressesErrorEvent(t *testing.T) {
+	var cancel context.CancelFunc
+	agent := newFakeAgent(func(_ context.Context, _ *fakeAgent, _ acp.SessionId, _ string) (acp.StopReason, error) {
+		// Simulate the client (Poe) dropping the connection mid-turn:
+		// cancel the request context, then surface context.Canceled.
+		cancel()
+		return acp.StopReasonEndTurn, context.Canceled
+	})
+	dir := t.TempDir()
+	r, err := New(Config{Agent: agent, StateDir: dir, SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var ctx context.Context
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	turns := []Turn{{Role: "user", MessageID: "m1", Content: "hello"}}
+	sink := &captureSink{}
+	perr := r.Prompt(ctx, "conv-client-cancel", "u", turns, Options{}, sink)
+	if perr == nil {
+		t.Fatal("Prompt: want the underlying error, got nil")
+	}
+	if sink.errText != "" || sink.errType != "" {
+		t.Fatalf("client-cancel must not emit event:error; got errText=%q errType=%q", sink.errText, sink.errType)
+	}
+	if !sink.done {
+		t.Fatal("sink.Done must still be called on client-cancel")
+	}
+}
