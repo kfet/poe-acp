@@ -1,10 +1,12 @@
-// Package mcpattach implements a self-hosted MCP server that exposes a
-// single `attach` tool to the ACP agent, plus the unix-socket transport
-// back to the main poe-acp process that performs the actual Poe upload +
-// `file` SSE event.
+// Package mcpattach implements a self-hosted MCP server (advertised to
+// the agent as the `poe` server) that exposes tools for pushing things
+// into the live Poe reply — today `attach` (deliver a host file as a Poe
+// attachment) and `suggest` (post tappable follow-up reply chips) — plus
+// the unix-socket transport back to the main poe-acp process that
+// performs the actual Poe SSE emit.
 //
 // Transport design (deliberately minimal, stdlib-only, no MCP SDK):
-//   - The agent (fir) spawns `poe-acp mcp-attach` over MCP **stdio**
+//   - The agent (fir) spawns `poe-acp mcp-serve` over MCP **stdio**
 //     (newline-delimited JSON-RPC 2.0). Stdio needs no port and no
 //     capability negotiation, so it works on every deployment.
 //   - That subprocess is a **dumb redirector**: it dials the main
@@ -28,8 +30,11 @@ import (
 	"sync"
 )
 
-// ToolName is the single MCP tool exposed to the agent.
-const ToolName = "attach"
+// Tool names exposed to the agent by the self-hosted `poe` MCP server.
+const (
+	ToolAttach  = "attach"
+	ToolSuggest = "suggest"
+)
 
 // EnvToken / EnvSocket are the env vars the main process sets on the
 // spawned subprocess (via the ACP McpServerStdio.Env), so no secrets
@@ -45,6 +50,12 @@ const (
 // it cannot be spoofed by the client. Returns an error to surface back
 // to the agent's tool call.
 type AttachFunc func(conv, path, name string, inline bool) error
+
+// SuggestFunc posts tappable follow-up reply chips for one validated
+// tool call. conv is resolved server-side from the connection's preamble
+// token, so it cannot be spoofed. Returns an error to surface back to the
+// agent's tool call.
+type SuggestFunc func(conv string, replies []string) error
 
 // Registry maps per-session tokens to conversation ids. The main process
 // mints a fresh token for each ACP session (one per MCPServersForSession

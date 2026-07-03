@@ -51,6 +51,13 @@ type Config struct {
 	// also suppresses the router's transport-contract clause. Use
 	// only if you have a reason to want raw, unguided agent output.
 	DisableSystemPrompt bool `json:"disable_system_prompt,omitempty"`
+
+	// PoeMCP enables the self-hosted `poe` MCP server exposed to the
+	// agent (tools: attach, suggest) — the per-bot, config-file way to
+	// turn the feature on without touching the CLI flags. Effective
+	// enablement is this OR the --enable-mcp-attach flag (kept as a
+	// deprecated alias), so existing flag-based deployments keep working.
+	PoeMCP bool `json:"poe_mcp,omitempty"`
 }
 
 // Defaults pins per-conversation parameter defaults independently of
