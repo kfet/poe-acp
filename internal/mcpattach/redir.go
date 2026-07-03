@@ -8,14 +8,14 @@ import (
 	"os"
 )
 
-// RunFromEnv is the entry point for the `mcp-attach` subcommand: a dumb
+// RunFromEnv is the entry point for the `mcp-serve` subcommand: a dumb
 // redirector. It reads the socket path + token from the env the parent
 // set, dials the socket, writes the preamble, and pipes stdin↔socket.
 func RunFromEnv() error {
 	socket := os.Getenv(EnvSocket)
 	token := os.Getenv(EnvToken)
 	if socket == "" {
-		return fmt.Errorf("mcp-attach: %s not set", EnvSocket)
+		return fmt.Errorf("mcp-serve: %s not set", EnvSocket)
 	}
 	return redirect(socket, token, os.Stdin, os.Stdout)
 }

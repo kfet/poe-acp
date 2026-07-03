@@ -519,6 +519,19 @@ func (o *orderedWriter) userFile(url, contentType, name, inlineRef string) error
 	return o.w.File(url, contentType, name, inlineRef)
 }
 
+// userSuggestedReply emits a `suggested_reply` chip event. Unlike
+// userFile it is turn metadata, not body content, so it does NOT clear
+// the spinner or arm realWritten — chips ride alongside the real reply
+// (which handles spinner state), and Done finalises the turn.
+func (o *orderedWriter) userSuggestedReply(text string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil
+	}
+	return o.w.SuggestedReply(text)
+}
+
 // clearSpinnerLocked drops a visible spinner frame ahead of a user
 // write. Caller must hold o.mu. Errors are swallowed; see userText.
 func (o *orderedWriter) clearSpinnerLocked() {
@@ -695,6 +708,11 @@ func (s *sink) File(url, contentType, name, inlineRef string) error {
 	s.touch()
 	s.stop()
 	return s.o.userFile(url, contentType, name, inlineRef)
+}
+
+func (s *sink) SuggestedReply(text string) error {
+	s.touch()
+	return s.o.userSuggestedReply(text)
 }
 
 // SetProviderEmoji records the relay-resolved provider emoji for the

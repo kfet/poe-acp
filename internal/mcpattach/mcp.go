@@ -24,16 +24,22 @@ type rpcError struct {
 
 const mcpProtocolVersion = "2025-06-18"
 
-// boundAttach is an AttachFunc with its conversation already bound (from
-// the connection's preamble token), so the MCP loop only supplies the
-// per-call path/name/inline.
-type boundAttach func(path, name string, inline bool) error
+// Handlers carries the per-connection tool implementations, each with
+// its conversation already bound (from the connection's preamble token),
+// so the MCP loop only supplies the per-call arguments. Both fields must
+// be non-nil.
+type Handlers struct {
+	// Attach delivers a host file to the user as a Poe attachment.
+	Attach func(path, name string, inline bool) error
+	// Suggest posts tappable follow-up reply chips on the live turn.
+	Suggest func(replies []string) error
+}
 
-// RunMCP runs the MCP server loop over r/w until r hits EOF. attach is
-// invoked in-process for each tools/call. If r is already a *bufio.Reader
-// it is reused so no bytes buffered ahead (e.g. after a preamble read)
-// are lost.
-func RunMCP(r io.Reader, w io.Writer, attach boundAttach) error {
+// RunMCP runs the MCP server loop over r/w until r hits EOF. The handler
+// funcs in h are invoked in-process for each tools/call. If r is already
+// a *bufio.Reader it is reused so no bytes buffered ahead (e.g. after a
+// preamble read) are lost.
+func RunMCP(r io.Reader, w io.Writer, h Handlers) error {
 	br, ok := r.(*bufio.Reader)
 	if !ok {
 		br = bufio.NewReaderSize(r, 1<<20)
@@ -42,7 +48,7 @@ func RunMCP(r io.Reader, w io.Writer, attach boundAttach) error {
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
-			if rerr := handleLine(line, enc, attach); rerr != nil {
+			if rerr := handleLine(line, enc, h); rerr != nil {
 				return rerr
 			}
 		}
@@ -55,7 +61,7 @@ func RunMCP(r io.Reader, w io.Writer, attach boundAttach) error {
 	}
 }
 
-func handleLine(line []byte, enc *json.Encoder, attach boundAttach) error {
+func handleLine(line []byte, enc *json.Encoder, h Handlers) error {
 	var msg rpcMessage
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return nil // ignore non-JSON / blank lines
@@ -69,12 +75,12 @@ func handleLine(line []byte, enc *json.Encoder, attach boundAttach) error {
 		resp.Result = map[string]any{
 			"protocolVersion": mcpProtocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "poe-acp-attach", "version": "1"},
+			"serverInfo":      map[string]any{"name": "poe-acp", "version": "1"},
 		}
 	case "tools/list":
-		resp.Result = map[string]any{"tools": []any{toolSpec()}}
+		resp.Result = map[string]any{"tools": toolSpecs()}
 	case "tools/call":
-		resp.Result = handleToolCall(msg.Params, attach)
+		resp.Result = handleToolCall(msg.Params, h)
 	case "ping":
 		resp.Result = map[string]any{}
 	default:
@@ -83,9 +89,14 @@ func handleLine(line []byte, enc *json.Encoder, attach boundAttach) error {
 	return enc.Encode(&resp)
 }
 
-func toolSpec() map[string]any {
+// toolSpecs returns the JSON-RPC tool specs advertised to the agent.
+func toolSpecs() []any {
+	return []any{attachSpec(), suggestSpec()}
+}
+
+func attachSpec() map[string]any {
 	return map[string]any{
-		"name": ToolName,
+		"name": ToolAttach,
 		"description": "Deliver a file from this host to the user as a chat attachment " +
 			"(download chip, or inline image). Use instead of pasting large content or links.",
 		"inputSchema": map[string]any{
@@ -100,33 +111,84 @@ func toolSpec() map[string]any {
 	}
 }
 
-func handleToolCall(params json.RawMessage, attach boundAttach) map[string]any {
+func suggestSpec() map[string]any {
+	return map[string]any{
+		"name": ToolSuggest,
+		"description": "Offer the user 2-4 tappable follow-up reply chips at a genuine " +
+			"decision point (e.g. Yes / No / Tell me more). Each reply is the exact text " +
+			"sent as the user's next message if tapped, so keep them short (a few words). " +
+			"Call at most once per turn, right before you finish your reply. Omit when there " +
+			"is no natural next choice.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"replies": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "2-4 short reply options, each shown as a chip.",
+				},
+			},
+			"required": []string{"replies"},
+		},
+	}
+}
+
+func handleToolCall(params json.RawMessage, h Handlers) map[string]any {
 	var p struct {
-		Name      string `json:"name"`
-		Arguments struct {
-			Path   string `json:"path"`
-			Name   string `json:"name"`
-			Inline bool   `json:"inline"`
-		} `json:"arguments"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return toolError("invalid params: " + err.Error())
 	}
-	if p.Name != ToolName {
+	switch p.Name {
+	case ToolAttach:
+		return handleAttach(p.Arguments, h.Attach)
+	case ToolSuggest:
+		return handleSuggest(p.Arguments, h.Suggest)
+	default:
 		return toolError("unknown tool: " + p.Name)
 	}
-	if p.Arguments.Path == "" {
+}
+
+func handleAttach(args json.RawMessage, attach func(path, name string, inline bool) error) map[string]any {
+	var a struct {
+		Path   string `json:"path"`
+		Name   string `json:"name"`
+		Inline bool   `json:"inline"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return toolError("invalid params: " + err.Error())
+	}
+	if a.Path == "" {
 		return toolError("path is required")
 	}
-	if err := attach(p.Arguments.Path, p.Arguments.Name, p.Arguments.Inline); err != nil {
+	if err := attach(a.Path, a.Name, a.Inline); err != nil {
 		return toolError("attach failed: " + err.Error())
 	}
-	disp := p.Arguments.Name
+	disp := a.Name
 	if disp == "" {
-		disp = p.Arguments.Path
+		disp = a.Path
 	}
+	return okText("Attached " + disp + " to the chat.")
+}
+
+func handleSuggest(args json.RawMessage, suggest func(replies []string) error) map[string]any {
+	var a struct {
+		Replies []string `json:"replies"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return toolError("invalid params: " + err.Error())
+	}
+	if err := suggest(a.Replies); err != nil {
+		return toolError("suggest failed: " + err.Error())
+	}
+	return okText("Suggested replies posted.")
+}
+
+func okText(text string) map[string]any {
 	return map[string]any{
-		"content": []any{map[string]any{"type": "text", "text": "Attached " + disp + " to the chat."}},
+		"content": []any{map[string]any{"type": "text", "text": text}},
 	}
 }
 

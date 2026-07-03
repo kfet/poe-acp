@@ -46,13 +46,14 @@ func main() {
 		os.Exit(runUpdate(os.Args[2:]))
 	}
 
-	// `mcp-attach` is the self-hosted stdio MCP server the agent spawns
-	// (configured via per-session McpServerStdio). It exposes one
-	// `attach` tool and relays calls back to this process over a unix
-	// socket. Reads its config from the env the parent set.
-	if len(os.Args) > 1 && os.Args[1] == "mcp-attach" {
+	// `mcp-serve` is the self-hosted stdio MCP server the agent spawns
+	// (configured via per-session McpServerStdio). It exposes the `poe`
+	// server's tools (attach, suggest) and relays calls back to this
+	// process over a unix socket. Reads its config from the env the
+	// parent set. `mcp-attach` is accepted as a legacy alias.
+	if len(os.Args) > 1 && (os.Args[1] == "mcp-serve" || os.Args[1] == "mcp-attach") {
 		if err := mcpattach.RunFromEnv(); err != nil {
-			fmt.Fprintln(os.Stderr, "mcp-attach:", err)
+			fmt.Fprintln(os.Stderr, "mcp-serve:", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -78,7 +79,7 @@ func main() {
 		showVersion     = flag.Bool("version", false, "Print version and exit")
 		debugFlag       = flag.Bool("debug", false, "Enable verbose debug logging (also via POEACP_DEBUG=1)")
 		printCatalog    = flag.Bool("print-catalog", false, "Build the merged skills catalog and print it to stdout, then exit")
-		enableMCPAttach = flag.Bool("enable-mcp-attach", false, "Expose a self-hosted MCP `attach` tool to the agent (deliver files to the user as Poe attachments)")
+		enableMCPAttach = flag.Bool("enable-mcp-attach", false, "Deprecated alias for the config `poe_mcp` knob: expose the self-hosted `poe` MCP server (attach + suggest tools) to the agent. Prefer setting poe_mcp:true in config.json")
 	)
 	flag.Parse()
 
@@ -176,9 +177,12 @@ func main() {
 	if *agentDirFlag != "" {
 		env = appendEnv(env, "FIR_AGENT_DIR="+*agentDirFlag)
 	}
+	// Effective MCP enablement: config `poe_mcp` OR the deprecated
+	// --enable-mcp-attach flag. Per-bot config is the preferred surface.
+	mcpEnabled := *enableMCPAttach || cfg.PoeMCP
 	var mcpSocket, mcpDir string
 	var mcpReg *mcpattach.Registry
-	if *enableMCPAttach {
+	if mcpEnabled {
 		mcpReg = mcpattach.NewRegistry()
 		base := os.Getenv("XDG_RUNTIME_DIR")
 		if base == "" {
@@ -188,15 +192,15 @@ func main() {
 		// reach the socket; the socket file itself is further chmod'd 0600.
 		d, derr := os.MkdirTemp(base, "poe-acp-mcp-")
 		if derr != nil {
-			log.Fatalf("enable-mcp-attach: create socket dir: %v", derr)
+			log.Fatalf("poe-mcp: create socket dir: %v", derr)
 		}
 		mcpDir = d
 		defer os.RemoveAll(mcpDir)
-		mcpSocket = filepath.Join(mcpDir, "attach.sock")
+		mcpSocket = filepath.Join(mcpDir, "mcp.sock")
 	}
 	selfExe, exeErr := os.Executable()
-	if *enableMCPAttach && exeErr != nil {
-		log.Fatalf("enable-mcp-attach: cannot resolve own executable: %v", exeErr)
+	if mcpEnabled && exeErr != nil {
+		log.Fatalf("poe-mcp: cannot resolve own executable: %v", exeErr)
 	}
 	clientCfg := client.Config{
 		Command: argv,
@@ -209,16 +213,16 @@ func main() {
 			statusline.ExtensionID: map[string]any{"version": 1},
 		},
 	}
-	if *enableMCPAttach {
+	if mcpEnabled {
 		clientCfg.MCPServersForSession = func(cwd string) []acp.McpServer {
 			// Mint a fresh per-session token bound to this conversation.
 			// The conv is derived server-side from the token; it is never
 			// sent by the client, so it cannot be spoofed.
 			tok := mcpReg.Register(filepath.Base(cwd))
 			return []acp.McpServer{{Stdio: &acp.McpServerStdio{
-				Name:    "poe-attach",
+				Name:    "poe",
 				Command: selfExe,
-				Args:    []string{"mcp-attach"},
+				Args:    []string{"mcp-serve"},
 				Env: []acp.EnvVariable{
 					{Name: mcpattach.EnvSocket, Value: mcpSocket},
 					{Name: mcpattach.EnvToken, Value: tok},
@@ -272,7 +276,7 @@ func main() {
 		AgentCmd:             *agentCmd,
 		StartTime:            time.Now(),
 		AccessKey:            secret,
-		MCPAttachEnabled:     *enableMCPAttach,
+		MCPAttachEnabled:     mcpEnabled,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
@@ -281,18 +285,23 @@ func main() {
 	stopGC := rtr.RunGC(ctx, *gcEvery)
 	defer stopGC()
 
-	// MCP attach: start the unix-socket listener that the self-hosted
-	// `mcp-attach` subprocess relays to. Must be up before any session
+	// MCP server: start the unix-socket listener that the self-hosted
+	// `mcp-serve` subprocess relays to. Must be up before any session
 	// is created (i.e. before serving). Token-authenticated.
-	if *enableMCPAttach {
-		ln, lerr := mcpattach.Listen(mcpSocket, mcpReg.Resolve, func(conv, path, name string, inline bool) error {
-			return rtr.AttachActive(conv, path, name, inline)
-		})
+	if mcpEnabled {
+		ln, lerr := mcpattach.Listen(mcpSocket, mcpReg.Resolve,
+			func(conv, path, name string, inline bool) error {
+				return rtr.AttachActive(conv, path, name, inline)
+			},
+			func(conv string, replies []string) error {
+				return rtr.SuggestActive(conv, replies)
+			},
+		)
 		if lerr != nil {
-			log.Fatalf("mcp-attach listener: %v", lerr)
+			log.Fatalf("mcp-serve listener: %v", lerr)
 		}
 		defer ln.Close()
-		log.Printf("mcp-attach: listening on %s", mcpSocket)
+		log.Printf("mcp-serve: listening on %s", mcpSocket)
 	}
 
 	// HTTP

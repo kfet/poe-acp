@@ -43,6 +43,11 @@ type ChunkSink interface {
 	// contentType the MIME type; a non-empty inlineRef makes Poe render
 	// the attachment inline when the markdown references ![..][inlineRef].
 	File(url, contentType, name, inlineRef string) error
+	// SuggestedReply advertises one tappable follow-up chip (Poe
+	// `suggested_reply` event). text is sent verbatim as the user's
+	// next message if tapped. Called zero or more times during a turn,
+	// before Done.
+	SuggestedReply(text string) error
 	Error(text, errorType string) error
 	Done() error
 	// FirstChunk is called by the router once, the first time the sink
@@ -1002,6 +1007,10 @@ func (d discardSink) Error(text, et string) error {
 }
 func (d discardSink) File(url, ct, name, ref string) error {
 	kitlog.Debugf("reaction sink (conv=%s) file: %s (%s)", d.convID, name, url)
+	return nil
+}
+func (d discardSink) SuggestedReply(text string) error {
+	kitlog.Debugf("reaction sink (conv=%s) suggest: %q", d.convID, text)
 	return nil
 }
 func (d discardSink) Done() error              { return nil }
@@ -2386,4 +2395,59 @@ func (r *Router) AttachActive(convID, path, name string, inline bool) error {
 	}
 	kitlog.Debugf("mcp attach delivered %s (%s) inline=%v conv=%s", name, res.URL, inline, convID)
 	return nil
+}
+
+// maxSuggestedReplies caps how many chips one suggest call may post, and
+// maxSuggestedReplyRunes caps each chip's length. Chips must stay short
+// to render on mobile; over-long or over-many are trimmed/dropped rather
+// than rejected.
+const (
+	maxSuggestedReplies    = 5
+	maxSuggestedReplyRunes = 64
+)
+
+// SuggestActive posts tappable follow-up reply chips on the named
+// conversation's in-flight turn (Poe `suggested_reply` events). Called
+// by the MCP `suggest` tool relay (a different goroutine than the turn
+// runner). Empty/whitespace replies are dropped, each is length-capped,
+// and the list is capped to maxSuggestedReplies. Returns an error when
+// there is no live turn or nothing usable remains.
+func (r *Router) SuggestActive(convID string, replies []string) error {
+	r.activeMu.Lock()
+	at, ok := r.active[convID]
+	r.activeMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no active turn for conversation %s", convID)
+	}
+	cleaned := cleanReplies(replies)
+	if len(cleaned) == 0 {
+		return fmt.Errorf("no usable replies")
+	}
+	for _, t := range cleaned {
+		if err := at.sink.SuggestedReply(t); err != nil {
+			return err
+		}
+	}
+	kitlog.Debugf("mcp suggest posted %d replies conv=%s", len(cleaned), convID)
+	return nil
+}
+
+// cleanReplies trims, drops empties, length-caps each entry, and caps the
+// count to maxSuggestedReplies.
+func cleanReplies(replies []string) []string {
+	out := make([]string, 0, len(replies))
+	for _, t := range replies {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if rs := []rune(t); len(rs) > maxSuggestedReplyRunes {
+			t = strings.TrimSpace(string(rs[:maxSuggestedReplyRunes]))
+		}
+		out = append(out, t)
+		if len(out) == maxSuggestedReplies {
+			break
+		}
+	}
+	return out
 }
