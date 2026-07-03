@@ -202,3 +202,5 @@ var _ = context.Background
 func newUploaderForURL(srv *httptest.Server) *poeupload.Uploader {
 	return poeupload.New("k", srv.URL, srv.Client())
 }
+
+func (s *scanSink) SuggestedReply(string) error { return nil }

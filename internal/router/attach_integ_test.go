@@ -118,3 +118,5 @@ func TestDiscardSink_File(t *testing.T) {
 		t.Fatalf("discardSink.File: %v", err)
 	}
 }
+
+func (s *errFileSink) SuggestedReply(string) error { return nil }

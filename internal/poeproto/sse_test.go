@@ -350,3 +350,18 @@ func TestSSEWriter_File(t *testing.T) {
 		t.Fatalf("non-inline file event sent empty-string inline_ref (bug): %q", b2)
 	}
 }
+
+func TestSSEWriter_SuggestedReply(t *testing.T) {
+	rec := httptest.NewRecorder()
+	s, err := NewSSEWriter(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SuggestedReply("Yes"); err != nil {
+		t.Fatalf("SuggestedReply: %v", err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: suggested_reply") || !strings.Contains(body, `"text":"Yes"`) {
+		t.Fatalf("suggested_reply event missing fields: %q", body)
+	}
+}

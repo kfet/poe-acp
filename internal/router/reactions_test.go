@@ -640,3 +640,5 @@ func TestRouter_ReactionStatusMetaIgnored(t *testing.T) {
 		t.Fatal("reaction never executed")
 	}
 }
+
+func (s *orderingSink) SuggestedReply(string) error { return nil }
