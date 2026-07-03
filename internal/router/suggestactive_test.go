@@ -40,7 +40,8 @@ func TestSuggestActive_CapsCountAndLength(t *testing.T) {
 	sink := &captureSink{}
 	r.setActiveTurn("c", sink, t.TempDir())
 	long := strings.Repeat("x", maxSuggestedReplyRunes+20)
-	in := []string{"a", "b", "c", "d", "e", "f", "g", long}
+	// long first so it is processed (truncated) before the count cap trips.
+	in := []string{long, "a", "b", "c", "d", "e", "f", "g"}
 	if err := r.SuggestActive("c", in); err != nil {
 		t.Fatalf("SuggestActive: %v", err)
 	}
@@ -64,5 +65,11 @@ func TestSuggestActive_SinkError(t *testing.T) {
 	r.setActiveTurn("c", errSuggestSink{&captureSink{}}, t.TempDir())
 	if err := r.SuggestActive("c", []string{"Yes"}); err == nil {
 		t.Fatal("want error when sink.SuggestedReply fails")
+	}
+}
+
+func TestDiscardSink_SuggestedReply(t *testing.T) {
+	if err := (discardSink{convID: "c"}).SuggestedReply("x"); err != nil {
+		t.Fatalf("discardSink.SuggestedReply: %v", err)
 	}
 }
