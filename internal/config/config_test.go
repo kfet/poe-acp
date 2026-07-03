@@ -127,3 +127,15 @@ func TestValidate_AllThinkingLevels(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_PoeMCP(t *testing.T) {
+	t.Parallel()
+	p := writeFile(t, `{"poe_mcp": true}`)
+	cfg, ok, err := Load(p)
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	if !cfg.PoeMCP {
+		t.Errorf("poe_mcp: %v", cfg.PoeMCP)
+	}
+}

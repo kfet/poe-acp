@@ -41,12 +41,18 @@ func (r *recordAttach) attachFn(conv, path, name string, inline bool) error {
 }
 
 // driveMCP runs RunMCP over canned input lines, returning decoded JSON-RPC
-// responses (one per request line that warrants a reply).
-func driveMCP(t *testing.T, attach boundAttach, lines ...string) []map[string]any {
+// responses (one per request line that warrants a reply). The suggest
+// handler is a no-op; use driveMCPH to supply a custom Handlers.
+func driveMCP(t *testing.T, attach func(path, name string, inline bool) error, lines ...string) []map[string]any {
+	t.Helper()
+	return driveMCPH(t, Handlers{Attach: attach, Suggest: func([]string) error { return nil }}, lines...)
+}
+
+func driveMCPH(t *testing.T, h Handlers, lines ...string) []map[string]any {
 	t.Helper()
 	in := strings.NewReader(strings.Join(lines, "\n") + "\n")
 	var out bytes.Buffer
-	if err := RunMCP(in, &out, attach); err != nil {
+	if err := RunMCP(in, &out, h); err != nil {
 		t.Fatalf("RunMCP: %v", err)
 	}
 	var resps []map[string]any
@@ -64,6 +70,9 @@ func driveMCP(t *testing.T, attach boundAttach, lines ...string) []map[string]an
 }
 
 func noopAttach(string, string, bool) error { return nil }
+
+// noopSuggestFn is the 2-arg SuggestFunc form for the Listener.
+func noopSuggestFn(string, []string) error { return nil }
 
 // shortSock returns a short unix socket path (macOS caps sun_path ~104
 // chars, so t.TempDir's long names overflow). Cleaned up via t.Cleanup.
@@ -93,8 +102,15 @@ func TestMCP_InitializeAndList(t *testing.T) {
 		t.Errorf("protocolVersion = %v", init["protocolVersion"])
 	}
 	tools := r[1]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "attach" {
-		t.Fatalf("tools = %v", tools)
+	if len(tools) != 2 {
+		t.Fatalf("want 2 tools, got %v", tools)
+	}
+	names := map[string]bool{}
+	for _, tl := range tools {
+		names[tl.(map[string]any)["name"].(string)] = true
+	}
+	if !names["attach"] || !names["suggest"] {
+		t.Fatalf("tools missing attach/suggest: %v", tools)
 	}
 }
 
@@ -189,7 +205,7 @@ func (errReader) Read([]byte) (int, error) { return 0, errors.New("read boom") }
 
 func TestRunMCP_ReadError(t *testing.T) {
 	var out strings.Builder
-	if err := RunMCP(errReader{}, &out, noopAttach); err == nil {
+	if err := RunMCP(errReader{}, &out, Handlers{Attach: noopAttach, Suggest: func([]string) error { return nil }}); err == nil {
 		t.Fatal("want read error")
 	}
 }
@@ -201,7 +217,7 @@ func (failWriter) Write([]byte) (int, error) { return 0, errors.New("write boom"
 
 func TestRunMCP_WriteError(t *testing.T) {
 	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n")
-	if err := RunMCP(in, failWriter{}, noopAttach); err == nil {
+	if err := RunMCP(in, failWriter{}, Handlers{Attach: noopAttach, Suggest: func([]string) error { return nil }}); err == nil {
 		t.Fatal("want write error propagated")
 	}
 }
@@ -211,7 +227,7 @@ func TestRunMCP_ReusesBufioReader(t *testing.T) {
 	// already buffered remain available.
 	br := bufio.NewReader(strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n"))
 	var out bytes.Buffer
-	if err := RunMCP(br, &out, noopAttach); err != nil {
+	if err := RunMCP(br, &out, Handlers{Attach: noopAttach, Suggest: func([]string) error { return nil }}); err != nil {
 		t.Fatalf("RunMCP: %v", err)
 	}
 	if !strings.Contains(out.String(), `"result"`) {
@@ -270,7 +286,7 @@ func TestListener_ValidTokenFullMCP(t *testing.T) {
 	reg := NewRegistry()
 	tok := reg.Register("conv-7")
 	var ra recordAttach
-	l, err := Listen(sock, reg.Resolve, ra.attachFn)
+	l, err := Listen(sock, reg.Resolve, ra.attachFn, noopSuggestFn)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -308,7 +324,7 @@ func TestListener_UnknownToken(t *testing.T) {
 	l, _ := Listen(sock, reg.Resolve, func(string, string, string, bool) error {
 		t.Fatal("attach must not run for unknown token")
 		return nil
-	})
+	}, noopSuggestFn)
 	defer l.Close()
 	c := dialPreamble(t, sock, "bogus")
 	defer c.Close()
@@ -322,7 +338,7 @@ func TestListener_UnknownToken(t *testing.T) {
 func TestListener_MalformedPreamble(t *testing.T) {
 	sock := shortSock(t)
 	reg := NewRegistry()
-	l, _ := Listen(sock, reg.Resolve, func(string, string, string, bool) error { return nil })
+	l, _ := Listen(sock, reg.Resolve, func(string, string, string, bool) error { return nil }, noopSuggestFn)
 	defer l.Close()
 	c, err := net.Dial("unix", sock)
 	if err != nil {
@@ -339,7 +355,7 @@ func TestListener_MalformedPreamble(t *testing.T) {
 func TestListener_HangupBeforePreamble(t *testing.T) {
 	sock := shortSock(t)
 	reg := NewRegistry()
-	l, _ := Listen(sock, reg.Resolve, func(string, string, string, bool) error { return nil })
+	l, _ := Listen(sock, reg.Resolve, func(string, string, string, bool) error { return nil }, noopSuggestFn)
 	defer l.Close()
 	c, err := net.Dial("unix", sock)
 	if err != nil {
@@ -367,7 +383,7 @@ func TestListener_HangupBeforePreamble(t *testing.T) {
 func TestListener_RemovesSocketOnClose(t *testing.T) {
 	sock := shortSock(t)
 	reg := NewRegistry()
-	l, _ := Listen(sock, reg.Resolve, func(string, string, string, bool) error { return nil })
+	l, _ := Listen(sock, reg.Resolve, func(string, string, string, bool) error { return nil }, noopSuggestFn)
 	if err := l.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
@@ -378,7 +394,7 @@ func TestListener_RemovesSocketOnClose(t *testing.T) {
 
 func TestListen_BadPath(t *testing.T) {
 	reg := NewRegistry()
-	if _, err := Listen("/no/such/dir/x.sock", reg.Resolve, func(string, string, string, bool) error { return nil }); err == nil {
+	if _, err := Listen("/no/such/dir/x.sock", reg.Resolve, func(string, string, string, bool) error { return nil }, noopSuggestFn); err == nil {
 		t.Fatal("want listen error on bad path")
 	}
 }
@@ -390,7 +406,7 @@ func TestRedir_PreambleAndBidirectionalCopy(t *testing.T) {
 	reg := NewRegistry()
 	tok := reg.Register("conv-9")
 	var ra recordAttach
-	l, err := Listen(sock, reg.Resolve, ra.attachFn)
+	l, err := Listen(sock, reg.Resolve, ra.attachFn, noopSuggestFn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +473,7 @@ func TestRunFromEnv_Happy(t *testing.T) {
 	sock := shortSock(t)
 	reg := NewRegistry()
 	tok := reg.Register("c1")
-	l, _ := Listen(sock, reg.Resolve, func(string, string, string, bool) error { return nil })
+	l, _ := Listen(sock, reg.Resolve, func(string, string, string, bool) error { return nil }, noopSuggestFn)
 	defer l.Close()
 	t.Setenv(EnvSocket, sock)
 	t.Setenv(EnvToken, tok)
@@ -468,5 +484,74 @@ func TestRunFromEnv_Happy(t *testing.T) {
 	pw.Close() // immediate EOF on stdin
 	if err := RunFromEnv(); err != nil {
 		t.Fatalf("RunFromEnv: %v", err)
+	}
+}
+
+// --- suggest tool ---
+
+func TestMCP_Suggest_Success(t *testing.T) {
+	var got []string
+	h := Handlers{Attach: noopAttach, Suggest: func(r []string) error { got = r; return nil }}
+	r := driveMCPH(t, h,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"suggest","arguments":{"replies":["Yes","No"]}}}`,
+	)
+	res := r[0]["result"].(map[string]any)
+	if _, isErr := res["isError"]; isErr {
+		t.Fatalf("suggest returned error: %v", res)
+	}
+	if len(got) != 2 || got[0] != "Yes" || got[1] != "No" {
+		t.Fatalf("suggest args = %v", got)
+	}
+}
+
+func TestMCP_Suggest_Error(t *testing.T) {
+	h := Handlers{Attach: noopAttach, Suggest: func([]string) error { return errors.New("boom") }}
+	r := driveMCPH(t, h,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"suggest","arguments":{"replies":["x"]}}}`,
+	)
+	if r[0]["result"].(map[string]any)["isError"] != true {
+		t.Fatal("want isError on suggest failure")
+	}
+}
+
+func TestMCP_Suggest_BadParams(t *testing.T) {
+	h := Handlers{Attach: noopAttach, Suggest: func([]string) error { return nil }}
+	r := driveMCPH(t, h,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"suggest","arguments":{"replies":"notarray"}}}`,
+	)
+	if r[0]["result"].(map[string]any)["isError"] != true {
+		t.Fatal("want isError on bad suggest params")
+	}
+}
+
+func TestListener_SuggestThroughMCP(t *testing.T) {
+	sock := shortSock(t)
+	reg := NewRegistry()
+	tok := reg.Register("conv-s")
+	var mu sync.Mutex
+	var gotConv string
+	var gotReplies []string
+	suggest := func(conv string, replies []string) error {
+		mu.Lock()
+		gotConv, gotReplies = conv, replies
+		mu.Unlock()
+		return nil
+	}
+	l, err := Listen(sock, reg.Resolve, func(string, string, string, bool) error { return nil }, suggest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	c := dialPreamble(t, sock, tok)
+	defer c.Close()
+	_, _ = c.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"suggest","arguments":{"replies":["A","B"]}}}` + "\n"))
+	br := bufio.NewReader(c)
+	if _, err := br.ReadBytes('\n'); err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotConv != "conv-s" || len(gotReplies) != 2 || gotReplies[0] != "A" {
+		t.Fatalf("suggest not routed: conv=%q replies=%v", gotConv, gotReplies)
 	}
 }
