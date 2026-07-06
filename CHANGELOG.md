@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.38.2] - 2026-07-06
+
+### Fixed
+
+- **Suggested-reply chips finally render — the `meta` event now enables them.** The real gate for Poe rendering `suggested_reply` chips is the turn-opening `meta` event's `suggested_replies` field (fastapi-poe `meta_event`, wire default `false`). poe-acp emitted `meta` as just `{"content_type":"text/markdown"}`, so Poe treated suggested replies as disabled and **silently discarded every chip event** — regardless of ordering or timing. `SSEWriter.Meta()` now emits the full fastapi-poe meta shape with `suggested_replies:true` (plus `linkify:true`, `refetch_settings:false`). Per the fastapi-poe source this flag is a pure *enable* (no auto-generation), so advertising it every turn is harmless — chips appear only when the agent actually posts them via the `suggest` tool. This is the true root cause behind v0.38.0/v0.38.1's non-rendering chips; the earlier deferred-flush ordering fix (v0.38.1) is retained as correct-but-insufficient on its own.
+
 ## [0.38.1] - 2026-07-03
 
 ### Fixed
