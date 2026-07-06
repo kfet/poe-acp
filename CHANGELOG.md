@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-07-06
+
 ### Changed
 
+- Refactor: MCP backchannel (attach/suggest) now built on
+  `acp-kit/mcphost` v0.3.0; `internal/mcpattach` removed, Poe glue in
+  `internal/poemcp`. Wire/behavior unchanged.
 - The self-hosted `poe` MCP backchannel (attach + suggest) now runs on the
   generic `acp-kit/mcphost` package instead of the in-tree `internal/mcpattach`.
   Wire behaviour is byte-identical: same `mcp-serve`/`mcp-attach` subcommands,
