@@ -1,4 +1,6 @@
 github.com/coder/acp-go-sdk v0.12.2 h1:fpRJ8Z5HMSr5cZ5IywzFlFZcIxZOsto+laNVu7XelFA=
 github.com/coder/acp-go-sdk v0.12.2/go.mod h1:yKzM/3R9uELp4+nBAwwtkS0aN1FOFjo11CNPy37yFko=
+github.com/kfet/acp-kit v0.3.0 h1:gk5jvVqS/leb2x77ZnmIWLivOcdt8yUt3WWIUq9OgRw=
+github.com/kfet/acp-kit v0.3.0/go.mod h1:ElQFczipXA7In+lp/xr4AIgO5l1RyiPoT1pIQE2ACRo=
 github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 h1:lZUw3E0/J3roVtGQ+SCrUrg3ON6NgVqpn3+iol9aGu4=
 github.com/santhosh-tekuri/jsonschema/v5 v5.3.1/go.mod h1:uToXkOrWAZ6/Oc07xWQrPOhJotwFIyu2bBVN41fcDUY=
