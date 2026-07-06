@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-07-03
+
+### Fixed
+
+- **Suggested-reply chips now actually render.** v0.38.0 emitted the Poe `suggested_reply` SSE event the instant the agent's `suggest` tool-call landed — i.e. mid-stream, often before the reply text. Poe only renders chips that arrive at the very end of the turn (after all content, immediately before `done`); emitted early they are **silently discarded** (no error, no chips). poe-acp now **buffers** suggested replies for the turn and **flushes them in `userDone`**, right before the `done` event, regardless of when `suggest` was called. This also makes them survive the cold-start redrive: buffered-and-deferred chips ride the resume replay buffer instead of being lost on a dropped connection. `internal/httpsrv` orderedWriter gains `pendingSuggested`; ordering (text < suggested_reply < done) is asserted even when `suggest` is called before any text.
+
 ### Changed
 
 - **`refresh-models` skill now documents the seamless graceful `reload` as the preferred way to re-probe the agent's model catalog**, instead of a hard `restart`. Since 0.36.0 the catalog probe and the Poe settings-cache push live in every worker's startup path, so a drained worker swap (`systemctl --user reload` / `launchctl kill SIGHUP` / `POST /admin/reexec`) forks a fresh worker that re-loads `config.json`, re-probes the agent, and re-pushes settings — with the supervisor PID stable and live conversations never dropped. `restart` is retained only as the pre-0.36.0 fallback. Also adds a process-tree verification recipe for hosts with no persistent user journal (new worker PID under a stable supervisor, each worker parenting its own fresh agent) and corrects the unit name to `poe-acp-<bot>`. Doc-only; no code change (the seamless re-probe already worked — the skill was steering operators to the disruptive path).
