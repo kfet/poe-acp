@@ -1178,14 +1178,31 @@ func TestSink_SuggestedReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newSink(w, 0)
+	// Call suggest BEFORE any text — the worst case that Poe discards if
+	// emitted immediately. It must be buffered, not written yet.
 	if err := s.SuggestedReply("Yes"); err != nil {
 		t.Fatalf("SuggestedReply: %v", err)
 	}
-	if !strings.Contains(rec.Body.String(), "event: suggested_reply") {
-		t.Fatalf("want suggested_reply event, got %q", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "suggested_reply") {
+		t.Fatalf("suggested_reply must be deferred, not emitted early: %q", rec.Body.String())
 	}
-	// After Done the gate is closed → no-op, no error.
-	_ = s.Done()
+	// Emit some content, then finish. Chips flush at Done, after content,
+	// immediately before the done event — the only position Poe renders.
+	_ = s.Text("the answer")
+	if err := s.Done(); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	body := rec.Body.String()
+	iText := strings.Index(body, "the answer")
+	iChip := strings.Index(body, "event: suggested_reply")
+	iDone := strings.Index(body, "event: done")
+	if iChip < 0 {
+		t.Fatalf("want suggested_reply flushed at Done, got %q", body)
+	}
+	if !(iText < iChip && iChip < iDone) {
+		t.Fatalf("ordering must be text < suggested_reply < done; got text=%d chip=%d done=%d", iText, iChip, iDone)
+	}
+	// After Done the gate is closed → buffering is a no-op, no error.
 	if err := s.SuggestedReply("No"); err != nil {
 		t.Fatalf("SuggestedReply after done: %v", err)
 	}
