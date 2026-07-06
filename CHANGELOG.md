@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The self-hosted `poe` MCP backchannel (attach + suggest) now runs on the
+  generic `acp-kit/mcphost` package instead of the in-tree `internal/mcpattach`.
+  Wire behaviour is byte-identical: same `mcp-serve`/`mcp-attach` subcommands,
+  same `mcp.sock` socket, same `POEACP_MCP_*` env vars, same token-preamble
+  framing, same `poe_mcp`/`--enable-mcp-attach` gating. Poe-specific tool
+  names, schemas, and router glue move to `internal/poemcp`; `internal/mcpattach`
+  is deleted.
+
 ## [0.38.2] - 2026-07-06
 
 ### Fixed
