@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`refresh-models` skill now documents the seamless graceful `reload` as the preferred way to re-probe the agent's model catalog**, instead of a hard `restart`. Since 0.36.0 the catalog probe and the Poe settings-cache push live in every worker's startup path, so a drained worker swap (`systemctl --user reload` / `launchctl kill SIGHUP` / `POST /admin/reexec`) forks a fresh worker that re-loads `config.json`, re-probes the agent, and re-pushes settings — with the supervisor PID stable and live conversations never dropped. `restart` is retained only as the pre-0.36.0 fallback. Also adds a process-tree verification recipe for hosts with no persistent user journal (new worker PID under a stable supervisor, each worker parenting its own fresh agent) and corrects the unit name to `poe-acp-<bot>`. Doc-only; no code change (the seamless re-probe already worked — the skill was steering operators to the disruptive path).
+
 ## [0.38.0] - 2026-07-03
 
 ### Added
