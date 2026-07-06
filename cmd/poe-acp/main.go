@@ -21,11 +21,12 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/acp-kit/mcphost"
 	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/httpsrv"
-	"github.com/kfet/poe-acp/internal/mcpattach"
 	"github.com/kfet/poe-acp/internal/paramctl"
+	"github.com/kfet/poe-acp/internal/poemcp"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 	"github.com/kfet/poe-acp/internal/sdnotify"
@@ -50,9 +51,10 @@ func main() {
 	// (configured via per-session McpServerStdio). It exposes the `poe`
 	// server's tools (attach, suggest) and relays calls back to this
 	// process over a unix socket. Reads its config from the env the
-	// parent set. `mcp-attach` is accepted as a legacy alias.
-	if len(os.Args) > 1 && (os.Args[1] == "mcp-serve" || os.Args[1] == "mcp-attach") {
-		if err := mcpattach.RunFromEnv(); err != nil {
+	// parent set. `mcp-attach` is accepted as a legacy alias. The dumb
+	// redirector lives in acp-kit/mcphost.
+	if handled, err := mcphost.MaybeRunRedir(poemcp.RedirConfig()); handled {
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "mcp-serve:", err)
 			os.Exit(1)
 		}
@@ -180,27 +182,14 @@ func main() {
 	// Effective MCP enablement: config `poe_mcp` OR the deprecated
 	// --enable-mcp-attach flag. Per-bot config is the preferred surface.
 	mcpEnabled := *enableMCPAttach || cfg.PoeMCP
-	var mcpSocket, mcpDir string
-	var mcpReg *mcpattach.Registry
+	var mcpHost *mcphost.Host
 	if mcpEnabled {
-		mcpReg = mcpattach.NewRegistry()
-		base := os.Getenv("XDG_RUNTIME_DIR")
-		if base == "" {
-			base = os.TempDir()
+		h, herr := mcphost.New(poemcp.HostConfig())
+		if herr != nil {
+			log.Fatalf("poe-mcp: %v", herr)
 		}
-		// Private 0700 dir (MkdirTemp default perms) so only this uid can
-		// reach the socket; the socket file itself is further chmod'd 0600.
-		d, derr := os.MkdirTemp(base, "poe-acp-mcp-")
-		if derr != nil {
-			log.Fatalf("poe-mcp: create socket dir: %v", derr)
-		}
-		mcpDir = d
-		defer os.RemoveAll(mcpDir)
-		mcpSocket = filepath.Join(mcpDir, "mcp.sock")
-	}
-	selfExe, exeErr := os.Executable()
-	if mcpEnabled && exeErr != nil {
-		log.Fatalf("poe-mcp: cannot resolve own executable: %v", exeErr)
+		mcpHost = h
+		defer mcpHost.Close()
 	}
 	clientCfg := client.Config{
 		Command: argv,
@@ -218,16 +207,7 @@ func main() {
 			// Mint a fresh per-session token bound to this conversation.
 			// The conv is derived server-side from the token; it is never
 			// sent by the client, so it cannot be spoofed.
-			tok := mcpReg.Register(filepath.Base(cwd))
-			return []acp.McpServer{{Stdio: &acp.McpServerStdio{
-				Name:    "poe",
-				Command: selfExe,
-				Args:    []string{"mcp-serve"},
-				Env: []acp.EnvVariable{
-					{Name: mcpattach.EnvSocket, Value: mcpSocket},
-					{Name: mcpattach.EnvToken, Value: tok},
-				},
-			}}}
+			return mcpHost.ServerConfigForSession(filepath.Base(cwd))
 		}
 	}
 	agent, err := client.Start(ctx, clientCfg)
@@ -285,23 +265,16 @@ func main() {
 	stopGC := rtr.RunGC(ctx, *gcEvery)
 	defer stopGC()
 
-	// MCP server: start the unix-socket listener that the self-hosted
-	// `mcp-serve` subprocess relays to. Must be up before any session
-	// is created (i.e. before serving). Token-authenticated.
+	// MCP server: register the poe tools and start the unix-socket
+	// listener that the self-hosted `mcp-serve` subprocess relays to. Must
+	// be up before any session is created (i.e. before serving).
+	// Token-authenticated.
 	if mcpEnabled {
-		ln, lerr := mcpattach.Listen(mcpSocket, mcpReg.Resolve,
-			func(conv, path, name string, inline bool) error {
-				return rtr.AttachActive(conv, path, name, inline)
-			},
-			func(conv string, replies []string) error {
-				return rtr.SuggestActive(conv, replies)
-			},
-		)
-		if lerr != nil {
+		poemcp.Register(mcpHost, rtr)
+		if lerr := mcpHost.Listen(); lerr != nil {
 			log.Fatalf("mcp-serve listener: %v", lerr)
 		}
-		defer ln.Close()
-		log.Printf("mcp-serve: listening on %s", mcpSocket)
+		log.Printf("mcp-serve: listening on %s", mcpHost.SocketPath())
 	}
 
 	// HTTP
