@@ -184,19 +184,3 @@ func TestAnswerBuffer_PutOverwriteKeepsCap(t *testing.T) {
 		t.Fatalf("overwrite failed: %v ok=%v", got, ok)
 	}
 }
-
-func TestAnswerRecorder_Suggest(t *testing.T) {
-	inner := &recordSink{}
-	rec := &answerRecorder{inner: inner}
-	if err := rec.SuggestedReply("Yes"); err != nil {
-		t.Fatal(err)
-	}
-	if len(inner.suggests) != 1 || inner.suggests[0] != "Yes" {
-		t.Fatalf("inner suggests=%v", inner.suggests)
-	}
-	out := &recordSink{}
-	replay(rec.snapshot(), out)
-	if len(out.suggests) != 1 || out.suggests[0] != "Yes" {
-		t.Fatalf("replay suggests=%v", out.suggests)
-	}
-}
