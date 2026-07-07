@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-07-06
+
+### Removed
+
+- **Removed the dead `suggest` tool.** Poe deprecated suggested replies platform-wide: per the official Poe protocol specification, the `suggested_reply` SSE event *"is ignored if emitted"* and the `meta.suggested_replies` field *"is ignored"*. The `suggest` MCP tool shipped in v0.38.0 (and the v0.38.1 defer-flush + v0.38.2 meta-gate follow-ups) therefore could never render chips — verified by capturing the byte-correct SSE on the wire and observing Poe discard it. Keeping the tool only misled the agent into offering phantom follow-ups. Removed the `suggest` tool registration, `router.SuggestActive`, `SSEWriter.SuggestedReply`, `ChunkSink.SuggestedReply`, the orderedWriter end-of-turn buffer, and reverted `SSEWriter.Meta()` to `{content_type:text/markdown}`. The `attach` tool, the client-cancel fix (v0.38.0), and the mcphost refactor (v0.39.0) are unaffected. Lesson recorded: for Poe wire behaviour the **protocol spec** is authoritative, not the fastapi-poe library (which still ships the deprecated `is_suggested_reply` API).
+
 ## [0.39.0] - 2026-07-06
 
 ### Changed
