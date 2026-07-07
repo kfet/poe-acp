@@ -347,19 +347,8 @@ func (s *SSEWriter) event(name string, data any) error {
 }
 
 // Meta sends the mandatory initial `meta` event.
-// Meta emits the Poe `meta` event that opens every turn. It mirrors
-// fastapi-poe's meta_event shape exactly. suggested_replies MUST be true
-// here or Poe silently discards every `suggested_reply` chip event in the
-// turn — the flag is the render gate, not the chip events themselves. It
-// is purely an enable (no auto-generation), so advertising it every turn
-// is harmless: chips appear only when we actually emit them at Done.
 func (s *SSEWriter) Meta() error {
-	return s.event("meta", map[string]any{
-		"content_type":      "text/markdown",
-		"refetch_settings":  false,
-		"linkify":           true,
-		"suggested_replies": true,
-	})
+	return s.event("meta", map[string]any{"content_type": "text/markdown"})
 }
 
 // Text appends a text chunk.
@@ -395,14 +384,6 @@ func (s *SSEWriter) File(url, contentType, name, inlineRef string) error {
 		"name":         name,
 		"inline_ref":   ref,
 	})
-}
-
-// SuggestedReply emits a Poe `suggested_reply` event: one tappable
-// follow-up chip rendered under the bot's message. text is sent verbatim
-// as the user's next message if the chip is tapped. Emit these on the
-// turn they belong to, before Done — Poe collects them for the turn.
-func (s *SSEWriter) SuggestedReply(text string) error {
-	return s.event("suggested_reply", map[string]any{"text": text})
 }
 
 // Error emits an error event.
