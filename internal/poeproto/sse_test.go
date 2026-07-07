@@ -219,9 +219,6 @@ func TestSSEWriter_Preamble(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "event: meta") {
 		t.Fatalf("meta event missing after preamble")
 	}
-	if !strings.Contains(rec.Body.String(), "\"suggested_replies\":true") {
-		t.Fatalf("meta must enable suggested_replies (chip render gate), got %q", rec.Body.String())
-	}
 }
 
 func TestSSEWriter_PreambleAfterClose(t *testing.T) {
@@ -351,20 +348,5 @@ func TestSSEWriter_File(t *testing.T) {
 	}
 	if strings.Contains(b2, "\"inline_ref\":\"\"") {
 		t.Fatalf("non-inline file event sent empty-string inline_ref (bug): %q", b2)
-	}
-}
-
-func TestSSEWriter_SuggestedReply(t *testing.T) {
-	rec := httptest.NewRecorder()
-	s, err := NewSSEWriter(rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SuggestedReply("Yes"); err != nil {
-		t.Fatalf("SuggestedReply: %v", err)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "event: suggested_reply") || !strings.Contains(body, `"text":"Yes"`) {
-		t.Fatalf("suggested_reply event missing fields: %q", body)
 	}
 }

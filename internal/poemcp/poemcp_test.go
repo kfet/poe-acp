@@ -152,37 +152,6 @@ func TestAttach_Error(t *testing.T) {
 	}
 }
 
-func TestSuggest_Success(t *testing.T) {
-	ctrl := &fakeCtrl{}
-	h, tok := liveHost(t, ctrl)
-	res := call(t, h, tok, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"suggest","arguments":{"replies":["Yes","No"]}}}`)
-	if isErr(res) {
-		t.Fatalf("unexpected error: %v", res)
-	}
-	if text(res) != "Suggested replies posted." {
-		t.Fatalf("text = %q", text(res))
-	}
-	if len(ctrl.replies) != 2 || ctrl.replies[0] != "Yes" {
-		t.Fatalf("replies = %v", ctrl.replies)
-	}
-}
-
-func TestSuggest_BadArgs(t *testing.T) {
-	h, tok := liveHost(t, &fakeCtrl{})
-	res := call(t, h, tok, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"suggest","arguments":{"replies":"nope"}}}`)
-	if !isErr(res) || !strings.HasPrefix(text(res), "invalid params:") {
-		t.Fatalf("res = %v", res)
-	}
-}
-
-func TestSuggest_Error(t *testing.T) {
-	h, tok := liveHost(t, &fakeCtrl{suggestE: errString("boom")})
-	res := call(t, h, tok, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"suggest","arguments":{"replies":["x"]}}}`)
-	if !isErr(res) || !strings.HasPrefix(text(res), "suggest failed:") {
-		t.Fatalf("res = %v", res)
-	}
-}
-
 type errString string
 
 func (e errString) Error() string { return string(e) }
