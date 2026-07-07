@@ -16,7 +16,6 @@ const (
 	opText recOp = iota
 	opReplace
 	opFile
-	opSuggest
 	opError
 	opDone
 	opFirstChunk
@@ -60,11 +59,6 @@ func (a *answerRecorder) Replace(s string) error {
 func (a *answerRecorder) File(url, contentType, name, inlineRef string) error {
 	a.record(recCall{op: opFile, s1: url, s2: contentType, s3: name, s4: inlineRef})
 	return a.inner.File(url, contentType, name, inlineRef)
-}
-
-func (a *answerRecorder) SuggestedReply(text string) error {
-	a.record(recCall{op: opSuggest, s1: text})
-	return a.inner.SuggestedReply(text)
 }
 
 func (a *answerRecorder) Error(text, errorType string) error {
@@ -115,8 +109,6 @@ func replay(calls []recCall, sink router.ChunkSink) {
 			_ = sink.Replace(c.s1)
 		case opFile:
 			_ = sink.File(c.s1, c.s2, c.s3, c.s4)
-		case opSuggest:
-			_ = sink.SuggestedReply(c.s1)
 		case opError:
 			_ = sink.Error(c.s1, c.s2)
 		case opDone:
