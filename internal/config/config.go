@@ -53,7 +53,7 @@ type Config struct {
 	DisableSystemPrompt bool `json:"disable_system_prompt,omitempty"`
 
 	// PoeMCP enables the self-hosted `poe` MCP server exposed to the
-	// agent (tools: attach, suggest) — the per-bot, config-file way to
+	// agent (tool: attach) — the per-bot, config-file way to
 	// turn the feature on without touching the CLI flags. Effective
 	// enablement is this OR the --enable-mcp-attach flag (kept as a
 	// deprecated alias), so existing flag-based deployments keep working.

@@ -444,13 +444,6 @@ type orderedWriter struct {
 	// the body is — without the clear, "answer" would render as
 	// "> _Thinking._answer".
 	spinnerVisible bool
-	// pendingSuggested holds suggested-reply chip texts buffered during
-	// the turn. Poe only renders `suggested_reply` events that arrive at
-	// the very end of the turn (after all content, immediately before
-	// `done`); emitted mid-stream they are silently discarded. So we
-	// buffer them here and flush in userDone just before the done event,
-	// regardless of when the agent's suggest tool-call landed.
-	pendingSuggested []string
 }
 
 // userText writes a `text` SSE event and marks the stream as having
@@ -508,13 +501,6 @@ func (o *orderedWriter) userDone() error {
 		return nil
 	}
 	o.clearSpinnerLocked()
-	// Flush any buffered suggested-reply chips now — after all content,
-	// immediately before the done event — which is the only position Poe
-	// renders them. Emission errors are swallowed like other final writes.
-	for _, t := range o.pendingSuggested {
-		_ = o.w.SuggestedReply(t)
-	}
-	o.pendingSuggested = nil
 	o.closed = true
 	return o.w.Done()
 }
@@ -531,25 +517,6 @@ func (o *orderedWriter) userFile(url, contentType, name, inlineRef string) error
 	o.clearSpinnerLocked()
 	o.realWritten = true
 	return o.w.File(url, contentType, name, inlineRef)
-}
-
-// userSuggestedReply emits a `suggested_reply` chip event. Unlike
-// userFile it is turn metadata, not body content, so it does NOT clear
-// the spinner or arm realWritten — chips ride alongside the real reply
-// (which handles spinner state), and Done finalises the turn.
-// userSuggestedReply buffers a chip text for end-of-turn flush. Poe
-// discards `suggested_reply` events that arrive before the turn's final
-// content, so we defer emission to userDone (after all content, right
-// before `done`) rather than writing here. Buffering (not writing) also
-// means chips ride the resume buffer and replay cleanly on a redrive.
-func (o *orderedWriter) userSuggestedReply(text string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.closed {
-		return nil
-	}
-	o.pendingSuggested = append(o.pendingSuggested, text)
-	return nil
 }
 
 // clearSpinnerLocked drops a visible spinner frame ahead of a user
@@ -728,11 +695,6 @@ func (s *sink) File(url, contentType, name, inlineRef string) error {
 	s.touch()
 	s.stop()
 	return s.o.userFile(url, contentType, name, inlineRef)
-}
-
-func (s *sink) SuggestedReply(text string) error {
-	s.touch()
-	return s.o.userSuggestedReply(text)
 }
 
 // SetProviderEmoji records the relay-resolved provider emoji for the
