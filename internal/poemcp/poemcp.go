@@ -15,8 +15,7 @@ import (
 
 // Tool names exposed to the agent by the self-hosted `poe` MCP server.
 const (
-	ToolAttach  = "attach"
-	ToolSuggest = "suggest"
+	ToolAttach = "attach"
 )
 
 // Env var names the main process sets on the spawned redirector (via the
@@ -44,7 +43,6 @@ const (
 // session key resolved server-side from the connection token.
 type Controller interface {
 	AttachActive(conv, path, name string, inline bool) error
-	SuggestActive(conv string, replies []string) error
 }
 
 // HostConfig returns the mcphost.Config for poe-acp's `poe` server.
@@ -72,9 +70,8 @@ func RedirConfig() mcphost.RedirConfig {
 	}
 }
 
-// Register registers the attach and suggest tools on h, wiring them to
-// ctrl. Tool descriptions and schemas match the pre-extraction wire
-// contract exactly.
+// Register registers the attach tool on h, wiring it to ctrl. Tool
+// descriptions and schemas match the pre-extraction wire contract exactly.
 func Register(h *mcphost.Host, ctrl Controller) {
 	h.Tool(ToolAttach,
 		"Deliver a file from this host to the user as a chat attachment "+
@@ -108,37 +105,6 @@ func Register(h *mcphost.Host, ctrl Controller) {
 				disp = a.Path
 			}
 			return "Attached " + disp + " to the chat.", nil
-		},
-	)
-
-	h.Tool(ToolSuggest,
-		"Offer the user 2-4 tappable follow-up reply chips at a genuine "+
-			"decision point (e.g. Yes / No / Tell me more). Each reply is the exact text "+
-			"sent as the user's next message if tapped, so keep them short (a few words). "+
-			"Call at most once per turn, right before you finish your reply. Omit when there "+
-			"is no natural next choice.",
-		map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"replies": map[string]any{
-					"type":        "array",
-					"items":       map[string]any{"type": "string"},
-					"description": "2-4 short reply options, each shown as a chip.",
-				},
-			},
-			"required": []string{"replies"},
-		},
-		func(conv string, args json.RawMessage) (string, error) {
-			var a struct {
-				Replies []string `json:"replies"`
-			}
-			if err := json.Unmarshal(args, &a); err != nil {
-				return "", errors.New("invalid params: " + err.Error())
-			}
-			if err := ctrl.SuggestActive(conv, a.Replies); err != nil {
-				return "", errors.New("suggest failed: " + err.Error())
-			}
-			return "Suggested replies posted.", nil
 		},
 	)
 }
