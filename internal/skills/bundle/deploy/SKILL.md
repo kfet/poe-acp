@@ -284,6 +284,8 @@ See the `update` skill (`.fir/skills/update/SKILL.md`) for the per-host upgrade 
 - **launchd env file** — plists have no `EnvironmentFile`; wrap in `sh -c 'set -a; . ~/.config/poe-acp/env; set +a; exec …'`.
 - **Multiple bots on one host** — one relay process per bot, each on its own loopback port + funnel prefix + access key.
 
+- **Caddy-fronted (non-funnel) SSE reuse `TransferEncodingError`** — if the bot sits behind Caddy/nginx instead of funnel, Poe's aiohttp keep-alive pool can reuse a stale socket and fail a turn with `TransferEncodingError: Not enough data to satisfy transfer length header` (buffer+redrive recovers it, but the user sees an error flash). Fix at the proxy: stop reusing client connections so Poe reconnects per turn. In Caddy add `header Connection close` to the site block. Verified: reuse → 0 (aiohttp new=N reused=0), ~10ms/turn TLS-resume cost, SSE streams still complete then close. Raising Caddy's `idle` timeout alone is not enough.
+
 ## Handoff checklist
 
 - [ ] `poe-acp --version` on the host matches the intended release.

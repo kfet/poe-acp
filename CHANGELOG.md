@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Documentation
+
+- Document the **Caddy-fronted SSE keep-alive reuse** failure and its fix. Bots fronted by Caddy (or any pooling TLS proxy) instead of `tailscale funnel` can fail a turn with aiohttp `TransferEncodingError: Not enough data to satisfy transfer length header` when Poe reuses a stale keep-alive socket; fix is `header Connection close` on the site block so Poe reconnects per turn (~10ms/turn TLS-resume cost, SSE streams unaffected). Added to the deploy skill Pitfalls and the design-doc Deployment section. Funnel-fronted bots are not affected.
+
 ## [0.40.0] - 2026-07-06
 
 ### Removed
