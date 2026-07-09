@@ -271,6 +271,22 @@ actually registers. Given the default `--poe-path /poe`, a bot mounted
 under `/poe-acp` needs its Poe URL set to `/poe-acp/poe` (not bare
 `/poe-acp`). See `README.md` → "Deployment" for a concrete example.
 
+**Caddy / reverse-proxy SSE keep-alive gotcha:** when a bot is fronted
+by Caddy (or any TLS-terminating proxy that pools client connections)
+instead of funnel, Poe's HTTP client (aiohttp) **reuses** keep-alive
+sockets. A pooled socket the proxy has idly half-closed dies on reuse
+mid-request with aiohttp's `TransferEncodingError: Not enough data to
+satisfy transfer length header`, surfaced to the user as a failed turn.
+The relay's buffer+redrive still delivers the answer, but the user sees
+a transient error flash first. Root fix is at the proxy: stop the bot's
+site reusing client connections so Poe opens a fresh socket per turn. In
+Caddy, add `header Connection close` to the site block — verified to
+drop reuse to zero (aiohttp new=N, reused=0) at ~10ms/turn TLS-resume
+cost; SSE streams still complete then close cleanly. Note: raising
+Caddy's client `idle` timeout alone is **not** sufficient — reuse can
+still race other connection closers. Funnel-fronted bots do not need
+this (tailscaled/WireGuard path does not present the same reuse hazard).
+
 ## Future
 
 - **Per-user auth/state config.** Map Poe `user_id` to a scoped config
