@@ -359,6 +359,7 @@ func (s *orderingSink) Error(t, _ string) error {
 func (s *orderingSink) Done() error              { s.send("done", ""); return nil }
 func (s *orderingSink) SetProviderEmoji(string)  {}
 func (s *orderingSink) SetStatus(string, string) {}
+func (s *orderingSink) ToolActivity(string)      {}
 func (s *orderingSink) send(kind, text string) {
 	s.events <- orderingEvent{kind, text}
 }
@@ -627,6 +628,9 @@ func TestRouter_ReactionStatusMetaIgnored(t *testing.T) {
 		a.emitWithMeta(sid, "ack", map[string]any{
 			"dev.acp-kit.status-line/v1": map[string]any{"mood": "steady", "plan": "1/1"},
 		})
+		// Also emit a tool_call so discardSink.ToolActivity is exercised
+		// (reaction turns absorb tool activity silently).
+		a.emitUpdate(sid, acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{ToolCallId: "t1", Title: "bash"}})
 		close(done)
 		return acp.StopReasonEndTurn, nil
 	})
