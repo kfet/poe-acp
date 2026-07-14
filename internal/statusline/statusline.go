@@ -53,19 +53,26 @@ func Header(s Status) string {
 	return strings.Join(kit.Segments(s), " • ")
 }
 
-// Spinner renders the live thinking indicator. The dots argument is
-// the current animation frame (e.g. ".", "..", "..."). The result is
-// wrapped in a Markdown blockquote + italic so it matches poe-acp's
-// existing heartbeat styling; the spinner is a single block.
+// Spinner renders the live thinking indicator. The label argument is
+// the leading verb (e.g. "Thinking", "running bash", "waiting") and
+// falls back to "Thinking" when empty — mid-turn keepalive frames pass
+// the running tool's label so the user sees what the agent is doing
+// during a long tool call. The dots argument is the current animation
+// frame (e.g. ".", "..", "..."). The result is wrapped in a Markdown
+// blockquote + italic so it matches poe-acp's existing heartbeat
+// styling; the spinner is a single block.
 //
 // Always emits a visible frame — even with no status segments, the
 // caller still needs liveness signal, so the bare "> _Thinking..._"
 // is returned.
-func Spinner(s Status, dots string) string {
+func Spinner(s Status, label, dots string) string {
+	if label == "" {
+		label = "Thinking"
+	}
 	if dots == "" {
 		dots = "."
 	}
 	parts := kit.Segments(s)
-	parts = append(parts, "Thinking"+dots)
+	parts = append(parts, label+dots)
 	return "> _" + strings.Join(parts, " • ") + "_"
 }

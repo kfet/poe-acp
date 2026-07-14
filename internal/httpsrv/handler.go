@@ -72,9 +72,23 @@ type Config struct {
 	// a graceful drain forever; every other in-flight stream keeps
 	// draining. Heartbeat keepalive frames do NOT reset it — only real
 	// agent output does — so a genuinely wedged turn is detected even
-	// though its spinner keeps ticking. <=0 falls back to
-	// defaultIdleWriteTimeout (2m).
+	// though its spinner keeps ticking. A tool_call session/update DOES
+	// reset it: a legitimately long-running tool is genuine progress, so
+	// it must not be cut. <=0 falls back to defaultIdleWriteTimeout (2m).
 	IdleWriteTimeout time.Duration
+	// StallThreshold is how long the SSE stream may go without a
+	// user-visible content write before the heartbeat re-arms the
+	// mid-turn keepalive spinner. Poe drops the bot-facing connection on
+	// content-starvation, so during a long tool-heavy turn (no tokens
+	// for minutes) the spinner must resume to keep the stream alive.
+	// It re-arms via `replace_response` (a content event that renders in
+	// place), preserving the text so far and animating a transient
+	// status line below it; the moment real output resumes the spinner
+	// is stripped. Before the first output there is no stall gate — the
+	// cold-start spinner fires immediately (see heartbeat). <=0 falls
+	// back to defaultStallThreshold (8s), conservatively under Poe's
+	// drop tolerance. Reuses HeartbeatInterval for the animation cadence.
+	StallThreshold time.Duration
 }
 
 // TurnTimeout has no default: <=0 means no absolute ceiling, leaving the
@@ -90,6 +104,12 @@ const defaultAnswerTTL = 2 * time.Minute
 // is unset. Generous enough that a slow-to-first-token model is not cut,
 // tight enough that a hung agent cannot stall a drain indefinitely.
 const defaultIdleWriteTimeout = 2 * time.Minute
+
+// defaultStallThreshold bounds output silence before the mid-turn
+// keepalive spinner re-arms, when Config.StallThreshold is unset. 8s is
+// conservatively under Poe's content-starvation drop tolerance while
+// keeping re-arm frames rare on a normally-streaming turn.
+const defaultStallThreshold = 8 * time.Second
 
 // CommandHandler is the surface httpsrv depends on; *command.Broker
 // implements it. Extracted so tests can inject handlers that return
@@ -119,6 +139,9 @@ func New(cfg Config) *Handler {
 	}
 	if cfg.IdleWriteTimeout <= 0 {
 		cfg.IdleWriteTimeout = defaultIdleWriteTimeout
+	}
+	if cfg.StallThreshold <= 0 {
+		cfg.StallThreshold = defaultStallThreshold
 	}
 	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL)}
 }
@@ -253,7 +276,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// moment the first real chunk lands. (hide_thinking is a
 	// router-level concern: it suppresses agent_thought_chunk content
 	// from the stream, not the spinner.)
-	s := newSink(sse, h.cfg.HeartbeatInterval)
+	s := newSink(sse, h.cfg.HeartbeatInterval, h.cfg.StallThreshold)
 	// Pre-seed the provider emoji from the handler-resolved model so
 	// tick #1 of the spinner already carries it. The router re-runs
 	// the resolution after applyOptions returns (success or failure)
@@ -401,57 +424,78 @@ func idleCheckInterval(timeout time.Duration) time.Duration {
 var absorbDecidedHook func()
 
 // sink adapts SSEWriter to router.ChunkSink, with an animated
-// `> _Thinking._` spinner that runs until the first user-visible write
-// arrives. The spinner doubles as the SSE keepalive — there's no
-// separate "invisible heartbeat" mode. orderedWriter clears the
-// spinner the moment the first real chunk lands, regardless of
-// whether the user opted into seeing thoughts (hide_thinking is a
-// router-level filter on agent_thought_chunk content; it does not
-// affect the spinner).
+// status-line spinner that doubles as the SSE keepalive. There is no
+// separate "invisible heartbeat" mode — the spinner IS the keepalive.
+//
+// Unlike the earlier design (spinner ran only until the first
+// user-visible write, then self-disarmed forever), the spinner now runs
+// for the WHOLE turn. Poe drops the bot-facing connection on
+// content-starvation, so a long tool-heavy turn that emits no tokens for
+// minutes would be idle-dropped mid-answer. To prevent that, orderedWriter
+// keeps an accumulator `acc` of all user-visible text emitted so far and
+// re-arms the spinner whenever the stream stalls:
+//
+//   - Normal path (output flowing): cheap `text` appends, no spinner.
+//     `acc` grows by each appended chunk.
+//   - Stall (no output past StallThreshold): the heartbeat emits
+//     `Replace(acc + "\n\n" + <spinner line>)` — a content event that
+//     re-renders the text so far plus a transient animated status line
+//     below it, satisfying Poe's keepalive without corrupting markdown.
+//   - Resume: the next user write strips the spinner with `Replace(acc)`
+//     (clearSpinnerLocked) then continues cheap appends.
+//
+// The cold-start spinner is the `acc==""` special case: the same
+// re-arm path, with an empty prefix, fired immediately (see heartbeat)
+// so Poe sees a content event within milliseconds of `meta`.
 //
 // Concurrency model — single-writer invariant:
 //
 // The heartbeat goroutine is a SECOND writer to the SSE stream
-// concurrent with the router-driven chunk path. Earlier designs gave
-// each user-write method (Text, Replace, Error, Done) the obligation
-// to "stop the heartbeat first" — a footgun: any new write site that
-// forgot would let a stale heartbeat tick land AFTER the user content
-// and silently overwrite it with Replace("") (or a "Thinking…" frame),
-// leaving the user with garbled or missing output.
-//
-// The fix moves the gate INTO the writer. orderedWriter owns the
-// SSEWriter, a `realWritten` flag, and a single mutex; the
-// flag-check-and-write is atomic. Heartbeat frames go through
-// hbReplace, which is a no-op once any user write has landed; user
-// writes go through the user* methods, which set realWritten under the
-// same mutex. The heartbeat goroutine self-disarms (returns) the first
-// time hbReplace reports the gate has closed — no caller has to
-// remember to stop it. The sink-layer Done() / Error() also close
-// hbDone so the goroutine wakes immediately rather than waiting for
-// the next tick.
+// concurrent with the router-driven chunk path. The gate lives INSIDE
+// the writer: orderedWriter owns the SSEWriter, `acc`, a `realWritten`
+// flag, `spinnerVisible`, and a single mutex; every frame — user write
+// or heartbeat — is composed and written under that mutex, so a
+// heartbeat frame can never interleave with or lose user content. A
+// heartbeat frame emitted after user content is legitimate now (mid-turn
+// keepalive) BUT always carries `acc`, so it re-renders (never discards)
+// the text so far. The heartbeat self-disarms only when the stream is
+// sealed (Done/Error close the gate).
 type orderedWriter struct {
 	w  *poeproto.SSEWriter
 	mu sync.Mutex
 	// realWritten flips true the first time a user-visible write lands.
-	// Once true, hbReplace becomes a no-op so heartbeat ticks can never
-	// appear after user content in the SSE event sequence.
+	// Never reset. The handler's gated-cancel path reads it to tell a
+	// real user Stop (output streaming) from a pre-output transport drop.
 	realWritten bool
 	closed      bool // Done emitted; further writes are no-ops
-	// spinnerVisible is true if the last hbReplace wrote a non-empty
-	// body (i.e. a visible "Thinking…" frame is currently on screen).
-	// userText uses this to emit a Replace("") clear before its append,
-	// since Poe `text` events append to whatever the renderer thinks
-	// the body is — without the clear, "answer" would render as
-	// "> _Thinking._answer".
+	// acc accumulates every user-visible text byte emitted so far, so a
+	// mid-turn keepalive spinner (Replace) can re-render the answer with a
+	// transient status line appended, and strip back to exactly acc when
+	// output resumes. Guarded by mu.
+	acc string
+	// spinnerVisible is true if the last frame on the wire was a spinner
+	// (a Replace whose body ends in the transient status line). The next
+	// user write must Replace(acc) to strip it before appending, since
+	// Poe `text` events append to whatever the renderer's body is.
 	spinnerVisible bool
+	// spinnerSealed disables further heartbeat frames after a terminal
+	// user event (Error or Done). It is distinct from `closed`: an
+	// `error` event is followed by a mandatory `done`, so Error must NOT
+	// set `closed` (that would no-op the trailing userDone) — but it MUST
+	// stop the spinner so a tick already past its stall check cannot land
+	// a `replace_response` AFTER the error on the wire. hbFrame gates on
+	// both.
+	spinnerSealed bool
 }
 
 // userText writes a `text` SSE event and marks the stream as having
-// real content. Subsequent heartbeat ticks become no-ops. If a visible
-// spinner frame is on screen, it is cleared with Replace("") first.
-// The spinner-clear's IO error is intentionally swallowed: if the SSE
-// connection has dropped, the subsequent o.w.Text(s) will surface the
-// same failure.
+// real content. It appends s to the accumulator so a later keepalive
+// spinner can re-render the full answer. If a spinner frame is on
+// screen, it is stripped with Replace(acc) first — Poe `text` events
+// append to the renderer's current body, so without the strip the
+// answer would render below the spinner line. The strip's IO error is
+// intentionally swallowed: if the SSE connection has dropped, the
+// subsequent o.w.Text(s) will surface the same failure.
 func (o *orderedWriter) userText(s string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -460,12 +504,13 @@ func (o *orderedWriter) userText(s string) error {
 	}
 	o.clearSpinnerLocked()
 	o.realWritten = true
+	o.acc += s
 	return o.w.Text(s)
 }
 
 // userReplace writes a user-driven `replace_response` event. The
-// replace itself overwrites any visible spinner, so no pre-clear is
-// needed.
+// replace overwrites the whole body, so it becomes the new accumulator
+// value and no pre-clear is needed.
 func (o *orderedWriter) userReplace(s string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -473,12 +518,13 @@ func (o *orderedWriter) userReplace(s string) error {
 		return nil
 	}
 	o.realWritten = true
+	o.acc = s
 	o.spinnerVisible = false
 	return o.w.Replace(s)
 }
 
-// userError writes an `error` SSE event. Pre-clears a visible spinner
-// so the error rendering isn't preceded by "Thinking…" in the body.
+// userError writes an `error` SSE event. Pre-strips a visible spinner
+// so the error rendering isn't preceded by the transient status line.
 func (o *orderedWriter) userError(text, et string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -487,13 +533,15 @@ func (o *orderedWriter) userError(text, et string) error {
 	}
 	o.clearSpinnerLocked()
 	o.realWritten = true
+	o.spinnerSealed = true
 	return o.w.Error(text, et)
 }
 
 // userDone writes the terminal `done` event and seals the stream so
 // nothing else (heartbeat or stray user write) can be emitted after.
-// If a visible spinner is the only thing on screen, clear it first so
-// the user doesn't see a frozen "Thinking…" as their final content.
+// If a spinner is the last thing on screen, strip it first (back to
+// acc) so the user doesn't see a frozen status line as their final
+// content.
 func (o *orderedWriter) userDone() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -501,13 +549,15 @@ func (o *orderedWriter) userDone() error {
 		return nil
 	}
 	o.clearSpinnerLocked()
+	o.spinnerSealed = true
 	o.closed = true
 	return o.w.Done()
 }
 
 // userFile emits a `file` SSE event advertising an output attachment.
-// Like userText it counts as real content: it clears any visible
-// spinner and disarms the heartbeat gate.
+// Like userText it counts as real content: it strips any visible
+// spinner and marks realWritten. A file event does not add to the text
+// accumulator (it is a distinct event type, not body text).
 func (o *orderedWriter) userFile(url, contentType, name, inlineRef string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -519,46 +569,84 @@ func (o *orderedWriter) userFile(url, contentType, name, inlineRef string) error
 	return o.w.File(url, contentType, name, inlineRef)
 }
 
-// clearSpinnerLocked drops a visible spinner frame ahead of a user
-// write. Caller must hold o.mu. Errors are swallowed; see userText.
+// clearSpinnerLocked strips a visible spinner frame ahead of a user
+// write by re-rendering the body as exactly the accumulated text.
+// Caller must hold o.mu. When acc=="" this is Replace("") — the
+// cold-start clear. Errors are swallowed; see userText.
 func (o *orderedWriter) clearSpinnerLocked() {
-	if !o.realWritten && o.spinnerVisible {
-		_ = o.w.Replace("")
+	if o.spinnerVisible {
+		_ = o.w.Replace(o.acc)
 		o.spinnerVisible = false
 	}
 }
 
-// hbReplace writes a heartbeat-driven `replace_response` event.
-// Returns gateOpen=true iff the frame actually went on the wire (i.e.,
-// the gate is still open — no user write has landed and the stream is
-// not closed). The heartbeat goroutine uses gateOpen=false as its
-// self-disarm signal.
-func (o *orderedWriter) hbReplace(s string) (gateOpen bool, err error) {
+// hbFrame writes a heartbeat-driven keepalive spinner as a
+// `replace_response` event. The body is the accumulated user text so
+// far plus the given transient status line, so the frame re-renders
+// (never discards) the answer and shows the live status below it. When
+// acc=="" (cold start, no output yet) the body is just the line.
+// Returns gateOpen=true iff the frame went on the wire — false means the
+// stream has been sealed by a terminal user event (Error or Done) and
+// the heartbeat goroutine should self-disarm. Gating on spinnerSealed
+// (not just closed) prevents a tick already past its stall check from
+// landing a spinner frame AFTER an `error` event, whose trailing `done`
+// is still pending.
+func (o *orderedWriter) hbFrame(line string) (gateOpen bool, err error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.realWritten || o.closed {
+	if o.closed || o.spinnerSealed {
 		return false, nil
 	}
-	o.spinnerVisible = s != ""
-	return true, o.w.Replace(s)
+	body := line
+	if o.acc != "" {
+		body = o.acc + "\n\n" + line
+	}
+	o.spinnerVisible = true
+	return true, o.w.Replace(body)
+}
+
+// hasOutput reports whether the first user-visible write has landed.
+func (o *orderedWriter) hasOutput() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.realWritten
+}
+
+// isClosed reports whether the stream has been sealed (Done emitted).
+func (o *orderedWriter) isClosed() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.closed
 }
 
 type sink struct {
 	o *orderedWriter
 
-	// lastWrite is the unix-nano timestamp of the most recent
-	// user-visible write (real agent output: Text/Replace/Error/Done/
-	// File). Heartbeat keepalive frames deliberately do NOT update it,
-	// so the idle-write watchdog measures genuine agent silence — a
-	// wedged turn is detected even while its spinner keeps ticking.
+	// lastWrite is the unix-nano timestamp of the most recent event that
+	// counts as liveness for the WEDGE backstop: a user-visible write
+	// (Text/Replace/Error/Done/File) OR a tool_call session/update
+	// (touchTool). Heartbeat keepalive frames deliberately do NOT update
+	// it. A genuinely hung agent — no text AND no tool activity — trips
+	// IdleWriteTimeout even while its spinner keeps ticking; a
+	// legitimately long-running tool keeps resetting it and is not cut.
 	lastWrite atomic.Int64
 
+	// lastContent is the unix-nano timestamp of the most recent
+	// user-visible content write ONLY. Tool_call updates do NOT reset it
+	// (a running tool produces no SSE content, so Poe still starves) and
+	// neither do heartbeat frames. The heartbeat measures stall against
+	// this clock to decide when to re-arm the mid-turn keepalive spinner.
+	lastContent atomic.Int64
+
+	// stall is how long lastContent may go stale before the heartbeat
+	// re-arms the spinner mid-turn. Copied from Config.StallThreshold.
+	stall time.Duration
+
 	// hbDone is closed exactly once via hbStop to wake the heartbeat
-	// goroutine for prompt shutdown (Done / Error / FirstChunk). The
-	// heartbeat ALSO self-exits on its next tick when the orderedWriter
-	// gate has closed — so even if every explicit stop call were
-	// removed, the goroutine would terminate within one tick of the
-	// first user write (and produce no garbled output in the meantime).
+	// goroutine for prompt shutdown (Done / Error). The heartbeat also
+	// self-exits on its next tick once the orderedWriter gate has closed
+	// (stream sealed) — so even if every explicit stop call were removed,
+	// the goroutine would terminate within one tick of Done/Error.
 	hbDone chan struct{}
 	hbStop sync.Once
 	// hbExited is closed by the heartbeat goroutine on exit. Tests
@@ -566,25 +654,27 @@ type sink struct {
 	// don't observe it. Pre-closed when no heartbeat goroutine is spawned.
 	hbExited chan struct{}
 
-	// statusMu guards the dev.acp-kit.status-line/v1 state below.
-	// Kept separate from orderedWriter.mu because the heartbeat
-	// goroutine reads it on every tick, the router's drain goroutine
-	// writes it on every session/update with the extension's _meta,
-	// and the chunk path reads it once on header-prepend — three
-	// independent threads of access that have no need to interlock
-	// with the SSE append-gate.
+	// statusMu guards the dev.acp-kit.status-line/v1 state below plus
+	// the transient tool-activity label. Kept separate from
+	// orderedWriter.mu because the heartbeat goroutine reads it on every
+	// tick, the router's drain goroutine writes it on every
+	// session/update, and the chunk path reads it once on header-prepend.
 	statusMu      sync.Mutex
 	status        statusline.Status
-	headerEmitted bool // true once a final-header prepend has been considered
+	activity      string // transient spinner label from the running tool
+	headerEmitted bool   // true once a final-header prepend has been considered
 }
 
-func newSink(w *poeproto.SSEWriter, hb time.Duration) *sink {
+func newSink(w *poeproto.SSEWriter, hb, stall time.Duration) *sink {
 	s := &sink{
 		o:        &orderedWriter{w: w},
+		stall:    stall,
 		hbDone:   make(chan struct{}),
 		hbExited: make(chan struct{}),
 	}
-	s.lastWrite.Store(time.Now().UnixNano())
+	now := time.Now().UnixNano()
+	s.lastWrite.Store(now)
+	s.lastContent.Store(now)
 	if hb > 0 {
 		go s.heartbeat(hb)
 	} else {
@@ -614,9 +704,9 @@ func (s *sink) heartbeat(every time.Duration) {
 	// meta (a non-content event) during the 0..HeartbeatInterval gap —
 	// emitting the first spinner frame at t≈0 closes that
 	// content-starvation window. Each subsequent ticker tick re-evaluates
-	// the condition, emitting the next animation frame. emitSpinnerFrame
-	// returns false (ending the loop) the moment a user write has landed
-	// or the stream is closed — the heartbeat's single self-disarm path.
+	// the condition. emitSpinnerFrame returns false (ending the loop)
+	// only when the stream is sealed (Done/Error) — the heartbeat runs
+	// the WHOLE turn, re-arming the spinner on every detected stall.
 	for s.emitSpinnerFrame(&spinTick) {
 		select {
 		case <-s.hbDone:
@@ -626,46 +716,62 @@ func (s *sink) heartbeat(every time.Duration) {
 	}
 }
 
-// emitSpinnerFrame writes one heartbeat spinner frame and advances the
-// animation counter. It fires heartbeatTickHook (so tick #0 is observed
-// by tests just like ticker-driven ticks) and returns gateOpen as
-// reported by orderedWriter.hbReplace — false means a user write has
-// landed or the stream is closed and the heartbeat goroutine should
-// self-disarm. *spinTick is the goroutine-private animation counter.
+// emitSpinnerFrame is called once per heartbeat tick. It fires
+// heartbeatTickHook (so tick #0 is observed by tests just like
+// ticker-driven ticks) and returns keepGoing=false only when the stream
+// is sealed and the goroutine should exit.
 //
-// replace_response overwrites the prior frame so the dots animate in
-// place rather than accumulating. We use replace (not text-append) for
-// keepalive too: text events would *append* each tick's payload, which
-// Poe's Markdown renderer then sees as leading content and can
-// mis-parse subsequent headings, lists or fenced blocks emitted by the
-// agent. Replace + spinner doubles as user-visible liveness AND
-// keepalive, so one path covers both. The spinner frame carries the
-// dev.acp-kit.status-line/v1 header (provider emoji, mood, plan) so
-// mobile users see fir-style indicators they'd miss without a TUI.
-func (s *sink) emitSpinnerFrame(spinTick *int) (gateOpen bool) {
+// The spinner is emitted on a tick when EITHER no user-visible output
+// has landed yet (cold start — close Poe's content-starvation window
+// immediately) OR the stream has gone stall-threshold silent since the
+// last content write (mid-turn keepalive during a long tool call). On a
+// normally-streaming turn neither holds, so the tick is a no-op and the
+// cheap `text` append fast-path is preserved. When it does fire, the
+// frame is a `replace_response` carrying the accumulated answer plus a
+// transient status line (see orderedWriter.hbFrame): replace overwrites
+// the prior frame so the dots animate in place, and re-rendering `acc`
+// means the keepalive never discards the answer or corrupts Poe's
+// Markdown the way an appended `text` keepalive would. *spinTick is the
+// goroutine-private animation counter, advanced only on an emitted frame.
+//
+// Bandwidth note: during a stall each animation frame re-sends the full
+// `acc` at HeartbeatInterval cadence, so a large answer stalled for a
+// long time costs O(len(acc) × stall-ticks) bytes. This is bounded to
+// actual stall gaps (the normal streaming path stays on cheap `text`
+// appends) and is acceptable in practice; if it ever matters, the
+// animation (but not the first re-arm frame, which is what defeats
+// starvation) could be decimated to every Nth tick.
+func (s *sink) emitSpinnerFrame(spinTick *int) (keepGoing bool) {
 	if heartbeatTickHook != nil {
 		heartbeatTickHook()
 	}
+	stalled := !s.o.hasOutput() || s.contentIdleSince() >= s.stall
+	if !stalled {
+		// Output is flowing (or just landed): nothing to keepalive.
+		// Keep ticking unless the stream has been sealed.
+		return !s.o.isClosed()
+	}
 	*spinTick++
 	dots := strings.Repeat(".", 1+(*spinTick-1)%3)
-	frame := statusline.Spinner(s.snapshotStatus(), dots)
-	gateOpen, _ = s.o.hbReplace(frame)
+	frame := statusline.Spinner(s.snapshotStatus(), s.snapshotActivity(), dots)
+	gateOpen, _ := s.o.hbFrame(frame)
 	return gateOpen
 }
 
 // stop wakes the heartbeat goroutine for prompt shutdown. Idempotent.
 // Safe to call any number of times from any goroutine. Even if never
 // called, the heartbeat self-disarms via the orderedWriter gate on its
-// next tick after the first user write.
+// next tick after the stream is sealed (Done/Error).
 func (s *sink) stop() {
 	s.hbStop.Do(func() { close(s.hbDone) })
 }
 
-// FirstChunk — router calls this on the first real agent chunk.
-// Optimisation only: prompts heartbeat shutdown so the goroutine
-// doesn't sit until the next tick before exiting. Correctness comes
-// from orderedWriter, not from this call.
-func (s *sink) FirstChunk() { s.stop() }
+// FirstChunk — router calls this on the first real agent chunk. In the
+// mid-turn-keepalive design the heartbeat runs the WHOLE turn (re-arming
+// on every stall), so first output must NOT stop it. Kept as a no-op to
+// satisfy the ChunkSink interface; the spinner is disarmed only when the
+// stream is sealed (Done/Error via stop()).
+func (s *sink) FirstChunk() {}
 
 // realWritten reports whether the first user-visible write has landed on
 // the stream. The handler's gated-cancel path uses this to distinguish a
@@ -677,13 +783,38 @@ func (s *sink) realWritten() bool {
 	return s.o.realWritten
 }
 
-// touch records the wall-clock time of a user-visible write, resetting
-// the idle-write watchdog. Heartbeat frames never call it.
-func (s *sink) touch() { s.lastWrite.Store(time.Now().UnixNano()) }
+// touch records a user-visible content write: it resets BOTH the wedge
+// clock (lastWrite) and the spinner-stall clock (lastContent), and
+// clears any transient tool-activity spinner label — real output
+// supersedes a "running tool…" indicator. Heartbeat frames never call
+// it. Called by every user-visible write (Text/Replace/Error/Done/File).
+func (s *sink) touch() {
+	now := time.Now().UnixNano()
+	s.lastWrite.Store(now)
+	s.lastContent.Store(now)
+	s.statusMu.Lock()
+	s.activity = ""
+	s.statusMu.Unlock()
+}
 
-// idleSince reports how long since the last user-visible write.
+// touchTool records tool-call progress: it resets ONLY the wedge clock
+// (lastWrite), so a legitimately long-running tool is not cut by the
+// idle-write backstop. It deliberately does NOT reset lastContent — a
+// running tool produces no SSE content, so the mid-turn keepalive
+// spinner must still re-arm to keep Poe from starving — and it does NOT
+// mark realWritten or emit body text.
+func (s *sink) touchTool() { s.lastWrite.Store(time.Now().UnixNano()) }
+
+// idleSince reports how long since the last wedge-liveness event
+// (user-visible write OR tool-call progress).
 func (s *sink) idleSince() time.Duration {
 	return time.Since(time.Unix(0, s.lastWrite.Load()))
+}
+
+// contentIdleSince reports how long since the last user-visible content
+// write. The heartbeat re-arms the spinner once this exceeds s.stall.
+func (s *sink) contentIdleSince() time.Duration {
+	return time.Since(time.Unix(0, s.lastContent.Load()))
 }
 
 func (s *sink) Text(t string) error      { s.touch(); return s.o.userText(s.maybePrependHeader(t)) }
@@ -695,6 +826,20 @@ func (s *sink) File(url, contentType, name, inlineRef string) error {
 	s.touch()
 	s.stop()
 	return s.o.userFile(url, contentType, name, inlineRef)
+}
+
+// ToolActivity signals agent tool-call progress (an ACP tool_call /
+// tool_call_update session/update). It resets the wedge clock so a
+// legitimately long tool is not cut, and records the running tool's
+// label so the mid-turn keepalive spinner can show it. It MUST NOT mark
+// realWritten or emit body text: a tool_call is not user-visible content
+// and does not satisfy Poe's content-starvation keepalive (only the
+// spinner replace_response does).
+func (s *sink) ToolActivity(label string) {
+	s.touchTool()
+	s.statusMu.Lock()
+	s.activity = label
+	s.statusMu.Unlock()
 }
 
 // SetProviderEmoji records the relay-resolved provider emoji for the
@@ -724,6 +869,14 @@ func (s *sink) snapshotStatus() statusline.Status {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	return s.status
+}
+
+// snapshotActivity returns the current transient tool-activity label for
+// the heartbeat spinner (empty means the default "Thinking").
+func (s *sink) snapshotActivity() string {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.activity
 }
 
 // maybePrependHeader injects the final-message status header in front

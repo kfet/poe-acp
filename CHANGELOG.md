@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Long, tool-heavy turns are no longer idle-dropped by Poe.** The SSE
+  keepalive spinner previously self-disarmed at the first user-visible
+  write, so during a subsequent long-blocking tool call (`wait`, slow
+  `bash`/ssh) the stream went content-silent for minutes — Poe drops the
+  bot connection on content-starvation, poe-acp read the drop as a user
+  Stop and cancelled the turn, aborting the in-flight model request with
+  `context canceled` and producing an empty error turn. Two coupled fixes:
+  - **Mid-turn re-armable spinner (Solution A):** the keepalive now runs
+    the whole turn. `orderedWriter` accumulates the emitted answer and,
+    when the stream goes output-idle past a stall threshold, re-arms the
+    spinner via `replace_response` (`acc + status line`), preserving the
+    text so far and animating a transient status line below it; the next
+    real chunk strips it back to `acc`. A hybrid keeps the cheap `text`
+    fast-path on the normal streaming path — replace-mode is entered only
+    during a detected stall. New `--stall-threshold` flag (default 8s).
+  - **tool_call liveness (Solution B):** ACP `tool_call`/`tool_call_update`
+    session/updates now reset the wedge idle clock (a legitimately long
+    tool is progress, not a hang) and set the transient spinner label to
+    the running tool. They never mark real output or emit body text, so
+    Poe's content-starvation keepalive is still satisfied only by the
+    spinner. A genuinely hung agent (no text AND no tool activity) still
+    trips `--idle-write-timeout`.
+
+  Note: with mid-turn keepalive preventing the content-starvation drop,
+  the disconnect watcher's gated cancel (post-output client disconnect →
+  `Router.Cancel`) fires far more rarely; it is left unchanged in this
+  change (a genuine post-output disconnect is still a real Stop).
+
 ## [0.40.0] - 2026-07-06
 
 ### Removed

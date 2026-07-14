@@ -61,6 +61,16 @@ type ChunkSink interface {
 	// empty string means "drop this segment". May be called multiple
 	// times per turn — the renderer keeps the latest values.
 	SetStatus(mood, plan string)
+	// ToolActivity is called on each ACP tool_call / tool_call_update
+	// session/update while a turn runs. It signals genuine progress (a
+	// running tool), so the HTTP layer resets the wedge idle clock — a
+	// legitimately long tool must not be cut — and updates the transient
+	// keepalive-spinner label to the running tool. label is a short
+	// human-readable tool descriptor ("" means fall back to the default
+	// "Thinking" spinner). It MUST NOT count as user-visible output: a
+	// tool_call is not a content event and does not satisfy Poe's
+	// content-starvation keepalive.
+	ToolActivity(label string)
 }
 
 // Turn is one message in a Poe query, decoupled from the wire type so
@@ -735,8 +745,17 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 		kind, text = chunkMessage, u.AgentMessageChunk.Content.Text.Text
 	case u.AgentThoughtChunk != nil && u.AgentThoughtChunk.Content.Text != nil:
 		kind, text = chunkThought, u.AgentThoughtChunk.Content.Text.Text
+	case u.ToolCall != nil:
+		// A tool_call is genuine progress but NOT user-visible content:
+		// reset the wedge clock (so a long tool isn't cut) and label the
+		// keepalive spinner. It must not set realWritten or emit body text.
+		td.sink.ToolActivity(toolActivityLabel(u.ToolCall.Title, u.ToolCall.Kind))
+		return
+	case u.ToolCallUpdate != nil:
+		td.sink.ToolActivity(toolUpdateLabel(u.ToolCallUpdate))
+		return
 	default:
-		// Tool-calls, plans, available_commands_update etc. suppressed in v1.
+		// Plans, available_commands_update etc. suppressed in v1.
 		return
 	}
 	if text == "" || (kind == chunkThought && td.hideThinking) {
@@ -776,6 +795,49 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 		return
 	}
 	_ = td.sink.Text(prefix + text)
+}
+
+// toolActivityLabel derives a short keepalive-spinner label from a
+// tool_call's title (preferred) or kind. Returns "" when neither is
+// usefully populated, so the spinner falls back to the default
+// "Thinking" verb. The label is rendered inside a single-line Markdown
+// blockquote+italic spinner, so interior whitespace (newlines/tabs) is
+// collapsed to single spaces to keep the frame on one line.
+func toolActivityLabel(title string, kind acp.ToolKind) string {
+	if l := capLabel(collapseSpace(title)); l != "" {
+		return l
+	}
+	return capLabel(collapseSpace(string(kind)))
+}
+
+// toolUpdateLabel derives the label from a tool_call_update, whose
+// title and kind are optional pointers.
+func toolUpdateLabel(u *acp.SessionToolCallUpdate) string {
+	var title string
+	if u.Title != nil {
+		title = *u.Title
+	}
+	var kind acp.ToolKind
+	if u.Kind != nil {
+		kind = *u.Kind
+	}
+	return toolActivityLabel(title, kind)
+}
+
+// collapseSpace trims and collapses all runs of whitespace (including
+// newlines and tabs) in s to single spaces, so a multi-line tool title
+// can't break the one-line spinner blockquote.
+func collapseSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// capLabel bounds a spinner label to statusline.MaxFieldRunes runes so a
+// verbose tool title can't blow up the transient status line. Rune-aware
+// so it never splits a multi-byte sequence.
+func capLabel(s string) string {
+	r := []rune(s)
+	if len(r) <= statusline.MaxFieldRunes {
+		return s
+	}
+	return string(r[:statusline.MaxFieldRunes])
 }
 
 // Prompt handles one Poe query end-to-end. Submits the turn onto the
@@ -1008,6 +1070,7 @@ func (d discardSink) Done() error              { return nil }
 func (d discardSink) FirstChunk()              {}
 func (d discardSink) SetProviderEmoji(string)  {}
 func (d discardSink) SetStatus(string, string) {}
+func (d discardSink) ToolActivity(string)      {}
 
 // runTurns is the single goroutine that owns Agent.Prompt for one
 // session. It pops turnReqs from the queue in FIFO order and runs

@@ -222,6 +222,8 @@ type captureSink struct {
 	providerEmoji string
 	mood          string
 	plan          string
+	// tool-activity labels seen, in order (Solution B).
+	toolLabels []string
 }
 
 func (s *captureSink) FirstChunk() {
@@ -271,6 +273,11 @@ func (s *captureSink) SetProviderEmoji(emoji string) {
 func (s *captureSink) SetStatus(mood, plan string) {
 	s.mu.Lock()
 	s.mood, s.plan = mood, plan
+	s.mu.Unlock()
+}
+func (s *captureSink) ToolActivity(label string) {
+	s.mu.Lock()
+	s.toolLabels = append(s.toolLabels, label)
 	s.mu.Unlock()
 }
 
@@ -1601,6 +1608,7 @@ func (s *eventSink) Error(t, et string) error     { return nil }
 func (s *eventSink) Done() error                  { return nil }
 func (s *eventSink) SetProviderEmoji(string)      {}
 func (s *eventSink) SetStatus(string, string)     {}
+func (s *eventSink) ToolActivity(string)          {}
 
 // simulatedContent replays an event sequence as Poe renders it:
 // Replace("") wipes all prior Text; subsequent Text events append.
@@ -1744,6 +1752,57 @@ func TestRouter_StatusLineMissingMetaLeavesSinkUntouched(t *testing.T) {
 	// Provider emoji still set from the effective model (backwards-compat path).
 	if sink.providerEmoji != "🌐" {
 		t.Errorf("providerEmoji=%q want 🌐", sink.providerEmoji)
+	}
+}
+
+// TestRouter_ToolCallForwardsActivity verifies Solution B: a tool_call /
+// tool_call_update session/update is routed to sink.ToolActivity with a
+// label derived from the title (or kind), NOT emitted as body text.
+func TestRouter_ToolCallForwardsActivity(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		// tool_call with a title.
+		a.emitUpdate(sid, acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
+			ToolCallId: "t1", Title: "Running bash", Kind: acp.ToolKindExecute,
+		}})
+		// tool_call_update with only a kind (no title).
+		k := acp.ToolKindRead
+		a.emitUpdate(sid, acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{
+			ToolCallId: "t1", Kind: &k,
+		}})
+		// tool_call_update carrying a Title (exercises the pointer-title
+		// path) that also exceeds MaxFieldRunes and must be truncated.
+		longTitle := "supercalifragilistic-tool-title"
+		a.emitUpdate(sid, acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{
+			ToolCallId: "t1", Title: &longTitle,
+		}})
+		// tool_call with neither title nor kind → empty label (spinner
+		// falls back to the default verb).
+		a.emitUpdate(sid, acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{ToolCallId: "t2"}})
+		a.emit(sid, "done text")
+		return acp.StopReasonEndTurn, nil
+	})
+	r, err := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &captureSink{}
+	if err := r.Prompt(context.Background(), "c-tool", "u", []Turn{{Role: "user", Content: "hi"}}, Options{Model: "anthropic/claude-sonnet-4"}, sink); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	want := []string{"Running bash", "read", "supercalifra", ""}
+	if len(sink.toolLabels) != len(want) {
+		t.Fatalf("toolLabels=%v want %v", sink.toolLabels, want)
+	}
+	for i, w := range want {
+		if sink.toolLabels[i] != w {
+			t.Errorf("toolLabels[%d]=%q want %q", i, sink.toolLabels[i], w)
+		}
+	}
+	// The tool_call titles must NOT leak into the streamed text body.
+	if got := sink.text.String(); strings.Contains(got, "Running bash") || !strings.Contains(got, "done text") {
+		t.Errorf("unexpected text body %q", got)
 	}
 }
 
