@@ -8,15 +8,16 @@ import (
 // recordSink is a minimal ChunkSink that records replayed calls so the
 // replay() helper can be verified independently of the SSE layer.
 type recordSink struct {
-	texts    []string
-	replaces []string
-	files    [][4]string
-	suggests []string
-	errs     [][2]string
-	done     int
-	first    int
-	emojis   []string
-	statuses [][2]string
+	texts      []string
+	replaces   []string
+	files      [][4]string
+	suggests   []string
+	errs       [][2]string
+	done       int
+	first      int
+	emojis     []string
+	statuses   [][2]string
+	toolLabels []string
 }
 
 func (r *recordSink) Text(s string) error    { r.texts = append(r.texts, s); return nil }
@@ -35,7 +36,8 @@ func (r *recordSink) FirstChunk()             { r.first++ }
 func (r *recordSink) SetProviderEmoji(e string) {
 	r.emojis = append(r.emojis, e)
 }
-func (r *recordSink) SetStatus(m, p string) { r.statuses = append(r.statuses, [2]string{m, p}) }
+func (r *recordSink) SetStatus(m, p string)     { r.statuses = append(r.statuses, [2]string{m, p}) }
+func (r *recordSink) ToolActivity(label string) { r.toolLabels = append(r.toolLabels, label) }
 
 func TestAnswerRecorderAndReplay(t *testing.T) {
 	inner := &recordSink{}

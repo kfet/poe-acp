@@ -86,6 +86,13 @@ func (a *answerRecorder) SetStatus(mood, plan string) {
 	a.inner.SetStatus(mood, plan)
 }
 
+// ToolActivity is transient liveness (wedge-clock reset + spinner
+// label), not user-visible content, so it is forwarded but NOT recorded:
+// a replayed answer is a completed turn where liveness is moot.
+func (a *answerRecorder) ToolActivity(label string) {
+	a.inner.ToolActivity(label)
+}
+
 // snapshot returns a copy of the recorded calls, safe to retain after
 // the turn ends.
 func (a *answerRecorder) snapshot() []recCall {

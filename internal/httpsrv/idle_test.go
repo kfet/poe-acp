@@ -186,7 +186,7 @@ func TestSink_IdleSince(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := newSink(sse, 0)
+	s := newSink(sse, 0, time.Hour)
 	if s.idleSince() > time.Second {
 		t.Fatalf("fresh sink idle too high: %v", s.idleSince())
 	}
