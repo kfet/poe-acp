@@ -382,7 +382,7 @@ func TestSink_BasicFlow(t *testing.T) {
 	if err := w.Meta(); err != nil {
 		t.Fatal(err)
 	}
-	s := newSink(w, 0) // heartbeat disabled path
+	s := newSink(w, 0, time.Hour) // heartbeat disabled path
 	if err := s.Text("hi"); err != nil {
 		t.Fatal(err)
 	}
@@ -405,10 +405,13 @@ func TestSink_FirstChunkWhileSpinning(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	wait := waitTicks(t, 2) // two ticks → first iteration's hbReplace has definitely written
-	s := newSink(w, 5*time.Millisecond)
+	wait := waitTicks(t, 2) // two ticks → first iteration's hbFrame has definitely written
+	s := newSink(w, 5*time.Millisecond, time.Hour)
 	wait()
+	// FirstChunk is now a no-op: the heartbeat runs the whole turn, so
+	// stop() is what disarms it (Done/Error do in production).
 	s.FirstChunk()
+	s.stop()
 	<-s.hbExited // race-free: heartbeat goroutine has fully returned
 	if !strings.Contains(rec.Body.String(), "Thinking") {
 		t.Fatalf("missing spinner: %s", rec.Body.String())
@@ -485,12 +488,13 @@ func TestOrderedWriter_SpinnerAutoClear(t *testing.T) {
 			w, _ := poeproto.NewSSEWriter(rec)
 			_ = w.Meta()
 			o := &orderedWriter{w: w}
-			// Simulate the heartbeat having shown a non-empty spinner frame.
-			if open, _ := o.hbReplace("> _Thinking._"); !open {
+			// Simulate the heartbeat having shown a spinner frame (acc=="",
+			// so the clear is Replace("") — the cold-start case).
+			if open, _ := o.hbFrame("> _Thinking._"); !open {
 				t.Fatal("precondition: hb gate must start open")
 			}
 			if !o.spinnerVisible {
-				t.Fatal("precondition: spinnerVisible must be true after hbReplace with non-empty body")
+				t.Fatal("precondition: spinnerVisible must be true after hbFrame")
 			}
 			if err := tc.do(o); err != nil {
 				t.Fatal(err)
@@ -577,8 +581,8 @@ func TestOrderedWriter_PostCloseWritesAreNoOps(t *testing.T) {
 		}
 	}
 	// Heartbeat path also no-ops post-close.
-	if open, _ := o.hbReplace("late"); open {
-		t.Fatalf("hbReplace must report gate closed after Done")
+	if open, _ := o.hbFrame("late"); open {
+		t.Fatalf("hbFrame must report gate closed after Done")
 	}
 	if strings.Contains(rec.Body.String(), "late") {
 		t.Fatalf("late content leaked into stream:\n%s", rec.Body.String())
@@ -586,10 +590,14 @@ func TestOrderedWriter_PostCloseWritesAreNoOps(t *testing.T) {
 }
 
 // TestSink_HeartbeatSelfDisarmsViaGate covers the goroutine's
-// self-disarm branch: when a user write closes the gate WHILE the
-// heartbeat goroutine is mid-tick, the goroutine observes
-// gateOpen=false from hbReplace and returns. Catching it inside the
-// tick body via the hook makes the sequencing deterministic.
+// self-disarm branch: when the stream is SEALED (Done) while the
+// heartbeat goroutine is mid-tick and about to emit a spinner frame,
+// hbFrame reports gateOpen=false and the goroutine returns — even
+// though hbDone was never closed. (In production Done closes hbDone too;
+// here we seal via o.userDone() directly so hbDone stays open and the
+// ONLY exit path is the gate check inside the loop.) The heartbeat no
+// longer disarms on a user WRITE — it runs the whole turn — so sealing
+// is the sole in-loop self-disarm.
 func TestSink_HeartbeatSelfDisarmsViaGate(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
@@ -604,32 +612,31 @@ func TestSink_HeartbeatSelfDisarmsViaGate(t *testing.T) {
 	}
 	t.Cleanup(func() { heartbeatTickHook = prev })
 
-	s := newSink(w, time.Millisecond)
+	// No output ever lands → every tick is "stalled" and would emit a
+	// cold-start spinner. stall value is irrelevant here.
+	s := newSink(w, time.Millisecond, time.Hour)
 
 	// Let tick #0 (the immediate pre-loop frame) emit with the gate
 	// still open, so the goroutine enters the ticker loop.
-	<-inTick              // paused inside tick #0's hook, before hbReplace
+	<-inTick              // paused inside tick #0's hook, before hbFrame
 	proceed <- struct{}{} // tick #0 emits a spinner frame, gate open → loop
 
-	<-inTick // paused inside tick #1's hook (ticker-driven), before hbReplace
-	// Close the gate via a user write while the goroutine is paused.
-	// We deliberately do NOT call s.stop() / s.Done(): the hbDone
-	// channel stays open so the only way for the goroutine to exit
-	// is via the gateOpen=false self-disarm branch INSIDE the loop.
-	if err := s.Replace("user content"); err != nil {
+	<-inTick // paused inside tick #1's hook (ticker-driven), before hbFrame
+	// Seal the stream directly (does NOT close hbDone): the next hbFrame
+	// must observe closed=true and report gateOpen=false, the loop's only
+	// remaining exit path.
+	if err := s.o.userDone(); err != nil {
 		t.Fatal(err)
 	}
-	proceed <- struct{}{} // let the goroutine continue → hbReplace → gate closed → return
+	proceed <- struct{}{} // let the goroutine continue → hbFrame → gate closed → return
 	<-s.hbExited          // race-free: goroutine has fully returned via self-disarm
 
-	// Sanity: the tick #0 spinner frame may legitimately precede the
-	// user content, but NO heartbeat frame may appear AFTER it — the
-	// loop self-disarmed on tick #1 before writing. Assert the last
-	// content frame on the wire is the user write, not a stale spinner.
+	// The tick #0 spinner frame precedes the seal; the done event is
+	// last. No spinner frame appears after the seal.
 	events := parseSSE(t, rec.Body.String())
 	last := events[len(events)-1]
-	if last.event != "replace_response" || last.text != "user content" {
-		t.Fatalf("expected final frame to be the user write, got %+v:\n%s", last, rec.Body.String())
+	if last.event != "done" {
+		t.Fatalf("expected final frame to be done, got %+v:\n%s", last, rec.Body.String())
 	}
 }
 
@@ -638,7 +645,7 @@ func TestSink_HeartbeatExitsOnStop(t *testing.T) {
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	wait := waitTicks(t, 1)
-	s := newSink(w, time.Millisecond)
+	s := newSink(w, time.Millisecond, time.Hour)
 	wait()
 	s.stop()
 	<-s.hbExited
@@ -646,25 +653,28 @@ func TestSink_HeartbeatExitsOnStop(t *testing.T) {
 
 // TestOrderedWriter_HeartbeatGatedByUserWrite is the structural
 // regression for the "garbled / out-of-order output" bug. The
-// invariant: once any user-visible write has landed on the SSE stream
-// (Text / Replace / Error / Done), subsequent heartbeat frames must
-// become no-ops — enforced INSIDE orderedWriter, under the same mutex
-// that serialises user writes, so the gate-check-and-write is atomic.
-//
-// Earlier designs put this responsibility on each call site ("call
-// stop() before any user write"), which was a footgun: any new write
-// site that forgot would let a stale heartbeat tick clobber user
-// content with Replace("") (or a "Thinking…" frame). With the gate
-// inside orderedWriter, no caller can bypass it.
-func TestOrderedWriter_HeartbeatGatedByUserWrite(t *testing.T) {
+// TestOrderedWriter_HeartbeatPreservesUserContent is the structural
+// regression for the "garbled / lost output" bug under mid-turn
+// keepalive. Because the heartbeat now runs the WHOLE turn, a keepalive
+// frame legitimately appears after user content — but it must always
+// carry the accumulated answer (never overwrite it with an empty or
+// bare-spinner body). Text/Replace do NOT seal the spinner (the turn
+// keeps its keepalive); a TERMINAL user event (Error or Done) seals it
+// so no spinner frame can land after the terminal event.
+func TestOrderedWriter_HeartbeatPreservesUserContent(t *testing.T) {
+	// After each user-write kind, a following hbFrame must (a) still be
+	// open unless the stream was sealed, and (b) re-render the accumulated
+	// content — proving the keepalive can't drop the answer.
 	cases := []struct {
-		name string
-		do   func(o *orderedWriter) error
+		name       string
+		do         func(o *orderedWriter) error
+		wantSealed bool
+		wantAcc    string // substring the keepalive frame must preserve
 	}{
-		{"userText", func(o *orderedWriter) error { return o.userText("hi") }},
-		{"userReplace", func(o *orderedWriter) error { return o.userReplace("hi") }},
-		{"userError", func(o *orderedWriter) error { return o.userError("oops", "user_caused_error") }},
-		{"userDone", func(o *orderedWriter) error { return o.userDone() }},
+		{"userText", func(o *orderedWriter) error { return o.userText("hi") }, false, "hi"},
+		{"userReplace", func(o *orderedWriter) error { return o.userReplace("hi") }, false, "hi"},
+		{"userError", func(o *orderedWriter) error { return o.userError("oops", "user_caused_error") }, true, ""},
+		{"userDone", func(o *orderedWriter) error { return o.userDone() }, true, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -673,19 +683,34 @@ func TestOrderedWriter_HeartbeatGatedByUserWrite(t *testing.T) {
 			_ = w.Meta()
 			o := &orderedWriter{w: w}
 			// Pre-write: gate is open, heartbeat frames go on the wire.
-			if open, _ := o.hbReplace(""); !open {
+			if open, _ := o.hbFrame("> _Thinking._"); !open {
 				t.Fatal("gate must start open on a fresh orderedWriter")
 			}
-			// User write closes the gate.
+			// User write.
 			if err := tc.do(o); err != nil {
 				t.Fatal(err)
 			}
-			// Post-write: gate is closed; heartbeat frames are no-ops.
-			if open, _ := o.hbReplace("> _Thinking._"); open {
-				t.Fatalf("%s did not close the heartbeat gate", tc.name)
+			open, _ := o.hbFrame("> _Thinking._")
+			if tc.wantSealed {
+				if open {
+					t.Fatalf("%s should have sealed the stream (gate closed)", tc.name)
+				}
+				return
 			}
-			if open, _ := o.hbReplace(""); open {
-				t.Fatalf("%s did not close the heartbeat gate (empty frame)", tc.name)
+			if !open {
+				t.Fatalf("%s must NOT close the heartbeat gate (turn keeps keepalive)", tc.name)
+			}
+			// The keepalive frame re-renders the accumulated answer.
+			events := parseSSE(t, rec.Body.String())
+			last := events[len(events)-1]
+			if last.event != "replace_response" {
+				t.Fatalf("%s: last event %q, want replace_response", tc.name, last.event)
+			}
+			if !strings.Contains(last.text, "Thinking") {
+				t.Fatalf("%s: keepalive frame missing spinner: %q", tc.name, last.text)
+			}
+			if tc.wantAcc != "" && !strings.Contains(last.text, tc.wantAcc) {
+				t.Fatalf("%s: keepalive frame dropped accumulated content %q: %q", tc.name, tc.wantAcc, last.text)
 			}
 		})
 	}
@@ -693,11 +718,12 @@ func TestOrderedWriter_HeartbeatGatedByUserWrite(t *testing.T) {
 
 // TestSink_HeartbeatNeverOverwritesUserContent exercises the invariant
 // end-to-end through the full sink → SSEWriter → http.ResponseWriter
-// path. After driving several heartbeat ticks (so the spinner is
-// definitely alive), it issues a user-visible Replace, then waits for
-// any stale tick to fire (deterministically, via the tick hook), and
-// verifies that no `replace_response` event with a heartbeat-shaped
-// body appears AFTER the user content in the recorded SSE sequence.
+// path. With a long StallThreshold, after user content lands the stream
+// is NOT considered stalled, so no keepalive spinner frame fires right
+// after the write — and in particular no bare heartbeat-shaped
+// `replace_response` (empty or "> _Thinking…_") ever appears after the
+// user content, which would have discarded it. (Mid-turn re-arm frames,
+// tested separately, always carry the accumulated content instead.)
 func TestSink_HeartbeatNeverOverwritesUserContent(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
@@ -713,7 +739,7 @@ func TestSink_HeartbeatNeverOverwritesUserContent(t *testing.T) {
 	// The heartbeat emits visible "Thinking…" frames so the test is
 	// sensitive to the buggy "tick after user write overwrites
 	// content" behaviour the structural fix is meant to prevent.
-	s := newSink(w, time.Millisecond)
+	s := newSink(w, time.Millisecond, time.Hour)
 
 	// Wait for the heartbeat to definitely have ticked a few times.
 	for i := 0; i < 3; i++ {
@@ -986,7 +1012,7 @@ func TestSink_StatusLinePrependsHeaderOnce(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0)
+	s := newSink(w, 0, time.Hour)
 	s.SetProviderEmoji("🏛️")
 	s.SetStatus("steady", "2/5")
 	if err := s.Text("hello"); err != nil {
@@ -1016,7 +1042,7 @@ func TestSink_StatusLineNoHeaderWhenAllEmpty(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0)
+	s := newSink(w, 0, time.Hour)
 	// No SetProviderEmoji, no SetStatus.
 	if err := s.Text("only-content"); err != nil {
 		t.Fatal(err)
@@ -1038,7 +1064,7 @@ func TestSink_StatusLineEmojiOnlyWithoutAgentMeta(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0)
+	s := newSink(w, 0, time.Hour)
 	s.SetProviderEmoji("🌐")
 	if err := s.Text("payload"); err != nil {
 		t.Fatal(err)
@@ -1061,11 +1087,12 @@ func TestSink_StatusLineSpinnerCarriesHeader(t *testing.T) {
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	wait := waitTicks(t, 2)
-	s := newSink(w, 5*time.Millisecond)
+	s := newSink(w, 5*time.Millisecond, time.Hour)
 	s.SetProviderEmoji("🏛️")
 	s.SetStatus("steady", "2/5")
 	wait()
 	s.FirstChunk()
+	s.stop()
 	<-s.hbExited
 	body := rec.Body.String()
 	if !strings.Contains(body, "🏛️") {
@@ -1089,7 +1116,7 @@ func TestSink_StatusLineHeaderSkippedOnReplace(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0)
+	s := newSink(w, 0, time.Hour)
 	s.SetProviderEmoji("🏛️")
 	s.SetStatus("steady", "2/5")
 	if err := s.Replace("_(cancelled)_"); err != nil {
@@ -1154,7 +1181,7 @@ func TestSink_File(t *testing.T) {
 	if err := w.Meta(); err != nil {
 		t.Fatal(err)
 	}
-	s := newSink(w, 0)
+	s := newSink(w, 0, time.Hour)
 	if err := s.File("https://poe/x", "text/markdown", "doc.md", ""); err != nil {
 		t.Fatalf("File: %v", err)
 	}

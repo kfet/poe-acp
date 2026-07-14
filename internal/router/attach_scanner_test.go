@@ -39,6 +39,7 @@ func (s *scanSink) Done() error                { return nil }
 func (s *scanSink) FirstChunk()                {}
 func (s *scanSink) SetProviderEmoji(string)    {}
 func (s *scanSink) SetStatus(string, string)   {}
+func (s *scanSink) ToolActivity(string)        {}
 func (s *scanSink) joined() string             { return strings.Join(s.texts, "") }
 
 func newTestScanner(t *testing.T, sink ChunkSink, cwd string) (*attachScanner, *int) {

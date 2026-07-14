@@ -100,25 +100,33 @@ func TestHeaderMultiByteRuneCap(t *testing.T) {
 
 func TestSpinnerRendering(t *testing.T) {
 	// Empty status still produces a visible frame.
-	if got := Spinner(Status{}, "."); got != "> _Thinking._" {
+	if got := Spinner(Status{}, "", "."); got != "> _Thinking._" {
 		t.Errorf("empty spinner = %q", got)
 	}
-	if got := Spinner(Status{}, "..."); got != "> _Thinking..._" {
+	if got := Spinner(Status{}, "", "..."); got != "> _Thinking..._" {
 		t.Errorf("empty spinner ... = %q", got)
 	}
 	// Default dots fallback when empty.
-	if got := Spinner(Status{}, ""); got != "> _Thinking._" {
+	if got := Spinner(Status{}, "", ""); got != "> _Thinking._" {
 		t.Errorf("default-dots spinner = %q", got)
 	}
 	// Full status: emoji + mood + plan + Thinking....
-	got := Spinner(Status{ProviderEmoji: "🏛️", Mood: "steady", Plan: "2/5"}, "..")
+	got := Spinner(Status{ProviderEmoji: "🏛️", Mood: "steady", Plan: "2/5"}, "", "..")
 	want := "> _🏛️ • steady • 2/5 • Thinking.._"
 	if got != want {
 		t.Errorf("full spinner = %q, want %q", got, want)
 	}
 	// Just provider (unknown mood/plan).
-	if got := Spinner(Status{ProviderEmoji: "🌐"}, "."); got != "> _🌐 • Thinking._" {
+	if got := Spinner(Status{ProviderEmoji: "🌐"}, "", "."); got != "> _🌐 • Thinking._" {
 		t.Errorf("emoji-only spinner = %q", got)
+	}
+	// A non-empty label overrides "Thinking" — used mid-turn to show
+	// the running tool.
+	if got := Spinner(Status{}, "running bash", ".."); got != "> _running bash.._" {
+		t.Errorf("labelled spinner = %q", got)
+	}
+	if got := Spinner(Status{ProviderEmoji: "🏛️"}, "waiting", "."); got != "> _🏛️ • waiting._" {
+		t.Errorf("labelled spinner with emoji = %q", got)
 	}
 }
 
