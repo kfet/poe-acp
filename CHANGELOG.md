@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.41.1] - 2026-07-16
+
 ### Fixed
 
 - **Turns no longer hang open ("Stop" button never clears) after a
