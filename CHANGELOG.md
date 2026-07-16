@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Turns no longer hang open ("Stop" button never clears) after a
+  mid-turn stall.** On long, tool-heavy turns the full response could
+  render on the Poe client while the turn never ended: the terminal
+  `done` event was never sent and the HTTP response never closed. Root
+  cause: the mid-turn keepalive heartbeat performed its blocking SSE
+  `replace_response` write *while holding* `orderedWriter.mu`. When the
+  client stopped reading (TCP backpressure after a real Stop, or Poe's
+  pre-`done` timeout), that write blocked with the lock held, so the
+  terminal `userDone()` and every state read wedged on `mu` forever —
+  `Router.Prompt` never returned and the stream never sealed. Two coupled
+  fixes:
+  - **Never hold the state lock across a wire write.** `orderedWriter`
+    now uses a separate `writeMu` to serialize the actual SSE writes
+    (preserving wire order) while `mu` guards mutable state only and is
+    never held across a write. `userDone` seals the stream (`closed=true`)
+    under `mu` *before* it touches `writeMu`, so finalization is
+    instantaneous even when the heartbeat is mid-write.
+  - **SSE write deadline.** Every SSE wire write now arms a per-write
+    connection deadline (`http.ResponseController.SetWriteDeadline`, new
+    `--sse-write-timeout`, default 30s) so a dead/stalled reader can no
+    longer wedge a write — and therefore the terminal `done` — forever.
+    A blocked write fails after the window; heartbeat frames swallow the
+    error and `userDone` still seals the stream, so the turn always
+    finalizes and the HTTP response always closes. `handleQuery` also
+    seals via an idempotent `userDone` backstop after `Prompt` returns.
+
 ## [0.41.0] - 2026-07-15
 
 ### Fixed
