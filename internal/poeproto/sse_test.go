@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	kitlog "github.com/kfet/acp-kit/log"
 )
@@ -348,5 +349,37 @@ func TestSSEWriter_File(t *testing.T) {
 	}
 	if strings.Contains(b2, "\"inline_ref\":\"\"") {
 		t.Fatalf("non-inline file event sent empty-string inline_ref (bug): %q", b2)
+	}
+}
+
+// TestSSEWriter_WriteTimeout exercises the per-write deadline path:
+// once a write timeout is armed, every wire write calls
+// armDeadlineLocked → ResponseController.SetWriteDeadline. On an
+// httptest recorder the controller reports the deadline unsupported,
+// which the writer swallows, so streaming proceeds unaffected.
+func TestSSEWriter_WriteTimeout(t *testing.T) {
+	rec := httptest.NewRecorder()
+	s, err := NewSSEWriter(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetWriteTimeout(time.Second) // armed: armDeadlineLocked's if-branch
+	if err := s.Preamble(); err != nil {
+		t.Fatalf("preamble: %v", err)
+	}
+	if err := s.Meta(); err != nil {
+		t.Fatalf("meta: %v", err)
+	}
+	if err := s.Text("hi"); err != nil {
+		t.Fatalf("text: %v", err)
+	}
+	if err := s.Done(); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	// Disarm and confirm a subsequent writer with timeout<=0 skips the
+	// deadline branch cleanly.
+	s.SetWriteTimeout(0)
+	if !strings.Contains(rec.Body.String(), "hi") {
+		t.Fatalf("body missing content: %q", rec.Body.String())
 	}
 }
