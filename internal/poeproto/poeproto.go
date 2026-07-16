@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	kitlog "github.com/kfet/acp-kit/log"
 )
@@ -265,7 +267,13 @@ type SSEWriter struct {
 	mu     sync.Mutex
 	w      http.ResponseWriter
 	f      http.Flusher
+	rc     *http.ResponseController
 	closed bool
+	// writeTimeout, when >0, bounds every wire write via
+	// http.ResponseController.SetWriteDeadline so a dead or stalled
+	// reader (client stopped reading — TCP backpressure) cannot wedge a
+	// write, and therefore the terminal `done`, forever. Guarded by mu.
+	writeTimeout time.Duration
 }
 
 // NewSSEWriter prepares headers and returns a writer. Caller must call
@@ -286,8 +294,44 @@ func NewSSEWriter(w http.ResponseWriter) (*SSEWriter, error) {
 	// for this response. See also Preamble.
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	return &SSEWriter{w: w, f: f}, nil
+	return &SSEWriter{w: w, f: f, rc: http.NewResponseController(w)}, nil
 }
+
+// SetWriteTimeout arms (>0) or disarms (<=0) a per-write deadline on the
+// underlying connection. When armed, every subsequent wire write sets a
+// fresh SetWriteDeadline(now+timeout) so a reader that has stopped
+// consuming the stream cannot block a write forever — the write returns
+// an error instead, letting the turn finalize and the HTTP response
+// close. Best-effort: connections that don't support deadlines (e.g. an
+// httptest recorder) simply ignore it. Safe to call before streaming.
+func (s *SSEWriter) SetWriteTimeout(d time.Duration) {
+	s.mu.Lock()
+	s.writeTimeout = d
+	s.mu.Unlock()
+}
+
+// armDeadlineLocked sets a fresh write deadline ahead of a wire write
+// when a write timeout is configured. Caller holds s.mu. If the
+// underlying connection doesn't support deadlines (e.g. a custom
+// ResponseWriter wrapper with no Unwrap, or an httptest recorder) the
+// error is swallowed — but logged ONCE per process, because in that case
+// the finalization guarantee (a stalled reader can't wedge the terminal
+// `done`) silently degrades and a future middleware regression should be
+// visible.
+func (s *SSEWriter) armDeadlineLocked() {
+	if s.writeTimeout <= 0 || s.rc == nil {
+		return
+	}
+	if err := s.rc.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
+		deadlineUnsupportedOnce.Do(func() {
+			log.Printf("WARN sse: connection does not support write deadlines (%v); a stalled reader could wedge a write — turn finalization relies on this deadline", err)
+		})
+	}
+}
+
+// deadlineUnsupportedOnce ensures the "write deadlines unsupported"
+// warning is emitted at most once per process, not per write/stream.
+var deadlineUnsupportedOnce sync.Once
 
 // preamblePadding is the byte length of the padding written by Preamble.
 // A single ~50-byte meta event can sit in an intermediary proxy's
@@ -321,6 +365,7 @@ func (s *SSEWriter) Preamble() error {
 	if s.closed {
 		return fmt.Errorf("sse: closed")
 	}
+	s.armDeadlineLocked()
 	if _, err := s.w.Write(preambleFrame); err != nil {
 		return err
 	}
@@ -339,6 +384,7 @@ func (s *SSEWriter) event(name string, data any) error {
 	if err != nil {
 		return err
 	}
+	s.armDeadlineLocked()
 	if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, b); err != nil {
 		return err
 	}

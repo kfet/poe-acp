@@ -77,6 +77,7 @@ func main() {
 		turnTimeout     = flag.Duration("turn-timeout", 0, "OPTIONAL absolute wall-clock ceiling on a single prompt turn. 0 (default) = no ceiling: an actively-progressing turn is NEVER cut, and only -idle-write-timeout (progress-resetting) can cancel a wedged turn. Set >0 only if you deliberately want a hard upper bound regardless of progress")
 		idleWriteTO     = flag.Duration("idle-write-timeout", 2*time.Minute, "Per-stream wedged-turn backstop: cancel a turn that writes no agent output within this window (heartbeat keepalives do not reset it; a tool_call update does). The only force-kill path during a graceful drain")
 		stallThreshold  = flag.Duration("stall-threshold", 8*time.Second, "Output-silence window before the mid-turn keepalive spinner re-arms via replace_response. Keeps Poe from content-starvation-dropping a long tool-heavy turn. Must stay well under Poe's drop tolerance")
+		sseWriteTO      = flag.Duration("sse-write-timeout", 30*time.Second, "Per-write deadline on every SSE wire write. A client that stopped reading (Poe Stop, dead transport) applies TCP backpressure; without this a blocked write — including the terminal done — never returns and the turn never finalizes. Generous enough never to cut a slow-but-live reader mid-frame")
 		answerTTL       = flag.Duration("answer-ttl", 2*time.Minute, "How long a buffered (absorbed) turn answer is held for a redrive before discard")
 		allowAtt        = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
 		showVersion     = flag.Bool("version", false, "Print version and exit")
@@ -298,6 +299,7 @@ func main() {
 		TurnTimeout:       *turnTimeout,
 		IdleWriteTimeout:  *idleWriteTO,
 		StallThreshold:    *stallThreshold,
+		SSEWriteTimeout:   *sseWriteTO,
 		AnswerTTL:         *answerTTL,
 		ParameterControlsProvider: func() *poeproto.ParameterControls {
 			m, _ := agent.Models()
