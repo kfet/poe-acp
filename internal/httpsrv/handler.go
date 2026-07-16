@@ -89,6 +89,17 @@ type Config struct {
 	// back to defaultStallThreshold (8s), conservatively under Poe's
 	// drop tolerance. Reuses HeartbeatInterval for the animation cadence.
 	StallThreshold time.Duration
+	// SSEWriteTimeout bounds every SSE wire write via a per-write
+	// connection deadline. A client that has stopped reading (Poe pressed
+	// Stop, or a dead transport) applies TCP backpressure; without a
+	// deadline a blocked write — including the terminal `done` — never
+	// returns and the turn never finalizes (the "Stop button stays"
+	// hang). With it, a wedged write fails after this window, the
+	// heartbeat swallows the error, and the terminal `done` still seals
+	// the stream so the HTTP response closes. <=0 falls back to
+	// defaultSSEWriteTimeout (30s): generous enough never to cut a
+	// slow-but-live reader mid-frame, tight enough to bound finalization.
+	SSEWriteTimeout time.Duration
 }
 
 // TurnTimeout has no default: <=0 means no absolute ceiling, leaving the
@@ -110,6 +121,13 @@ const defaultIdleWriteTimeout = 2 * time.Minute
 // conservatively under Poe's content-starvation drop tolerance while
 // keeping re-arm frames rare on a normally-streaming turn.
 const defaultStallThreshold = 8 * time.Second
+
+// defaultSSEWriteTimeout bounds a single SSE wire write when
+// Config.SSEWriteTimeout is unset. A client that stopped reading applies
+// TCP backpressure; 30s is far longer than any healthy write needs (a
+// flushed SSE frame lands in milliseconds) yet bounds finalization so a
+// dead reader cannot wedge the terminal `done` forever.
+const defaultSSEWriteTimeout = 30 * time.Second
 
 // CommandHandler is the surface httpsrv depends on; *command.Broker
 // implements it. Extracted so tests can inject handlers that return
@@ -142,6 +160,9 @@ func New(cfg Config) *Handler {
 	}
 	if cfg.StallThreshold <= 0 {
 		cfg.StallThreshold = defaultStallThreshold
+	}
+	if cfg.SSEWriteTimeout <= 0 {
+		cfg.SSEWriteTimeout = defaultSSEWriteTimeout
 	}
 	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL)}
 }
@@ -199,6 +220,13 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Arm a per-write deadline so a client that has stopped reading (Poe
+	// pressed Stop, or a dead transport applying TCP backpressure) cannot
+	// wedge any SSE write — including the terminal `done` — forever. A
+	// blocked write fails after SSEWriteTimeout; heartbeat frames swallow
+	// the error and userDone still seals the stream, so the turn always
+	// finalizes and the HTTP response always closes.
+	sse.SetWriteTimeout(h.cfg.SSEWriteTimeout)
 	// Flush a padded SSE comment immediately, before any session work, so
 	// a buffering proxy (Tailscale Funnel) forwards first bytes to Poe
 	// right away. Without this Poe sees nothing during the ~400ms session
@@ -284,6 +312,13 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// requested one. Unknown providers return "" → segment dropped.
 	s.SetProviderEmoji(statusline.ProviderEmojiForModel(opts.Model))
 	defer s.stop()
+	// Finalization backstop: whatever path Prompt takes, guarantee the
+	// stream is sealed (idempotent userDone) before handleQuery returns,
+	// so the HTTP response always closes and the client's Stop button
+	// always clears — even if the router path somehow returned without a
+	// terminal event. The primary fix (no lock held across a wire write +
+	// SSE write deadline) prevents the wedge; this defer is the belt.
+	defer func() { _ = s.o.userDone() }()
 
 	// Redrive fast-path: if Poe re-sends a query whose original response
 	// we absorbed (client dropped pre-output) and we buffered, serve the
@@ -461,7 +496,21 @@ var absorbDecidedHook func()
 // the text so far. The heartbeat self-disarms only when the stream is
 // sealed (Done/Error close the gate).
 type orderedWriter struct {
-	w  *poeproto.SSEWriter
+	w *poeproto.SSEWriter
+	// writeMu serialises the ACTUAL wire writes so two goroutines (a
+	// user write and the heartbeat) can never interleave frames, and
+	// wire order matches state-mutation order. It is held ACROSS the
+	// (possibly blocking) SSE write — but never together with mu (see
+	// below). Lock ordering is strict: acquire writeMu BEFORE mu; never
+	// mu then writeMu.
+	writeMu sync.Mutex
+	// mu guards the mutable state below ONLY. It is NEVER held across a
+	// wire write: a write to a client that has stopped reading can block
+	// on TCP backpressure, and holding mu across it would wedge every
+	// state read (isClosed/hasOutput) and the terminal userDone — the
+	// production finalization hang. Each method briefly takes mu to
+	// mutate state and capture the bytes to write, releases mu, then
+	// performs the write under writeMu.
 	mu sync.Mutex
 	// realWritten flips true the first time a user-visible write lands.
 	// Never reset. The handler's gated-cancel path reads it to tell a
@@ -497,14 +546,21 @@ type orderedWriter struct {
 // intentionally swallowed: if the SSE connection has dropped, the
 // subsequent o.w.Text(s) will surface the same failure.
 func (o *orderedWriter) userText(s string) error {
+	o.writeMu.Lock()
+	defer o.writeMu.Unlock()
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.closed {
+		o.mu.Unlock()
 		return nil
 	}
-	o.clearSpinnerLocked()
+	strip, prevAcc := o.spinnerVisible, o.acc
+	o.spinnerVisible = false
 	o.realWritten = true
 	o.acc += s
+	o.mu.Unlock()
+	if strip {
+		_ = o.w.Replace(prevAcc)
+	}
 	return o.w.Text(s)
 }
 
@@ -512,28 +568,38 @@ func (o *orderedWriter) userText(s string) error {
 // replace overwrites the whole body, so it becomes the new accumulator
 // value and no pre-clear is needed.
 func (o *orderedWriter) userReplace(s string) error {
+	o.writeMu.Lock()
+	defer o.writeMu.Unlock()
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.closed {
+		o.mu.Unlock()
 		return nil
 	}
 	o.realWritten = true
 	o.acc = s
 	o.spinnerVisible = false
+	o.mu.Unlock()
 	return o.w.Replace(s)
 }
 
 // userError writes an `error` SSE event. Pre-strips a visible spinner
 // so the error rendering isn't preceded by the transient status line.
 func (o *orderedWriter) userError(text, et string) error {
+	o.writeMu.Lock()
+	defer o.writeMu.Unlock()
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.closed {
+		o.mu.Unlock()
 		return nil
 	}
-	o.clearSpinnerLocked()
+	strip, prevAcc := o.spinnerVisible, o.acc
+	o.spinnerVisible = false
 	o.realWritten = true
 	o.spinnerSealed = true
+	o.mu.Unlock()
+	if strip {
+		_ = o.w.Replace(prevAcc)
+	}
 	return o.w.Error(text, et)
 }
 
@@ -542,15 +608,37 @@ func (o *orderedWriter) userError(text, et string) error {
 // If a spinner is the last thing on screen, strip it first (back to
 // acc) so the user doesn't see a frozen status line as their final
 // content.
+//
+// State is sealed under mu FIRST (closed=true), and mu is released
+// BEFORE writeMu is acquired for the wire write. So the seal is
+// instantaneous even when the heartbeat holds writeMu on a blocked
+// write: closed=true publishes at once (heartbeat self-disarms on its
+// next hbFrame; state reads reflect truth immediately). The wire write
+// is then best-effort, serialized by writeMu (so `done` still lands
+// after any in-flight frame) and bounded by the SSE write deadline, so
+// userDone always returns and the turn always finalizes.
+//
+// This is the one method that takes mu then writeMu (the inverse of the
+// other writers). It is deadlock-safe because it never HOLDS both at
+// once — mu is fully released before writeMu is acquired — so it cannot
+// form a lock-ordering cycle with a writeMu→mu writer.
 func (o *orderedWriter) userDone() error {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.closed {
+		o.mu.Unlock()
 		return nil
 	}
-	o.clearSpinnerLocked()
+	strip, prevAcc := o.spinnerVisible, o.acc
+	o.spinnerVisible = false
 	o.spinnerSealed = true
 	o.closed = true
+	o.mu.Unlock()
+
+	o.writeMu.Lock()
+	defer o.writeMu.Unlock()
+	if strip {
+		_ = o.w.Replace(prevAcc)
+	}
 	return o.w.Done()
 }
 
@@ -559,25 +647,21 @@ func (o *orderedWriter) userDone() error {
 // spinner and marks realWritten. A file event does not add to the text
 // accumulator (it is a distinct event type, not body text).
 func (o *orderedWriter) userFile(url, contentType, name, inlineRef string) error {
+	o.writeMu.Lock()
+	defer o.writeMu.Unlock()
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.closed {
+		o.mu.Unlock()
 		return nil
 	}
-	o.clearSpinnerLocked()
+	strip, prevAcc := o.spinnerVisible, o.acc
+	o.spinnerVisible = false
 	o.realWritten = true
-	return o.w.File(url, contentType, name, inlineRef)
-}
-
-// clearSpinnerLocked strips a visible spinner frame ahead of a user
-// write by re-rendering the body as exactly the accumulated text.
-// Caller must hold o.mu. When acc=="" this is Replace("") — the
-// cold-start clear. Errors are swallowed; see userText.
-func (o *orderedWriter) clearSpinnerLocked() {
-	if o.spinnerVisible {
-		_ = o.w.Replace(o.acc)
-		o.spinnerVisible = false
+	o.mu.Unlock()
+	if strip {
+		_ = o.w.Replace(prevAcc)
 	}
+	return o.w.File(url, contentType, name, inlineRef)
 }
 
 // hbFrame writes a heartbeat-driven keepalive spinner as a
@@ -591,10 +675,17 @@ func (o *orderedWriter) clearSpinnerLocked() {
 // (not just closed) prevents a tick already past its stall check from
 // landing a spinner frame AFTER an `error` event, whose trailing `done`
 // is still pending.
+//
+// Like the user writes, the (possibly blocking) wire write is performed
+// OUTSIDE mu, under writeMu — so a heartbeat frame blocked on a dead
+// reader never wedges the state lock or the terminal userDone. The
+// write is bounded by the SSE write deadline.
 func (o *orderedWriter) hbFrame(line string) (gateOpen bool, err error) {
+	o.writeMu.Lock()
+	defer o.writeMu.Unlock()
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.closed || o.spinnerSealed {
+		o.mu.Unlock()
 		return false, nil
 	}
 	body := line
@@ -602,6 +693,7 @@ func (o *orderedWriter) hbFrame(line string) (gateOpen bool, err error) {
 		body = o.acc + "\n\n" + line
 	}
 	o.spinnerVisible = true
+	o.mu.Unlock()
 	return true, o.w.Replace(body)
 }
 
