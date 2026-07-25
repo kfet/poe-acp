@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-07-25
+
 ### Added
 
 - **Transport contract now tells the agent to persist through failed
