@@ -622,7 +622,7 @@ func (r *Router) systemPromptForSession() string {
 // capability the relay cannot honour.
 const attachContractClause = `
 
-3. Output attachments. You can attach a file from this host to your
+4. Output attachments. You can attach a file from this host to your
    reply so it appears as a downloadable attachment in the chat. Emit,
    on its OWN line in your message, an HTML comment directive:
      <!--poe-attach path="/abs/or/relative/path" name="Nice Name"-->
@@ -637,15 +637,16 @@ const attachContractClause = `
 // prompt so the agent understands the relay's I/O contract: how
 // synthetic out-of-band turns are marked, that the user is only
 // reachable as the response to one of their own turns (no back-channel
-// exists), and that the user may not be co-located on this host —
+// exists), that the user may not be co-located on this host —
 // they may be on mobile or a browser with no shell, tmux, or local
-// file access. Reaction turns are queued FIFO with real user prompts
-// and share the same session history, but their responses are
-// discarded.
+// file access — and that a failed tool result is a step to retry, not
+// a reason to yield the turn. Reaction turns are queued FIFO with real
+// user prompts and share the same session history, but their responses
+// are discarded.
 const transportContractClause = `[SYS_EXT] Relay & Transport Contract:
 
 You are reached via poe-acp, a chat relay that forwards a Poe
-conversation to you over ACP. Two things follow.
+conversation to you over ACP. Three things follow.
 
 1. Out-of-band turns. Some user messages begin with
    "[poe-acp:out-of-band ...]" — these are synthetic turns injected by
@@ -669,7 +670,18 @@ conversation to you over ACP. Two things follow.
    you own the observation loop. Manage background work yourself
    (poll, summarise, report back in chat), keep output mobile-friendly
    (compact, narrow, summary first), and follow their lead if they
-   signal local access.`
+   signal local access.
+
+3. Turn persistence. An empty, errored, or timed-out tool result is a
+   FAILED STEP, not a terminus — never end the turn because a call
+   came back empty or errored. Retry it, or fall back (if a blocking
+   wait/poll helper fails, poll manually); at minimum report current
+   state before yielding — never emit nothing. Ending early strands
+   the user: per (2) they reach you only as the reply to their own
+   turn, so they must notice the silence and nudge — retrying costs
+   seconds, yielding an indefinite stall. Launch long-running work
+   DETACHED (tmux/setsid on the target host) so a turn failure kills
+   only the reporting, never the work — a later nudge recovers it.`
 
 // OnUpdate implements client.SessionUpdateSink. It enqueues the
 // notification on the session-lifetime chunkCh. No lock is needed:
