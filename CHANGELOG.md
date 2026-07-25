@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Transport contract now tells the agent to persist through failed
+  tool results.** A new facet in the relay/transport clause prepended to
+  every system prompt: an empty, errored, or timed-out tool result is a
+  failed step, not a terminus — retry or fall back (poll manually if a
+  blocking wait/poll helper fails), and at minimum report current state
+  before yielding. Because the user reaches the agent only as the reply
+  to their own turn, ending early strands them; long-running background
+  work should run detached (tmux/setsid) so a turn failure kills only the
+  reporting, not the work.
+
 ## [0.41.1] - 2026-07-16
 
 ### Fixed
