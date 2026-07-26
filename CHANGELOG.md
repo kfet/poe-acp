@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Reaction events are persisted to `<StateDir>/reactions.jsonl`.** Each
+  👍/👎 append/remove writes one JSON line (`ts`, `conv_id`, `user_id`,
+  `message_id`, `reaction`, `action`) before the reaction turn is queued,
+  so the only human quality label the relay sees survives a failed
+  session create or a shed queue. Best-effort: IO errors are logged, never
+  surfaced to the caller.
+
 ## [0.42.0] - 2026-07-25
 
 ### Added

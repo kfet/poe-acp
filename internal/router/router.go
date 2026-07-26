@@ -254,6 +254,10 @@ type Router struct {
 	mu        sync.Mutex
 	sessions  map[string]*sessionState
 	overrides map[string]string // convID → sticky model id set via !model
+
+	// reactionLogMu serialises appends to the reactions ledger so
+	// concurrent reaction events never interleave a partial line.
+	reactionLogMu sync.Mutex
 }
 
 // sessionState tracks one conv_id.
@@ -1026,12 +1030,23 @@ func (r *Router) ReportReaction(ctx context.Context, convID, userID, messageID, 
 	if convID == "" {
 		convID = "default"
 	}
+	if action == "" {
+		action = "added"
+	}
+	// Persist the label first: a reaction is the only human quality
+	// signal the relay ever sees, so it must survive a session that
+	// cannot be created and a queue that sheds the turn.
+	r.persistReaction(reactionRecord{
+		TS:        r.cfg.Now().UTC().Format(time.RFC3339),
+		ConvID:    convID,
+		UserID:    userID,
+		MessageID: messageID,
+		Reaction:  kind,
+		Action:    action,
+	})
 	st, _, err := r.getOrCreate(ctx, convID, userID, nil)
 	if err != nil {
 		return fmt.Errorf("reaction: getOrCreate: %w", err)
-	}
-	if action == "" {
-		action = "added"
 	}
 	promptText := fmt.Sprintf(
 		"[poe-acp:out-of-band reaction]\n"+
@@ -1055,6 +1070,42 @@ func (r *Router) ReportReaction(ctx context.Context, convID, userID, messageID, 
 	kitlog.Debugf("router: queued reaction conv=%s msg=%s kind=%s action=%s",
 		convID, messageID, kind, action)
 	return nil
+}
+
+// reactionsLogName is the append-only JSONL ledger of reaction events,
+// written at StateDir/reactions.jsonl.
+const reactionsLogName = "reactions.jsonl"
+
+// reactionRecord is one line of the reactions ledger.
+type reactionRecord struct {
+	TS        string `json:"ts"`
+	ConvID    string `json:"conv_id"`
+	UserID    string `json:"user_id"`
+	MessageID string `json:"message_id"`
+	Reaction  string `json:"reaction"`
+	Action    string `json:"action"`
+}
+
+// persistReaction appends rec to StateDir/reactions.jsonl. Best effort:
+// IO failures are logged and swallowed, never surfaced to the caller —
+// a lost label must not cost the user their reaction turn.
+func (r *Router) persistReaction(rec reactionRecord) {
+	path := filepath.Join(r.cfg.StateDir, reactionsLogName)
+	r.reactionLogMu.Lock()
+	defer r.reactionLogMu.Unlock()
+	if err := appendLine(path, mustMarshalJSON(rec)); err != nil {
+		log.Printf("router: reaction ledger %s: %v", path, err)
+	}
+}
+
+// appendLine appends line plus a newline to path, creating it if needed.
+func appendLine(path string, line []byte) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open: %w", err)
+	}
+	_, werr := f.Write(append(line, '\n'))
+	return errors.Join(werr, f.Close())
 }
 
 // discardSink is the no-op ChunkSink used for reaction turns: the
