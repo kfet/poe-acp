@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-07-26
+
 ### Added
 
 - **Reaction events are persisted to `<StateDir>/reactions.jsonl`.** Each
