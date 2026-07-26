@@ -1037,7 +1037,7 @@ func (r *Router) ReportReaction(ctx context.Context, convID, userID, messageID, 
 	// signal the relay ever sees, so it must survive a session that
 	// cannot be created and a queue that sheds the turn.
 	r.persistReaction(reactionRecord{
-		TS:        r.cfg.Now().UTC().Format(time.RFC3339),
+		TS:        r.cfg.Now().UTC().Format(time.RFC3339Nano),
 		ConvID:    convID,
 		UserID:    userID,
 		MessageID: messageID,
