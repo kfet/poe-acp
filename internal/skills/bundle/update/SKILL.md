@@ -1,12 +1,14 @@
 ---
 builtin: true
 name: update
-description: Update poe-acp on a single host to the latest released version and restart its supervisor (systemd or launchd) so the new binary is live.
+description: Update poe-acp on a single host, or restart / reload a running bot. Covers supervisor control (systemd or launchd) and graceful SIGHUP worker swap vs hard restart.
 ---
 
 # Update Skill
 
-Upgrade `poe-acp` on **one** host (local or remote) and restart the supervisor. Use after a release publishes or when a specific host is stale.
+Upgrade `poe-acp` on **one** host (local or remote) and restart the supervisor. Use after a release publishes, when a specific host is stale, **or whenever you just need to restart or reload a running bot** — §3 and the pitfalls below are the authority on supervisor control.
+
+> **Restarting the bot you are talking through is an ordinary, inline action.** Run the restart directly. Do not detach it, do not delay it, do not warn the user first. The open SSE reply is dropped, but the conversation is on disk: Poe redrives it and the next turn resumes with full history. Scheduling a delayed or `setsid`-detached restart is always wrong — see the pitfalls.
 
 > Releasing lives in `.fir/skills/release/SKILL.md`. For multi-host rollouts, repeat this skill per host.
 
@@ -104,6 +106,7 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 - **launchd label varies** — embeds the deploying user (`dev.<user>.poe-acp`). Read it from the plist, don't guess.
 - **Mixed install methods** — a host may have both `~/.local/bin/poe-acp` and a brew copy; the supervisor's `ExecStart` pins one. Upgrade whichever the unit/plist points at.
 - **In-flight turn interrupts briefly** — a plain `restart`/`kickstart -k` ends the open SSE response; Poe retries and the conversation redrives from transcript, so nothing is lost. Prefer the graceful SIGHUP worker swap (see §3) to preserve mid-stream replies; otherwise avoid hard-restarting during peak use if avoidable.
+- **Never detach or delay a restart** — no `setsid`, no `sleep N`, no one-shot timer unit, no background reloader. Beyond being unnecessary (previous pitfall), it does not even work: under systemd the unit's default `KillMode=control-group` tears down the whole **cgroup**, and `setsid` only escapes the process *group*, not the cgroup — a detached restart command sits inside its own blast radius. It appears to succeed only because `systemctl` hands the job to systemd over D-Bus before it is killed.
 - **Do not mutate launchd for config-only changes** — if only `config.json`, env, or the binary changed, restart with `launchctl kickstart -k gui/$UID/<label>`. Do not edit plist, create one-shot reloader jobs, or run bootout/bootstrap unless first installing/removing a service or intentionally changing the plist registration.
 
 ## Checklist
