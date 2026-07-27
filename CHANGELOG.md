@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-07-27
+
+### Added
+
+- **Transport contract clause 4, "Operating on yourself".** Clause 3 tells the
+  agent to launch long-running work DETACHED "on the target host"; agents were
+  over-generalising that to the relay itself and composing delayed, `setsid`-
+  detached restart ceremonies (`setsid bash -c 'sleep 8; systemctl --user
+  restart ...' &`) rather than just restarting. Nothing in the always-present
+  contract covered self-directed operations, so the nearest-shaped rule got
+  forced to fit. Clause 4 states the fact that dissolves the anxiety:
+  conversations are on disk and resume, only the in-flight reply is lost, and
+  Poe redrives it — so restart/reload/binary-swap are ordinary inline actions.
+
+### Changed
+
+- **Transport contract prose moved from a Go raw string literal into embedded
+  markdown** (`internal/router/contract.md`, `internal/router/attach-contract.md`,
+  via `go:embed`). Injection is unchanged: still compiled into the binary, still
+  prepended UNCONDITIONALLY to every session's system prompt, still asserted by
+  `system_prompt_test.go`, still not host-overridable — it is an invariant, not a
+  trigger-gated skill. Only the authoring surface changed: the prose is now
+  editable as markdown, so the attachment clause no longer has to splice
+  backticks with `+ "`" +` concatenation.
+- **`update` skill now triggers on plain restarts, not just version upgrades.**
+  Its description gated on "update to the latest released version", so an agent
+  asked merely to *restart a bot* never loaded it — and the correct guidance
+  ("never schedule a delayed reloader", "Poe retries and the conversation
+  redrives from transcript, so nothing is lost") sat unread. Description widened
+  to cover restart/reload, with the inline-restart rule stated up front.
+
+### Fixed
+
+- **`update` skill: corrected the claim that a detached restart survives.** Under
+  systemd the unit's default `KillMode=control-group` tears down the whole
+  cgroup, and `setsid` escapes only the process *group*, not the cgroup — a
+  detached restart command sits inside its own blast radius and is killed. It
+  appears to work only because `systemctl` hands the job to systemd over D-Bus
+  before being killed. Documented as an explicit pitfall.
+
 ## [0.43.0] - 2026-07-26
 
 ### Added

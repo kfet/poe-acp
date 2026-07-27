@@ -39,6 +39,9 @@ func TestSystemPrompt_CapPath(t *testing.T) {
 	if !strings.Contains(agent.lastSysBlocks[0].Text.Text, "Turn persistence") {
 		t.Fatalf("static system prompt missing turn-persistence facet: %+v", agent.lastSysBlocks)
 	}
+	if !strings.Contains(agent.lastSysBlocks[0].Text.Text, "Operating on yourself") {
+		t.Fatalf("static system prompt missing self-operations facet: %+v", agent.lastSysBlocks)
+	}
 	if strings.Contains(agent.lastPromptTxt, "DURABLE-CATALOG-XYZ") {
 		t.Fatalf("cap path must NOT inline catalog on prompt; got %q", agent.lastPromptTxt)
 	}
