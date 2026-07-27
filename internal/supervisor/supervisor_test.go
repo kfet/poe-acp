@@ -224,6 +224,43 @@ func TestNotifyReady_NonPositiveParent(t *testing.T) {
 	}
 }
 
+// TestSignalSupervisor_ForwardsAndGuards asserts the shared
+// worker→supervisor signal path: it delivers via the seam, surfaces
+// delivery errors, and refuses a broadcast/reparented pid. No real signal
+// is ever sent.
+func TestSignalSupervisor_ForwardsAndGuards(t *testing.T) {
+	oldPpid, oldKill := getppid, kill
+	defer func() { getppid, kill = oldPpid, oldKill }()
+
+	var gotPid int
+	var gotSig syscall.Signal
+	kill = func(pid int, sig syscall.Signal) error { gotPid, gotSig = pid, sig; return nil }
+	getppid = func() int { return 4242 }
+	if err := SignalSupervisor(syscall.SIGHUP); err != nil {
+		t.Fatalf("SignalSupervisor: %v", err)
+	}
+	if gotPid != 4242 || gotSig != syscall.SIGHUP {
+		t.Fatalf("kill(%d,%v) want kill(4242,SIGHUP)", gotPid, gotSig)
+	}
+
+	kill = func(int, syscall.Signal) error { return errors.New("boom") }
+	if err := SignalSupervisor(syscall.SIGHUP); err == nil {
+		t.Fatal("want error when delivery fails")
+	}
+
+	killed := false
+	kill = func(int, syscall.Signal) error { killed = true; return nil }
+	for _, pid := range []int{-1, 0, 1} {
+		getppid = func() int { return pid }
+		if err := SignalSupervisor(syscall.SIGHUP); err == nil {
+			t.Fatalf("pid %d: want refusal error", pid)
+		}
+	}
+	if killed {
+		t.Fatal("must never signal a non-positive/pid-1 parent")
+	}
+}
+
 // ---- supervisorListen / New ----
 
 func TestNew_ColdBind(t *testing.T) {
@@ -360,7 +397,7 @@ func TestSpawn_StartFail(t *testing.T) {
 	}
 }
 
-// ---- Drain ----
+// ---- drain ----
 
 func TestDrain_Success(t *testing.T) {
 	// A long sleep we can SIGTERM. Its own pgroup so the signal can never
@@ -371,7 +408,7 @@ func TestDrain_Success(t *testing.T) {
 		t.Fatalf("start sleep: %v", err)
 	}
 	s := newSup(t)
-	if err := s.Drain(cmd.Process); err != nil {
+	if err := s.drain(cmd.Process); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	_, _ = cmd.Process.Wait()
@@ -385,7 +422,7 @@ func TestDrain_Error(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	_, _ = cmd.Process.Wait() // reap so the next Signal errors
-	if err := s.Drain(cmd.Process); err == nil {
+	if err := s.drain(cmd.Process); err == nil {
 		t.Fatal("want error signalling a finished process")
 	}
 }

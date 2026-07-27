@@ -934,6 +934,18 @@ func (r *Router) submitTurn(ctx context.Context, convID, userID string, query []
 		// has returned. The handler's external Cancel path will have
 		// already issued session/cancel, so the agent (and runner) will
 		// unwind promptly.
+		//
+		// This wait is deliberately unbounded, and it is the reason a
+		// worker drain must be bounded from the OUTSIDE: an agent that
+		// ignores session/cancel leaves the runner (and therefore this
+		// handler, and therefore http.Server.Shutdown) parked here
+		// forever. Bounding it here instead would mean returning while
+		// the runner may still write to the sink — i.e. touching the
+		// ResponseWriter after ServeHTTP returned, which net/http
+		// forbids. So the escape hatch lives one level up: the worker's
+		// -drain-deadline force-closes and exits (see
+		// internal/supervisor/drain.go), and the process teardown
+		// reclaims this goroutine.
 		<-req.done
 		if req.err != nil {
 			return req.err
