@@ -6,6 +6,7 @@ package router
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -613,9 +614,9 @@ func (r *Router) systemPromptForSession() string {
 	if text == "" {
 		return ""
 	}
-	clause := transportContractClause
+	clause := strings.TrimSpace(transportContractClause)
 	if r.uploader != nil && !r.cfg.MCPAttachEnabled {
-		clause += attachContractClause
+		clause += "\n\n" + strings.TrimSpace(attachContractClause)
 	}
 	return clause + "\n\n" + text
 }
@@ -623,69 +624,32 @@ func (r *Router) systemPromptForSession() string {
 // attachContractClause documents the output-attachment directive. It
 // is appended to the transport contract only when uploads are enabled
 // (the bot has an access key), so the agent is never told about a
-// capability the relay cannot honour.
-const attachContractClause = `
-
-4. Output attachments. You can attach a file from this host to your
-   reply so it appears as a downloadable attachment in the chat. Emit,
-   on its OWN line in your message, an HTML comment directive:
-     <!--poe-attach path="/abs/or/relative/path" name="Nice Name"-->
-   The relay intercepts the line (it never reaches the user), uploads
-   the file to Poe, and attaches it. ` + "`" + `path` + "`" + ` is required; relative
-   paths resolve against your working dir. ` + "`" + `name` + "`" + ` is optional. Add a
-   bare ` + "`" + `inline` + "`" + ` token (e.g. ...name="Chart" inline-->) to render an
-   image inline rather than as an attachment chip. Use this to deliver
-   files instead of pasting large content or standing up a web server.`
+// capability the relay cannot honour. Prose lives in
+// attach-contract.md so it can be edited as markdown (backticks and
+// all) instead of a Go raw string literal.
+//
+//go:embed attach-contract.md
+var attachContractClause string
 
 // transportContractClause is prepended to the provider-supplied system
 // prompt so the agent understands the relay's I/O contract: how
 // synthetic out-of-band turns are marked, that the user is only
 // reachable as the response to one of their own turns (no back-channel
-// exists), that the user may not be co-located on this host —
-// they may be on mobile or a browser with no shell, tmux, or local
-// file access — and that a failed tool result is a step to retry, not
-// a reason to yield the turn. Reaction turns are queued FIFO with real
-// user prompts and share the same session history, but their responses
-// are discarded.
-const transportContractClause = `[SYS_EXT] Relay & Transport Contract:
-
-You are reached via poe-acp, a chat relay that forwards a Poe
-conversation to you over ACP. Three things follow.
-
-1. Out-of-band turns. Some user messages begin with
-   "[poe-acp:out-of-band ...]" — these are synthetic turns injected by
-   the relay, NOT typed by the user. The most common kind is a
-   reaction event ("[poe-acp:out-of-band reaction]") telling you the
-   user added or removed a reaction (👍, 👎, etc.) on one of your
-   earlier messages. Your reply to an out-of-band turn is NOT shown to
-   the user — ack tersely (a one-liner is fine), and do not invoke
-   tools with user-visible side effects unless the marker explicitly
-   requests it. The relay discards the response; it exists only so
-   your in-session memory / preference notes reflect the new
-   information.
-
-2. Surface & back-channel. The chat is your only channel to the user,
-   and you reach them only as the response to one of their turns —
-   there is no proactive back-channel, no "I'll check back later", no
-   follow-ups once the turn ends. Finish the work, or surface what's
-   outstanding and why, before yielding. The user may not be on this
-   host: they could be on mobile, in a browser, with no shell, tmux,
-   or local file access. Do not punt observation to their terminal —
-   you own the observation loop. Manage background work yourself
-   (poll, summarise, report back in chat), keep output mobile-friendly
-   (compact, narrow, summary first), and follow their lead if they
-   signal local access.
-
-3. Turn persistence. An empty, errored, or timed-out tool result is a
-   FAILED STEP, not a terminus — never end the turn because a call
-   came back empty or errored. Retry it, or fall back (if a blocking
-   wait/poll helper fails, poll manually); at minimum report current
-   state before yielding — never emit nothing. Ending early strands
-   the user: per (2) they reach you only as the reply to their own
-   turn, so they must notice the silence and nudge — retrying costs
-   seconds, yielding an indefinite stall. Launch long-running work
-   DETACHED (tmux/setsid on the target host) so a turn failure kills
-   only the reporting, never the work — a later nudge recovers it.`
+// exists), that the user may not be co-located on this host — they may
+// be on mobile or a browser with no shell, tmux, or local file access —
+// that a failed tool result is a step to retry, not a reason to yield
+// the turn, and that operating on the relay itself is an ordinary
+// inline action. Reaction turns are queued FIFO with real user prompts
+// and share the same session history, but their responses are
+// discarded.
+//
+// The prose lives in contract.md rather than a Go raw string literal:
+// it is still embedded in the binary and injected UNCONDITIONALLY on
+// every turn (it is an invariant, not a trigger-gated skill), but it
+// can be edited as markdown and reviewed as prose.
+//
+//go:embed contract.md
+var transportContractClause string
 
 // OnUpdate implements client.SessionUpdateSink. It enqueues the
 // notification on the session-lifetime chunkCh. No lock is needed:
