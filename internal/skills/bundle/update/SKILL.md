@@ -100,6 +100,7 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 
 - **Stale tap** — `brew upgrade` is a no-op until `brew update` refreshes the tap.
 - **Missed restart** — replacing the binary on disk does not reload the running process. Always restart the supervisor.
+- **Upgrading the *agent* binary (e.g. `fir update`) is the same trap** — each relay worker holds ONE long-lived agent process shared by all its conversations (a Poe conv is an ACP *session*, not a process). A new agent binary on disk is inert until the worker is cycled: `systemctl --user reload` / SIGHUP forks a new worker with a fresh agent, so **new** conversations get the new agent; conversations pinned to the draining old worker keep the old binary until it exits. Verify with the process tree (`ps --ppid <supervisor>`, then `readlink /proc/<agent-pid>/exe`), not with `<agent> --version` on disk.
 - **launchd label varies** — embeds the deploying user (`dev.<user>.poe-acp`). Read it from the plist, don't guess.
 - **Mixed install methods** — a host may have both `~/.local/bin/poe-acp` and a brew copy; the supervisor's `ExecStart` pins one. Upgrade whichever the unit/plist points at.
 - **In-flight turn interrupts briefly** — a plain `restart`/`kickstart -k` ends the open SSE response; Poe retries and the conversation redrives from transcript, so nothing is lost. Prefer the graceful SIGHUP worker swap (see §3) to preserve mid-stream replies; otherwise avoid hard-restarting during peak use if avoidable.
