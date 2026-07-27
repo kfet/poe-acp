@@ -173,6 +173,13 @@ update    Self-update the binary from GitHub Releases (see Updating above).
 --session-ttl          Idle TTL for a conv (default 2h)
 --gc-interval          GC sweep interval (default 5m)
 --heartbeat-interval   SSE heartbeat tick (default 10s, 0 to disable)
+--drain-deadline       Bound on a worker's post-SIGTERM drain (default 45s).
+                       In-flight streams complete undisturbed below it; past
+                       it the worker force-closes what remains, logs the
+                       abandoned streams, and exits — and the supervisor
+                       SIGKILLs it 15s later if it still has not. Keep well
+                       under the init system's stop timeout (systemd
+                       TimeoutStopSec=90s).
 --version              Print version and exit
 ```
 

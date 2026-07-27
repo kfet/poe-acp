@@ -78,6 +78,7 @@ func main() {
 		idleWriteTO     = flag.Duration("idle-write-timeout", 2*time.Minute, "Per-stream wedged-turn backstop: cancel a turn that writes no agent output within this window (heartbeat keepalives do not reset it; a tool_call update does). The only force-kill path during a graceful drain")
 		stallThreshold  = flag.Duration("stall-threshold", 8*time.Second, "Output-silence window before the mid-turn keepalive spinner re-arms via replace_response. Keeps Poe from content-starvation-dropping a long tool-heavy turn. Must stay well under Poe's drop tolerance")
 		sseWriteTO      = flag.Duration("sse-write-timeout", 30*time.Second, "Per-write deadline on every SSE wire write. A client that stopped reading (Poe Stop, dead transport) applies TCP backpressure; without this a blocked write — including the terminal done — never returns and the turn never finalizes. Generous enough never to cut a slow-but-live reader mid-frame")
+		drainDeadline   = flag.Duration("drain-deadline", supervisor.DefaultDrainDeadline, "OUTER drain bound. After SIGTERM a worker drains its in-flight SSE streams to natural completion; if any are still open after this window the worker force-closes them and exits anyway, and the supervisor SIGKILLs a worker that still has not exited "+supervisor.RetireGrace.String()+" later. Must stay comfortably under the init system's stop timeout (systemd TimeoutStopSec=90s)")
 		answerTTL       = flag.Duration("answer-ttl", 2*time.Minute, "How long a buffered (absorbed) turn answer is held for a redrive before discard")
 		allowAtt        = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
 		showVersion     = flag.Bool("version", false, "Print version and exit")
@@ -103,6 +104,15 @@ func main() {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("poe-acp %s starting", version)
+	// Clamp the drain bound ONCE, here, so the worker's own deadline and
+	// the supervisor's escalation deadline (drain + RetireGrace) are
+	// always derived from the same effective value. Without this,
+	// -drain-deadline 0 would leave the worker on the 45s default while
+	// the supervisor escalated at 15s — SIGKILLing healthy streams on
+	// every reload.
+	if *drainDeadline <= 0 {
+		*drainDeadline = supervisor.DefaultDrainDeadline
+	}
 	if kitlog.Enabled() {
 		log.Printf("debug logging: ON")
 	}
@@ -154,7 +164,7 @@ func main() {
 	// inherited listener and runs all the relay logic below. The
 	// supervisor is tiny and never reaches the agent/router setup.
 	if !supervisor.IsWorker() {
-		runSupervisor(*httpAddr, version)
+		runSupervisor(*httpAddr, version, *drainDeadline)
 		return
 	}
 	log.Printf("worker mode (pid=%d, supervisor=%d)", os.Getpid(), os.Getppid())
@@ -355,15 +365,34 @@ func main() {
 
 	// SIGTERM from the supervisor = stop accepting, drain in-flight
 	// streams to natural completion (the per-stream idle-write backstop
-	// is the only force-kill), then exit cleanly.
+	// cuts a wedged turn), then exit cleanly — BOUNDED by
+	// -drain-deadline so a stream the idle-write backstop cannot clear
+	// can never make this worker immortal.
 	drainCh := make(chan struct{})
 	var drainOnce sync.Once
 	term := make(chan os.Signal, 1)
 	signal.Notify(term, syscall.SIGTERM)
 	go func() {
 		for range term {
-			log.Printf("SIGTERM: draining in-flight streams (unbounded; idle-write backstop active)")
+			log.Printf("SIGTERM: draining in-flight streams (deadline %s; idle-write backstop active)", *drainDeadline)
 			drainOnce.Do(func() { close(drainCh) })
+		}
+	}()
+
+	// A SIGHUP delivered directly to a WORKER (the pid /healthz reports,
+	// and the obvious thing for an operator to signal) used to be fatal:
+	// Go's default disposition for SIGHUP terminates the process, so
+	// every in-flight SSE stream was dropped instantly — the exact
+	// opposite of a graceful reload. The supervisor mediates worker
+	// lifecycle, so forward the intent instead of dying.
+	hupW := make(chan os.Signal, 1)
+	signal.Notify(hupW, syscall.SIGHUP)
+	go func() {
+		for range hupW {
+			log.Printf("SIGHUP: forwarding worker-swap request to supervisor")
+			if err := supervisor.SignalSupervisor(syscall.SIGHUP); err != nil {
+				log.Printf("worker: %v", err)
+			}
 		}
 	}()
 
@@ -389,7 +418,7 @@ func main() {
 				scope = "supervisor-self-upgrade"
 			}
 			log.Printf("/admin/reexec: requesting %s from supervisor", scope)
-			if err := syscall.Kill(os.Getppid(), sig); err != nil {
+			if err := supervisor.SignalSupervisor(sig); err != nil {
 				http.Error(w, "signal supervisor: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -415,12 +444,49 @@ func main() {
 	}
 
 	<-drainCh
-	// Unbounded drain: http.Server.Shutdown respects hijacked SSE
-	// connections, so a legitimately streaming turn survives; the
-	// idle-write backstop force-kills a wedged turn.
-	_ = srv.Shutdown(context.Background())
-	log.Printf("worker: drain complete, exiting")
+	// Bounded drain: http.Server.Shutdown lets a legitimately streaming
+	// turn finish undisturbed, and the per-stream idle-write backstop
+	// cuts a wedged turn. If BOTH miss — a handler stuck in a way the
+	// idle clock cannot see — the deadline force-closes what is left and
+	// this worker exits anyway, instead of joining the pile of undead
+	// generations systemd eventually SIGKILLs.
+	res, derr := supervisor.DrainServer(srv, *drainDeadline, func() {
+		abandoned := h.InFlight()
+		log.Printf("WARN drain deadline %s exceeded: force-closing %d in-flight stream(s)", *drainDeadline, len(abandoned))
+		for _, s := range abandoned {
+			log.Printf("WARN   abandoned stream: conv=%s user=%s msg=%s age=%s",
+				s.ConvID, s.UserID, s.MessageID, s.Age.Round(time.Second))
+		}
+		// Cleanup below (agent shutdown, MCP host close) must not become
+		// the new place we hang: exit regardless once it has had its
+		// grace. Left armed deliberately — the process is exiting on
+		// this path either way, so the timer is moot if cleanup wins.
+		_ = supervisor.ForceExitAfter(supervisor.ForceExitGrace, func() {
+			log.Printf("WARN post-drain cleanup did not finish in %s; force-exiting", supervisor.ForceExitGrace)
+			os.Exit(0)
+		})
+	})
+	if res == supervisor.DrainForced {
+		log.Printf("worker: drain FORCED after %s, exiting", *drainDeadline)
+	} else {
+		if derr != nil {
+			log.Printf("worker: drain completed with error: %v", derr)
+		}
+		log.Printf("worker: drain complete, exiting")
+	}
+	// No force-exit backstop on the graceful path: if cleanup below
+	// wedges, the supervisor's own escalation (drain-deadline +
+	// RetireGrace) SIGKILLs this worker's process group, so it still
+	// cannot become an undead generation.
 	cancel() // stop the agent + GC via deferred Close()
+}
+
+// worker pairs a forked worker process with the channel its reaper closes
+// when the process exits. Retirement needs both: the pid to signal and a
+// death signal to bound the wait on.
+type worker struct {
+	proc *os.Process
+	dead chan struct{}
 }
 
 // runSupervisor is the master process: it binds the listen socket once
@@ -429,12 +495,17 @@ func main() {
 // upgrades — making EADDRINUSE-on-relaunch structurally impossible on both
 // launchd and systemd. It does not return: it os.Exit()s on shutdown, or
 // re-execs itself in place on a supervisor self-upgrade.
-func runSupervisor(addr, version string) {
+//
+// drainDeadline is the worker-side bound; the supervisor allows the
+// worker that plus supervisor.RetireGrace before escalating to SIGKILL,
+// so a wedged worker generation can never survive its retirement.
+func runSupervisor(addr, version string, drainDeadline time.Duration) {
 	sup, err := supervisor.New(supervisor.Config{Addr: addr})
 	if err != nil {
 		log.Fatalf("supervisor: %v", err)
 	}
 	log.Printf("supervisor %s on %s (pid=%d)", version, sup.Addr(), os.Getpid())
+	retireDeadline := drainDeadline + supervisor.RetireGrace
 
 	// SIGUSR1 from a freshly spawned worker => it is ready to serve.
 	readySig := make(chan os.Signal, 8)
@@ -452,8 +523,35 @@ func runSupervisor(addr, version string) {
 	// Worker exits funnel here as pids (one waiter goroutine per worker).
 	exitCh := make(chan int, 8)
 
+	// retire drains w and escalates to SIGKILL if it has not exited
+	// within retireDeadline. Blocks until w's exit is observed (or the
+	// escalation has run), so callers that need quiescence — self-reexec,
+	// shutdown — can call it inline.
+	retire := func(w *worker) {
+		res, err := sup.Retire(w.proc, w.dead, retireDeadline, nil)
+		switch {
+		case err != nil:
+			log.Printf("supervisor: WARN retire worker %d (%s): %v", w.proc.Pid, res, err)
+		case res == supervisor.RetireKilled:
+			log.Printf("supervisor: WARN worker %d still had streams open %s after SIGTERM; SIGKILLed", w.proc.Pid, retireDeadline)
+		default:
+			log.Printf("supervisor: worker %d drained and exited", w.proc.Pid)
+		}
+	}
+
+	// logPileup surfaces worker generations that were told to retire and
+	// have not exited yet. A steady-state relay shows none; a non-empty
+	// list at swap time is the leak signature from the 2026-07-26 incident.
+	logPileup := func() {
+		if r := sup.Retiring(); len(r) > 0 {
+			for _, w := range r {
+				log.Printf("supervisor: WARN worker %d still retiring after %s", w.Pid, time.Since(w.Since).Round(time.Second))
+			}
+		}
+	}
+
 	// spawnReady forks a worker and blocks until it signals ready or dies.
-	spawnReady := func() (*os.Process, error) {
+	spawnReady := func() (*worker, error) {
 		// Drain stale ready tokens so a previous worker's signal can't
 		// prematurely satisfy this wait.
 		for {
@@ -476,22 +574,17 @@ func runSupervisor(addr, version string) {
 		}()
 		switch supervisor.WaitReady(readyCh, dead, 90*time.Second, nil) {
 		case supervisor.ReadyOK:
-			return p, nil
+			return &worker{proc: p, dead: dead}, nil
 		case supervisor.ReadyDied:
 			return nil, fmt.Errorf("worker %d exited before ready", p.Pid)
 		default:
+			// Never-ready worker: it is alive, holds a dup of the listener
+			// and competes on the accept queue. Retire it (SIGTERM, then
+			// a process-group SIGKILL on the deadline) instead of
+			// abandoning it — an untracked live worker is precisely the
+			// leak this whole change exists to prevent.
+			go retire(&worker{proc: p, dead: dead})
 			return nil, fmt.Errorf("worker %d not ready within budget", p.Pid)
-		}
-	}
-
-	// waitExit blocks until the given pid's exit is observed, logging any
-	// other reaped worker exits seen meanwhile.
-	waitExit := func(pid int) {
-		for got := range exitCh {
-			if got == pid {
-				return
-			}
-			log.Printf("supervisor: reaped worker %d", got)
 		}
 	}
 
@@ -499,8 +592,8 @@ func runSupervisor(addr, version string) {
 	if err != nil {
 		log.Fatalf("supervisor: initial worker: %v", err)
 	}
-	sup.SetCurrent(current)
-	log.Printf("supervisor: worker pid=%d serving", current.Pid)
+	sup.SetCurrent(current.proc)
+	log.Printf("supervisor: worker pid=%d serving", current.proc.Pid)
 
 	// Now that a worker is serving, tell systemd we are up (Type=notify).
 	// No-op when NOTIFY_SOCKET is unset (launchd / bare process).
@@ -521,38 +614,41 @@ func runSupervisor(addr, version string) {
 		select {
 		case <-hup:
 			log.Printf("SIGHUP: worker swap")
+			logPileup()
 			nw, err := spawnReady()
 			if err != nil {
-				log.Printf("supervisor: swap aborted, keeping worker %d: %v", current.Pid, err)
+				log.Printf("supervisor: swap aborted, keeping worker %d: %v", current.proc.Pid, err)
 				continue
 			}
 			old := current
 			current = nw
-			sup.SetCurrent(nw)
-			log.Printf("supervisor: worker %d serving; draining old worker %d", nw.Pid, old.Pid)
-			if err := sup.Drain(old); err != nil {
-				log.Printf("supervisor: drain worker %d: %v", old.Pid, err)
-			}
+			sup.SetCurrent(nw.proc)
+			log.Printf("supervisor: worker %d serving; retiring old worker %d (deadline %s)", nw.proc.Pid, old.proc.Pid, retireDeadline)
+			// Retire off the loop: the old worker keeps draining its
+			// in-flight streams while the supervisor stays responsive.
+			go retire(old)
 		case <-usr2:
-			log.Printf("SIGUSR2: supervisor self-upgrade (draining worker %d first)", current.Pid)
-			if err := sup.Drain(current); err != nil {
-				log.Printf("supervisor: drain worker %d: %v", current.Pid, err)
-			}
-			waitExit(current.Pid)
+			log.Printf("SIGUSR2: supervisor self-upgrade (retiring worker %d first)", current.proc.Pid)
+			retire(current)
 			log.Printf("supervisor: quiescent; re-exec self")
 			if err := sup.SelfReexec(); err != nil {
 				log.Fatalf("supervisor: self-reexec: %v", err)
 			}
 		case s := <-stop:
-			log.Printf("supervisor: %v; draining worker %d then exiting", s, current.Pid)
-			if err := sup.Drain(current); err != nil {
-				log.Printf("supervisor: drain worker %d: %v", current.Pid, err)
+			log.Printf("supervisor: %v; retiring worker %d then exiting", s, current.proc.Pid)
+			retire(current)
+			// Anything still retiring from an earlier swap gets the same
+			// treatment: no worker generation outlives its supervisor.
+			for _, k := range sup.KillRetiring() {
+				log.Printf("supervisor: WARN worker %d still retiring after %s at shutdown; SIGKILL", k.Pid, time.Since(k.Since).Round(time.Second))
+				if k.Err != nil {
+					log.Printf("supervisor: %v", k.Err)
+				}
 			}
-			waitExit(current.Pid)
 			log.Printf("supervisor: bye")
 			os.Exit(0)
 		case pid := <-exitCh:
-			if pid != current.Pid {
+			if pid != current.proc.Pid {
 				log.Printf("supervisor: reaped worker %d", pid)
 				continue
 			}
@@ -562,8 +658,8 @@ func runSupervisor(addr, version string) {
 				log.Fatalf("supervisor: respawn failed: %v", err)
 			}
 			current = nw
-			sup.SetCurrent(nw)
-			log.Printf("supervisor: worker pid=%d serving", nw.Pid)
+			sup.SetCurrent(nw.proc)
+			log.Printf("supervisor: worker pid=%d serving", nw.proc.Pid)
 		}
 	}
 }
