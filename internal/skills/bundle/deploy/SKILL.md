@@ -6,7 +6,9 @@ description: Deploy poe-acp to a remote host behind Tailscale Funnel, start it a
 
 # Deploy Skill
 
-Deploy `poe-acp` to a remote host fronted by `tailscale funnel`. The relay listens on loopback; funnel terminates TLS and forwards. Per conversation the relay spawns an ACP agent (`fir --mode acp`, `claude-code --acp`, etc.).
+Deploy `poe-acp` to a remote host fronted by `tailscale funnel`. The relay listens on loopback; funnel terminates TLS and forwards.
+
+**Agent process model.** Each relay *worker* spawns **one long-lived ACP agent process** (`fir --mode acp`, `claude-code --acp`, ...) that is shared by every conversation on that worker. A Poe conversation maps to an ACP **session** inside that process, and to its own cwd — **not** to its own process. Consequence: replacing the agent binary on disk changes nothing for running conversations. To pick up a new agent binary you must cycle the worker (`systemctl --user reload` / SIGHUP graceful worker swap), which forks a new worker with a fresh agent; conversations still pinned to a draining older worker keep the old agent binary until that worker exits.
 
 ## Confirm with the user before acting
 
