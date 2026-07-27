@@ -21,14 +21,15 @@
 //
 // Hot upgrade (the common path): S receives SIGHUP, forks a NEW worker W2
 // on the SAME fd, waits for W2 to signal ready (SIGUSR1 to S), then tells
-// W1 to stop accepting and drain its in-flight streams to completion
-// (SIGTERM, which the worker maps to http.Server.Shutdown). Because the
-// socket is bound by S and shared, the kernel keeps queueing new
-// connections throughout — there is never a refusal window. The
-// Poe-SSE-specific drain semantics (honour r.Context().Done, the
-// per-stream idle-write backstop) live in internal/httpsrv; this package
-// is transport-generic and knows only about a net.Listener and child
-// processes.
+// W1 to stop accepting and drain its in-flight streams (SIGTERM, which
+// the worker maps to a deadline-bounded http.Server.Shutdown — see
+// drain.go). Because the socket is bound by S and shared, the kernel
+// keeps queueing new connections throughout — there is never a refusal
+// window. The Poe-SSE-specific drain semantics (honour r.Context().Done,
+// the per-stream idle-write backstop) live in internal/httpsrv; this
+// package is transport-generic and knows only about a net.Listener and
+// child processes. The OUTER net — a bounded drain plus SIGKILL
+// escalation for a worker that will not exit — lives in drain.go.
 //
 // Parent-death detection: each worker holds the read end of a pipe whose
 // write end S keeps open. If S dies, the read end EOFs and the worker
@@ -158,15 +159,23 @@ func NotifyReady() error {
 	if os.Getenv(EnvWorkerFD) == "" {
 		return nil
 	}
+	return SignalSupervisor(syscall.SIGUSR1)
+}
+
+// SignalSupervisor delivers sig to this worker's supervisor (its parent).
+// Every worker→supervisor request goes through here — readiness
+// (SIGUSR1), an operator SIGHUP forwarded as a worker-swap request, the
+// /admin/reexec endpoint — so the "never broadcast" guard exists exactly
+// once: a non-positive pid would fan the signal out (0 => our process
+// group, -1 => every signallable process) and pid 1 means the supervisor
+// is already gone and we have been reparented to init.
+func SignalSupervisor(sig syscall.Signal) error {
 	pid := getppid()
 	if pid <= 1 {
-		// Guard the contract: a non-positive pid would broadcast (0 =>
-		// our process group, -1 => every signallable process) and pid 1
-		// is never our supervisor. Refuse rather than deliver wildly.
 		return fmt.Errorf("supervisor: refusing to signal non-worker parent pid %d", pid)
 	}
-	if err := kill(pid, syscall.SIGUSR1); err != nil {
-		return fmt.Errorf("supervisor: signal supervisor ready: %w", err)
+	if err := kill(pid, sig); err != nil {
+		return fmt.Errorf("supervisor: signal supervisor %v: %w", sig, err)
 	}
 	return nil
 }
@@ -195,6 +204,11 @@ type Supervisor struct {
 
 	mu  sync.Mutex
 	cur *os.Process // the current serving worker
+	// retiring tracks worker generations that have been told to retire
+	// (SIGTERM sent) but whose exit has not been observed yet, keyed by
+	// pid with the moment retirement began. A non-empty set at swap time
+	// is the pileup signature from the production incident. Guarded by mu.
+	retiring map[int]time.Time
 }
 
 // Config configures a Supervisor.
@@ -321,11 +335,15 @@ func (s *Supervisor) Spawn() (*os.Process, error) {
 	return cmd.Process, nil
 }
 
-// Drain tells worker p to stop accepting and drain its in-flight streams
-// to natural completion by sending SIGTERM (the worker maps SIGTERM to
-// http.Server.Shutdown). p exits once drained; the caller reaps it.
-func (s *Supervisor) Drain(p *os.Process) error {
-	if err := p.Signal(syscall.SIGTERM); err != nil {
+// drain tells worker p to stop accepting and drain its in-flight streams
+// by sending SIGTERM (the worker maps SIGTERM to a DEADLINE-BOUNDED
+// http.Server.Shutdown — see DrainServer). p exits once drained or once
+// its own deadline force-cuts the drain; the caller reaps it. Prefer
+// Retire, which additionally escalates to SIGKILL if the worker does not
+// exit at all — Retire is the only caller and the only supported entry
+// point for retiring a worker.
+func (s *Supervisor) drain(p *os.Process) error {
+	if err := signalProc(p, syscall.SIGTERM); err != nil {
 		return fmt.Errorf("supervisor: drain worker %d: %w", p.Pid, err)
 	}
 	return nil
