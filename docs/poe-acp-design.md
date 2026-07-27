@@ -205,6 +205,7 @@ Flags:
 --access-key-env       POEACP_ACCESS_KEY
 --session-ttl          2h
 --heartbeat-interval   10s
+--drain-deadline       45s   (bounded worker drain; supervisor SIGKILLs at +15s)
 ```
 
 ## Request flow

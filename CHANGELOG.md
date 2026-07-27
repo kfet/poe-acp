@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `SIGHUP` sent to a worker no longer kills it (and its in-flight
+  streams).** `/healthz` reports the *worker* pid, so an operator
+  reloading with `kill -HUP <that pid>` hit Go's default SIGHUP
+  disposition — instant process death, every streaming turn dropped. The
+  worker now forwards the request to its supervisor, which performs the
+  normal drained swap; all worker→supervisor signalling goes through the
+  single guarded `supervisor.SignalSupervisor` helper (also used by
+  readiness and `/admin/reexec`), so the "never signal pid ≤ 1" guard
+  exists once. Caught by `test/graceful_integration.sh` TEST A, which now
+  passes for the first time.
+
+- **Worker drain is no longer unbounded — stale worker generations can no
+  longer pile up across reloads.** A worker that received SIGTERM waited
+  forever for its in-flight SSE streams, on the assumption that the
+  per-stream idle-write backstop always clears a wedge. It does not: a
+  handler can wedge in a way the idle clock never observes, so
+  `Server.Shutdown` never returned and every `systemctl reload` leaked a
+  live worker (plus its agent children) — five generations were found
+  alive after 17 days in production, until systemd's `TimeoutStopSec=90s`
+  SIGKILLed the whole control group. Drain is now bounded by the new
+  `-drain-deadline` flag (default 45s): at the deadline the worker
+  force-closes what is left, logs each abandoned stream
+  (conv/user/message/age) from a new in-flight registry, and exits — with
+  a `ForceExitAfter` backstop so wedged post-drain cleanup cannot hang it
+  either. The supervisor escalates in step: it retires a worker with
+  SIGTERM, SIGKILLs it `drain-deadline + 15s` later if it still has not
+  exited, tracks retiring generations so a pileup is visible in the log,
+  and SIGKILLs any straggler at shutdown so no worker outlives its
+  supervisor. Escalation kills the worker's whole process group (each
+  worker gets its own via `Setpgid`), so its agent children are reclaimed
+  instead of being reparented to init — they were part of the observed
+  pileup. A worker that never signals readiness is now retired the same
+  way rather than abandoned. Graceful semantics below the deadline are
+  unchanged: zero-downtime swap, no refusal window, in-flight streams
+  complete undisturbed, idle-write backstop untouched as the inner net.
+
 ## [0.44.0] - 2026-07-27
 
 ### Added

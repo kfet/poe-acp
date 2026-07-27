@@ -258,35 +258,47 @@ a wall clock:
 So drain is just "wait until every accepted request has returned":
 
 ```go
-ctx, cancel := context.WithCancel(context.Background())
+ctx, cancel := context.WithTimeout(context.Background(), drainDeadline)
 defer cancel()
-// Optional idle-stream backstop only — NOT a global cap.
 _ = srv.Shutdown(ctx)
 ```
 
-Use `http.Server.Shutdown(context.Background())` (unbounded). It closes
-the listener (already closed) and waits for active conns to finish,
-respecting hijacked SSE connections. A turn legitimately streaming for
-ten minutes survives; a Stopped turn ends the instant the connection
-drops.
+`http.Server.Shutdown` closes the listener (already closed) and waits for
+active conns to finish, respecting hijacked SSE connections. A turn
+legitimately streaming for ten minutes survives the swap — *up to the
+drain deadline*.
 
-The **only** force-kill path is a *wedged* turn — fir hung, no tokens,
-and the client never disconnected. Bound that with a per-stream
-**idle-write timeout** ("no SSE byte written in N s"), enforced inside
-the SSE loop, not with a restart-wide deadline. When it fires, that one
-handler returns; everyone else keeps draining.
+The *inner* force-kill path is a *wedged* turn — fir hung, no tokens, and
+the client never disconnected. Bound that with a per-stream **idle-write
+timeout** ("no SSE byte written in N s"), enforced inside the SSE loop,
+not with a restart-wide deadline. When it fires, that one handler
+returns; everyone else keeps draining.
 
-If you want an explicit in-flight gauge for logging/health, wrap the
-handler:
+**Update (v0.43.1, after the 2026-07-26 kopione incident):** the drain
+used to be `Shutdown(context.Background())` — literally unbounded — on
+the theory that the idle-write backstop was force-kill enough. It is not:
+a handler can wedge in a way the idle clock never observes, Shutdown then
+never returns, and each `systemctl reload` leaves another live worker
+generation behind (five were found alive after 17 days, plus their agent
+children, until systemd's `TimeoutStopSec=90s` SIGKILLed the whole control
+group). So there is now an **outer** net as well:
 
-```go
-var inflight atomic.Int64
-wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-    inflight.Add(1)
-    defer inflight.Add(-1)
-    mux.ServeHTTP(w, r)
-})
-```
+- worker: `supervisor.DrainServer(srv, -drain-deadline, onForce)` —
+  force-closes and exits at the deadline (default 45s), logging every
+  abandoned stream (conv/user/message/age) from the httpsrv in-flight
+  registry, with `ForceExitAfter` guaranteeing the process leaves even if
+  post-drain cleanup wedges;
+- supervisor: `Supervisor.Retire` escalates SIGTERM → SIGKILL at
+  `drain-deadline + RetireGrace` (15s), tracks retiring generations
+  (`Retiring()`), and `KillRetiring()` on shutdown ensures no worker
+  outlives its supervisor.
+
+Below the deadline the semantics are unchanged: zero-downtime swap, no
+refusal window, in-flight streams complete undisturbed.
+
+The in-flight gauge is no longer hypothetical — `httpsrv.Handler.InFlight()`
+returns the live streams, and the drain path logs exactly what it
+abandoned so the next incident is diagnosable from the journal alone.
 
 ### SSE-specific gotchas
 
@@ -328,7 +340,7 @@ recommended — it'd let any Poe user trigger relay restarts.
 | Child crashes before SIGUSR1 | Parent observes `cmd.Wait()` return, stays in serve mode, logs |
 | Child crashes after SIGUSR1 | Parent already in drain mode; once drained it exits, supervisor restarts → temporary outage but matches today's behaviour |
 | Wedged turn (idle-write timeout) | That one handler's idle backstop fires, its stream gets RST; all other streams keep draining |
-| Parent never drains (all turns wedged) | Supervisor's own stop timeout eventually `Server.Close()`s the parent; matches today's behaviour |
+| Parent never drains (all turns wedged) | The worker's own `-drain-deadline` (45s) force-closes the remaining conns and it exits, logging every abandoned stream; the supervisor SIGKILLs it at `+RetireGrace` (15s) if it still hasn't. systemd's `TimeoutStopSec=90s` is never reached |
 | Two upgrades in flight | Reject second SIGHUP if a child PID is already tracked |
 
 ### Files to touch (when implemented)

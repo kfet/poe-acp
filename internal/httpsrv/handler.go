@@ -144,6 +144,10 @@ type CommandHandler interface {
 type Handler struct {
 	cfg     Config
 	answers *answerBuffer
+	// streams tracks the query streams currently being served so a
+	// force-cut drain can report exactly what it abandoned (see
+	// inflight.go).
+	streams *inflight
 }
 
 // New creates a Handler. HeartbeatInterval <=0 disables heartbeat;
@@ -164,7 +168,7 @@ func New(cfg Config) *Handler {
 	if cfg.SSEWriteTimeout <= 0 {
 		cfg.SSEWriteTimeout = defaultSSEWriteTimeout
 	}
-	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL)}
+	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL), streams: newInflight()}
 }
 
 // ServeHTTP implements http.Handler.
@@ -215,6 +219,10 @@ func DebugHandler(r *router.Router) http.Handler {
 }
 
 func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *poeproto.Request) {
+	// Register for the whole turn so a force-cut drain can name this
+	// stream in its abandoned-streams log.
+	defer h.streams.add(req.ConversationID, req.UserID, req.MessageID)()
+
 	sse, err := poeproto.NewSSEWriter(w)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
