@@ -29,6 +29,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/poeupload"
 
 	"github.com/kfet/poe-acp/internal/statusline"
@@ -72,6 +73,15 @@ type ChunkSink interface {
 	// tool_call is not a content event and does not satisfy Poe's
 	// content-starvation keepalive.
 	ToolActivity(label string)
+	// SetPlan conveys the agent's CURRENT plan (ACP `plan`
+	// session/update). ACP semantics: every update carries the complete
+	// list and REPLACES the previous one, so implementations keep only
+	// the latest. The entries are already normalised (single-line,
+	// rune-capped, flag-escaped) by the router. Like ToolActivity it is
+	// transient: it feeds the keepalive frame and MUST NOT mark
+	// realWritten or emit body text. Called only when the user has
+	// `show_plans` enabled; nil/empty means "no plan to show".
+	SetPlan(entries []statusline.PlanEntry)
 }
 
 // Turn is one message in a Poe query, decoupled from the wire type so
@@ -133,6 +143,13 @@ type Options struct {
 	Model        string // "" = leave as-is
 	Thinking     string // "" = leave as-is; one of "off","minimal","low","medium","high","xhigh","max"
 	HideThinking bool   // suppress agent_thought_chunk in the SSE stream
+	// ShowPlans renders the agent's latest ACP `plan` update as a
+	// transient checklist inside the keepalive frame. Relay-side only:
+	// nothing is sent to the agent.
+	ShowPlans bool
+	// ShowTools emits one durable blockquote line per ACP `tool_call`
+	// into the answer body. Relay-side only.
+	ShowTools bool
 }
 
 // Config configures a Router.
@@ -348,13 +365,17 @@ const (
 // queue, then waits on req.done vs req.ctx.Done(). runTurns reads them
 // after popping. No locking needed — handoff via the queue's mutex.
 type turnReq struct {
-	kind         turnKind
-	isCommand    bool // latest user turn is a slash command (skip flatten + inline sysprompt)
-	ctx          context.Context
-	sink         ChunkSink
-	opts         Options            // user turns only
-	blocks       []acp.ContentBlock // prompt content blocks
-	hideThinking bool               // forwarded to drain via beginTurn
+	kind      turnKind
+	isCommand bool // latest user turn is a slash command (skip flatten + inline sysprompt)
+	ctx       context.Context
+	sink      ChunkSink
+	// opts carries the resolved per-turn parameter values. User turns
+	// only: a reaction turn leaves this zero, which is exactly the
+	// right display policy for one (its output goes to a discardSink).
+	// The relay-side display knobs (HideThinking / ShowPlans /
+	// ShowTools) are forwarded to the drain goroutine via beginTurn.
+	opts   Options
+	blocks []acp.ContentBlock // prompt content blocks
 
 	enqueuedAt time.Time
 	// done is closed by runTurns AFTER endTurn ack AND sink.Done /
@@ -521,6 +542,14 @@ type chunkMsg struct {
 type turnDef struct {
 	sink         ChunkSink
 	hideThinking bool
+	// showPlans renders ACP `plan` updates into the transient keepalive
+	// frame (never the answer body — plans are replaced wholesale on
+	// every update, so appending each revision would spam the answer).
+	showPlans bool
+	// showTools emits one durable blockquote line per ACP `tool_call`
+	// (turn START only, never tool_call_update) so a tool-heavy turn
+	// leaves a readable trace instead of just an animated spinner.
+	showTools bool
 	// scanner extracts poe-attach directives from message chunks; nil
 	// when output attachments are disabled.
 	scanner *attachScanner
@@ -544,8 +573,9 @@ func (td *turnDef) emitMessage(s string) {
 }
 
 // flushMessage releases any partial token the escaper is holding, then
-// flushes the scanner. Call at end of turn and before an interrupting
-// thought so held text never lands out of order.
+// flushes the scanner. Call at end of turn and before anything that
+// interrupts message text — a thought chunk or a durable tool line — so
+// held text never lands out of order.
 func (td *turnDef) flushMessage() {
 	if td.escaper != nil {
 		td.emitMessage(td.escaper.flush())
@@ -562,6 +592,7 @@ const (
 	chunkNone    chunkKind = iota // no chunks yet this turn
 	chunkMessage                  // last chunk was an AgentMessageChunk
 	chunkThought                  // last chunk was an AgentThoughtChunk
+	chunkTool                     // last write was a durable tool-call line
 )
 
 // New creates a router.
@@ -726,16 +757,31 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 	case u.AgentThoughtChunk != nil && u.AgentThoughtChunk.Content.Text != nil:
 		kind, text = chunkThought, u.AgentThoughtChunk.Content.Text.Text
 	case u.ToolCall != nil:
-		// A tool_call is genuine progress but NOT user-visible content:
-		// reset the wedge clock (so a long tool isn't cut) and label the
-		// keepalive spinner. It must not set realWritten or emit body text.
+		// A tool_call is genuine progress. It always resets the wedge
+		// clock and labels the keepalive spinner (transient, no body
+		// text). When show_tools is on it ALSO leaves a durable
+		// one-line trace in the answer body — that line is ordinary
+		// user-visible content, so it goes through sink.Text and
+		// legitimately marks realWritten / resets the stall clock.
 		td.sink.ToolActivity(toolActivityLabel(u.ToolCall.Title, u.ToolCall.Kind))
+		if td.showTools {
+			emitToolLine(td, first, chunkMode, u.ToolCall.Title, u.ToolCall.Kind)
+		}
 		return
 	case u.ToolCallUpdate != nil:
+		// Deliberately spinner-only: a running tool emits many updates
+		// per call, and one body line each would drown the answer.
 		td.sink.ToolActivity(toolUpdateLabel(u.ToolCallUpdate))
 		return
+	case u.Plan != nil:
+		// The plan REPLACES the previous one (ACP semantics), and it is
+		// rendered in the transient keepalive frame, not the body.
+		if td.showPlans {
+			td.sink.SetPlan(planEntries(u.Plan.Entries))
+		}
+		return
 	default:
-		// Plans, available_commands_update etc. suppressed in v1.
+		// available_commands_update etc. suppressed in v1.
 		return
 	}
 	if text == "" || (kind == chunkThought && td.hideThinking) {
@@ -745,9 +791,13 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 	switch {
 	case *chunkMode == chunkNone && kind == chunkThought:
 		prefix = "> _Thinking…_\n> "
-	case *chunkMode == chunkMessage && kind == chunkThought:
+	case *chunkMode != chunkThought && kind == chunkThought:
 		prefix = "\n\n> _Thinking…_\n> "
 	case *chunkMode == chunkThought && kind == chunkMessage:
+		prefix = "\n\n"
+	case *chunkMode == chunkTool && kind == chunkMessage:
+		// Separate the message from the tool-line blockquote: without a
+		// blank line Markdown would fold the text INTO the quote block.
 		prefix = "\n\n"
 	}
 	*chunkMode = kind
@@ -812,12 +862,148 @@ func collapseSpace(s string) string { return strings.Join(strings.Fields(s), " "
 // capLabel bounds a spinner label to statusline.MaxFieldRunes runes so a
 // verbose tool title can't blow up the transient status line. Rune-aware
 // so it never splits a multi-byte sequence.
-func capLabel(s string) string {
+func capLabel(s string) string { return capRunes(s, statusline.MaxFieldRunes) }
+
+// capRunes truncates s to at most n runes. Rune-aware so it never splits
+// a multi-byte sequence (an emoji tool title stays valid UTF-8).
+func capRunes(s string, n int) string {
 	r := []rune(s)
-	if len(r) <= statusline.MaxFieldRunes {
+	if len(r) <= n {
 		return s
 	}
-	return string(r[:statusline.MaxFieldRunes])
+	return string(r[:n])
+}
+
+// maxProgressRunes bounds text in the progress surfaces — the durable
+// tool line and the transient plan checklist. Deliberately wider than
+// statusline.MaxFieldRunes (which sizes a segment of a one-line status
+// header shared with the mood/plan/provider fields): these get a whole
+// line to themselves, and "go test ./internal/..." truncated to twelve
+// runes would tell the user nothing. Still bounded, because the plan
+// checklist is re-sent on every keepalive frame.
+const maxProgressRunes = 72
+
+// toolLineFallbackLabel is used when a tool_call carries neither a
+// usable title nor a kind, so the durable line still says something.
+const toolLineFallbackLabel = "tool"
+
+// toolLineLabel derives the durable tool line's text: title preferred,
+// else the ACP kind, else a neutral fallback. Same title/kind precedence
+// as toolActivityLabel and the same whitespace collapsing (a multi-line
+// title must never break the one-line blockquote), but capped at the
+// wider maxProgressRunes because the line is not sharing space with the
+// status header's other segments.
+func toolLineLabel(title string, kind acp.ToolKind) string {
+	if l := capRunes(collapseSpace(title), maxProgressRunes); l != "" {
+		return l
+	}
+	if l := capRunes(collapseSpace(string(kind)), maxProgressRunes); l != "" {
+		return l
+	}
+	return toolLineFallbackLabel
+}
+
+// emitToolLine writes the durable one-line record of a starting tool
+// call into the answer body, e.g.
+//
+//	> `🔧 go test ./...`
+//
+// Shape rules, all load-bearing:
+//
+//   - One line, always. toolLineLabel whitespace-collapses and rune-caps
+//     the title, so a multi-line or novel-length tool title cannot break
+//     the blockquote across lines.
+//   - Wrapped in a code span with every backtick stripped from the label.
+//     A code span with no interior backtick cannot be escaped from, so a
+//     hostile tool title can neither inject Markdown nor unbalance the
+//     frame. Reserved "--flag" tokens are still defused
+//     (poeproto.EscapeReservedFlags) because Poe's chat client rejects a
+//     message containing one — see poeproto/reserved.go.
+//   - Newline-delimited by chunkMode: consecutive tool lines are joined
+//     with a single "\n" so they render as successive lines of ONE
+//     blockquote; a preceding message/thought gets a blank line so the
+//     quote starts its own block.
+//
+// The line is ordinary user-visible content: it goes through sink.Text,
+// so it marks realWritten and resets the stall clock exactly like agent
+// text. That is intended, and it has one deliberate consequence: the
+// handler's gated-cancel discriminator (realWritten → a disconnect is a
+// real user Stop; not-yet-written → a transport drop to absorb and
+// buffer for redrive) now flips at the first tool call rather than at
+// the agent's first prose. Once the user has seen output, a drop is far
+// more likely a Stop than a glitch — and show_tools=false restores the
+// old window. See TestHandler_ToolLineIsFirstOutputAndGatesCancel.
+func emitToolLine(td *turnDef, first *bool, chunkMode *chunkKind, title string, kind acp.ToolKind) {
+	label := toolLineLabel(title, kind)
+	// A tool line interrupts message text: release any partial token the
+	// escaper holds and flush the scanner first, so held text can never
+	// land after the line that logically follows it.
+	td.flushMessage()
+
+	var prefix string
+	switch *chunkMode {
+	case chunkNone:
+		// First write of the turn: no separator, or the answer would
+		// open with stray blank lines.
+	case chunkTool:
+		// Continue the same blockquote block, one line per tool.
+		prefix = "\n"
+	default:
+		// Break out of message/thought text into a fresh quote block.
+		prefix = "\n\n"
+	}
+	*chunkMode = chunkTool
+	if !*first {
+		*first = true
+		td.sink.FirstChunk()
+	}
+	line := "> `" + toolKindEmoji(kind) + " " + strings.ReplaceAll(label, "`", "'") + "`"
+	_ = td.sink.Text(prefix + poeproto.EscapeReservedFlags(line))
+}
+
+// toolKindEmoji maps an ACP tool kind to a single glyph for the durable
+// tool line. Deliberately one emoji per kind and a neutral fallback:
+// the line is a skim aid, not a decoration contest.
+func toolKindEmoji(kind acp.ToolKind) string {
+	switch kind {
+	case acp.ToolKindRead:
+		return "📖"
+	case acp.ToolKindEdit:
+		return "✏️"
+	case acp.ToolKindDelete:
+		return "🗑️"
+	case acp.ToolKindMove:
+		return "📦"
+	case acp.ToolKindSearch:
+		return "🔍"
+	case acp.ToolKindExecute:
+		return "🔧"
+	case acp.ToolKindFetch:
+		return "🌐"
+	case acp.ToolKindThink:
+		return "💭"
+	case acp.ToolKindSwitchMode:
+		return "🔀"
+	default:
+		return "🛠️"
+	}
+}
+
+// planEntries normalises an ACP plan into the renderable form the sink
+// keeps for the transient keepalive frame. Each entry's text is
+// whitespace-collapsed and rune-capped here (at the source) so the
+// renderer can assume one safe line per entry, and reserved "--flag"
+// tokens are defused just like message text. Entries with no content
+// survive as empty strings — the renderer drops them.
+func planEntries(entries []acp.PlanEntry) []statusline.PlanEntry {
+	out := make([]statusline.PlanEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, statusline.PlanEntry{
+			Content: poeproto.EscapeReservedFlags(capRunes(collapseSpace(e.Content), maxProgressRunes)),
+			Status:  string(e.Status),
+		})
+	}
+	return out
 }
 
 // Prompt handles one Poe query end-to-end. Submits the turn onto the
@@ -899,16 +1085,15 @@ func (r *Router) buildPromptBlocks(ctx context.Context, cwd string, query []Turn
 // exactly once (recovered guards against retry loops).
 func (r *Router) submitTurn(ctx context.Context, convID, userID string, query []Turn, latestTurn Turn, latestText string, opts Options, sink ChunkSink, st *sessionState, blocks []acp.ContentBlock, isCommand, recovered bool) error {
 	req := &turnReq{
-		kind:         turnUser,
-		isCommand:    isCommand,
-		ctx:          ctx,
-		sink:         sink,
-		opts:         opts,
-		blocks:       blocks,
-		hideThinking: opts.HideThinking,
-		enqueuedAt:   r.cfg.Now(),
-		done:         make(chan struct{}),
-		noRecover:    recovered,
+		kind:       turnUser,
+		isCommand:  isCommand,
+		ctx:        ctx,
+		sink:       sink,
+		opts:       opts,
+		blocks:     blocks,
+		enqueuedAt: r.cfg.Now(),
+		done:       make(chan struct{}),
+		noRecover:  recovered,
 	}
 	if !st.queue.push(req) {
 		// Session was being torn down between getOrCreate and push.
@@ -1111,6 +1296,8 @@ func (d discardSink) SetProviderEmoji(string)  {}
 func (d discardSink) SetStatus(string, string) {}
 func (d discardSink) ToolActivity(string)      {}
 
+func (d discardSink) SetPlan([]statusline.PlanEntry) {}
+
 // runTurns is the single goroutine that owns Agent.Prompt for one
 // session. It pops turnReqs from the queue in FIFO order and runs
 // them to completion. Exits when runStop is closed.
@@ -1187,7 +1374,9 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 
 	st.chunkCh <- chunkMsg{beginTurn: &turnDef{
 		sink:         sink,
-		hideThinking: req.hideThinking,
+		hideThinking: req.opts.HideThinking,
+		showPlans:    req.opts.ShowPlans,
+		showTools:    req.opts.ShowTools,
 		scanner:      r.newAttachScanner(sink, st.cwd),
 		escaper:      &flagEscaper{},
 	}}
@@ -1326,6 +1515,12 @@ func ParseOptions(params map[string]any, defaults Options) Options {
 	}
 	if v, ok := params["hide_thinking"].(bool); ok {
 		o.HideThinking = v
+	}
+	if v, ok := params[poeproto.ParamShowPlans].(bool); ok {
+		o.ShowPlans = v
+	}
+	if v, ok := params[poeproto.ParamShowTools].(bool); ok {
+		o.ShowTools = v
 	}
 	return o
 }

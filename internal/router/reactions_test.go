@@ -9,6 +9,8 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+
+	"github.com/kfet/poe-acp/internal/statusline"
 )
 
 // TestRouter_TurnFIFO verifies that two prompts on the same conv are
@@ -356,10 +358,11 @@ func (s *orderingSink) Error(t, _ string) error {
 	s.send("error", t)
 	return nil
 }
-func (s *orderingSink) Done() error              { s.send("done", ""); return nil }
-func (s *orderingSink) SetProviderEmoji(string)  {}
-func (s *orderingSink) SetStatus(string, string) {}
-func (s *orderingSink) ToolActivity(string)      {}
+func (s *orderingSink) Done() error                    { s.send("done", ""); return nil }
+func (s *orderingSink) SetProviderEmoji(string)        {}
+func (s *orderingSink) SetStatus(string, string)       {}
+func (s *orderingSink) ToolActivity(string)            {}
+func (s *orderingSink) SetPlan([]statusline.PlanEntry) {}
 func (s *orderingSink) send(kind, text string) {
 	s.events <- orderingEvent{kind, text}
 }

@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-07-29
+
+### Added
+
+- **Mid-turn progress: durable tool-call lines and a live plan
+  checklist.** A long tool-heavy turn used to show nothing but an
+  animated spinner and then a wall of text: `tool_call` updates only
+  relabelled the transient spinner, and `plan` updates were dropped
+  outright. Now each `tool_call` leaves a durable one-line blockquote in
+  the answer (`` > `🔧 go test ./...` ``), and the agent's latest plan
+  renders as a checklist inside the transient keepalive frame under the
+  spinner — replaced on every revision, wiped when the answer lands, and
+  capped at 8 entries so it can't bloat the frames it rides on.
+  `tool_call_update` stays spinner-only (far too chatty otherwise).
+- **`show_plans` / `show_tools` knobs** — new config defaults and Poe
+  Options toggles ("Plan" / "Tools"), both `true`, wired end to end like
+  `hide_thinking`: config default → Options panel → per-turn override →
+  router. Turning either off restores the previous silent behaviour
+  exactly.
+
+### Changed
+
+- **A tool line counts as user-visible output, which narrows the
+  absorb-and-redrive window on tool-using turns.** The gated-cancel path
+  treats a client disconnect after the first output as a real user Stop
+  (forward `session/cancel`) and a disconnect before it as a transport
+  drop (absorb the turn, buffer the answer for Poe's redrive). With
+  `show_tools` on, the first `tool_call` now flips that discriminator
+  seconds into a turn instead of whenever the agent's first prose lands.
+  Deliberate: once the user has seen output, a drop is far more likely a
+  Stop than a glitch. Set `show_tools: false` to restore the old window.
+
 ## [0.44.1] - 2026-07-28
 
 ### Fixed
