@@ -22,6 +22,8 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/kfet/acp-kit/client"
+
+	"github.com/kfet/poe-acp/internal/statusline"
 )
 
 // fakeAgent implements Agent for tests.
@@ -224,6 +226,7 @@ type captureSink struct {
 	plan          string
 	// tool-activity labels seen, in order (Solution B).
 	toolLabels []string
+	plans      [][]statusline.PlanEntry
 }
 
 func (s *captureSink) FirstChunk() {
@@ -278,6 +281,11 @@ func (s *captureSink) SetStatus(mood, plan string) {
 func (s *captureSink) ToolActivity(label string) {
 	s.mu.Lock()
 	s.toolLabels = append(s.toolLabels, label)
+	s.mu.Unlock()
+}
+func (s *captureSink) SetPlan(entries []statusline.PlanEntry) {
+	s.mu.Lock()
+	s.plans = append(s.plans, entries)
 	s.mu.Unlock()
 }
 
@@ -1602,13 +1610,14 @@ func (s *eventSink) Text(t string) error {
 	s.mu.Unlock()
 	return nil
 }
-func (s *eventSink) Replace(t string) error       { return nil }
-func (s *eventSink) File(a, b, c, d string) error { return nil }
-func (s *eventSink) Error(t, et string) error     { return nil }
-func (s *eventSink) Done() error                  { return nil }
-func (s *eventSink) SetProviderEmoji(string)      {}
-func (s *eventSink) SetStatus(string, string)     {}
-func (s *eventSink) ToolActivity(string)          {}
+func (s *eventSink) Replace(t string) error         { return nil }
+func (s *eventSink) File(a, b, c, d string) error   { return nil }
+func (s *eventSink) Error(t, et string) error       { return nil }
+func (s *eventSink) Done() error                    { return nil }
+func (s *eventSink) SetProviderEmoji(string)        {}
+func (s *eventSink) SetStatus(string, string)       {}
+func (s *eventSink) ToolActivity(string)            {}
+func (s *eventSink) SetPlan([]statusline.PlanEntry) {}
 
 // simulatedContent replays an event sequence as Poe renders it:
 // Replace("") wipes all prior Text; subsequent Text events append.

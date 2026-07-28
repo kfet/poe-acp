@@ -25,6 +25,8 @@ const (
 	ParamProvider     = "provider"
 	ParamThinking     = "thinking"
 	ParamHideThinking = "hide_thinking"
+	ParamShowPlans    = "show_plans"
+	ParamShowTools    = "show_tools"
 	// ProviderParamPrefix + a sanitised provider id forms the per-provider
 	// model dropdown's parameter_name (e.g. "model_anthropic").
 	ProviderParamPrefix = "model_"
@@ -40,6 +42,8 @@ var reservedFlagRe = regexp.MustCompile(
 		`|` + ParamModel +
 		`|` + ParamProvider +
 		`|` + ParamHideThinking +
+		`|` + ParamShowPlans +
+		`|` + ParamShowTools +
 		`|` + ParamThinking +
 		`)\b`)
 

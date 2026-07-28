@@ -15,6 +15,7 @@
 package statusline
 
 import (
+	"strconv"
 	"strings"
 
 	kit "github.com/kfet/acp-kit/statusline"
@@ -75,4 +76,62 @@ func Spinner(s Status, label, dots string) string {
 	parts := kit.Segments(s)
 	parts = append(parts, label+dots)
 	return "> _" + strings.Join(parts, " • ") + "_"
+}
+
+// PlanEntry is one item of the agent's current plan, already normalised
+// by the router: Content is single-line and rune-capped, Status is the
+// raw ACP status string ("pending" | "in_progress" | "completed").
+type PlanEntry struct {
+	Content string
+	Status  string
+}
+
+// MaxPlanEntries bounds how many plan items a keepalive frame renders.
+// Every frame re-sends the whole answer plus the transient region (see
+// the bandwidth note on sink.emitSpinnerFrame), so a 40-step plan must
+// not multiply that cost. The overflow is summarised as "… +N more".
+const MaxPlanEntries = 8
+
+// PlanChecklist renders the transient plan checklist that sits directly
+// below the spinner line inside the keepalive frame. Each entry is its
+// own Markdown blockquote line so the whole frame — spinner + checklist
+// — renders as one quote block, and the whole thing is wiped when the
+// final answer replaces the transient region.
+//
+// Returns "" when there is nothing worth showing (no entries, or every
+// entry has empty content), so the caller appends nothing.
+func PlanChecklist(entries []PlanEntry) string {
+	var lines []string
+	skipped := 0
+	for _, e := range entries {
+		if e.Content == "" {
+			continue
+		}
+		if len(lines) == MaxPlanEntries {
+			skipped++
+			continue
+		}
+		lines = append(lines, "> "+planStatusEmoji(e.Status)+" "+e.Content)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	if skipped > 0 {
+		lines = append(lines, "> _… +"+strconv.Itoa(skipped)+" more_")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// planStatusEmoji maps an ACP plan-entry status to its checklist glyph.
+// An unknown status renders as pending — a plan item the relay cannot
+// classify is, from the user's point of view, simply not done yet.
+func planStatusEmoji(status string) string {
+	switch status {
+	case "completed":
+		return "✅"
+	case "in_progress":
+		return "⏳"
+	default:
+		return "▫️"
+	}
 }

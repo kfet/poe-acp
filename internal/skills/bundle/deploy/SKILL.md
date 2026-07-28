@@ -71,13 +71,15 @@ Optionally drop a config file at `~/.config/poe-acp/config.json` (see `docs/conf
   "defaults": {
     "model": "anthropic/claude-sonnet-4-6",
     "thinking": "medium",
-    "hide_thinking": false
+    "hide_thinking": false,
+    "show_plans": true,
+    "show_tools": true
   },
   "agent": {"profile": "fir"}
 }
 ```
 
-`bot_name` enables auto-invalidation of Poe's cached settings response when the relay's schema changes between boots (`bot/fetch_settings/<bot>/<key>/1.1`). `defaults.model` decouples the bot's UI default from fir's own current model so it stays stable across restarts. Missing file = built-in defaults; safe to skip on first deploy and add later.
+`bot_name` enables auto-invalidation of Poe's cached settings response when the relay's schema changes between boots (`bot/fetch_settings/<bot>/<key>/1.1`). `defaults.model` decouples the bot's UI default from fir's own current model so it stays stable across restarts. `defaults.show_plans` / `defaults.show_tools` (both `true` by default) control mid-turn progress visibility: the transient plan checklist and the durable per-tool-call lines. Missing file = built-in defaults; safe to skip on first deploy and add later.
 
 Prefer a supervised service over nohup/tmux. Use **systemd** on Linux or **launchd** on macOS.
 
