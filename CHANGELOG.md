@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-07-28
+
 ### Fixed
 
 - **A `SIGHUP` sent to a worker no longer kills it (and its in-flight
