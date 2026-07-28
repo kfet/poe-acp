@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kfet/poe-acp/internal/router"
+	"github.com/kfet/poe-acp/internal/statusline"
 )
 
 // recOp identifies a recorded ChunkSink call so a completed turn can be
@@ -88,9 +89,17 @@ func (a *answerRecorder) SetStatus(mood, plan string) {
 
 // ToolActivity is transient liveness (wedge-clock reset + spinner
 // label), not user-visible content, so it is forwarded but NOT recorded:
-// a replayed answer is a completed turn where liveness is moot.
+// a replayed answer is a completed turn where liveness is moot. The
+// durable per-tool_call body line is a plain Text call and IS recorded.
 func (a *answerRecorder) ToolActivity(label string) {
 	a.inner.ToolActivity(label)
+}
+
+// SetPlan is transient too — the checklist lives only in the keepalive
+// frame, which a replayed (already-complete) answer never shows. Forward
+// for liveness parity, don't record.
+func (a *answerRecorder) SetPlan(entries []statusline.PlanEntry) {
+	a.inner.SetPlan(entries)
 }
 
 // snapshot returns a copy of the recorded calls, safe to retain after

@@ -55,7 +55,9 @@ func TestLoad_Valid(t *testing.T) {
 		"defaults": {
 			"model": "anthropic/claude-sonnet-4-6",
 			"thinking": "medium",
-			"hide_thinking": false
+			"hide_thinking": false,
+			"show_plans": false,
+			"show_tools": true
 		},
 		"agent": {"profile": "fir"},
 		"system_prompt_file": "prompt.md",
@@ -76,6 +78,12 @@ func TestLoad_Valid(t *testing.T) {
 	}
 	if cfg.Defaults.HideThinking == nil || *cfg.Defaults.HideThinking != false {
 		t.Errorf("hide_thinking: %v", cfg.Defaults.HideThinking)
+	}
+	if cfg.Defaults.ShowPlans == nil || *cfg.Defaults.ShowPlans != false {
+		t.Errorf("show_plans: %v", cfg.Defaults.ShowPlans)
+	}
+	if cfg.Defaults.ShowTools == nil || *cfg.Defaults.ShowTools != true {
+		t.Errorf("show_tools: %v", cfg.Defaults.ShowTools)
 	}
 	if cfg.Agent.Profile != "fir" {
 		t.Errorf("profile: %q", cfg.Agent.Profile)

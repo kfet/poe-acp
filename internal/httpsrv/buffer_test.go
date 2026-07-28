@@ -3,6 +3,8 @@ package httpsrv
 import (
 	"testing"
 	"time"
+
+	"github.com/kfet/poe-acp/internal/statusline"
 )
 
 // recordSink is a minimal ChunkSink that records replayed calls so the
@@ -18,6 +20,7 @@ type recordSink struct {
 	emojis     []string
 	statuses   [][2]string
 	toolLabels []string
+	plans      [][]statusline.PlanEntry
 }
 
 func (r *recordSink) Text(s string) error    { r.texts = append(r.texts, s); return nil }
@@ -36,8 +39,9 @@ func (r *recordSink) FirstChunk()             { r.first++ }
 func (r *recordSink) SetProviderEmoji(e string) {
 	r.emojis = append(r.emojis, e)
 }
-func (r *recordSink) SetStatus(m, p string)     { r.statuses = append(r.statuses, [2]string{m, p}) }
-func (r *recordSink) ToolActivity(label string) { r.toolLabels = append(r.toolLabels, label) }
+func (r *recordSink) SetStatus(m, p string)            { r.statuses = append(r.statuses, [2]string{m, p}) }
+func (r *recordSink) ToolActivity(label string)        { r.toolLabels = append(r.toolLabels, label) }
+func (r *recordSink) SetPlan(p []statusline.PlanEntry) { r.plans = append(r.plans, p) }
 
 func TestAnswerRecorderAndReplay(t *testing.T) {
 	inner := &recordSink{}
@@ -45,6 +49,10 @@ func TestAnswerRecorderAndReplay(t *testing.T) {
 	rec.SetProviderEmoji("🤖")
 	rec.SetStatus("calm", "plan")
 	rec.FirstChunk()
+	// Transient signals: forwarded for liveness, never recorded (a
+	// replayed answer is a completed turn — the keepalive is moot).
+	rec.ToolActivity("Grep")
+	rec.SetPlan([]statusline.PlanEntry{{Content: "step", Status: "pending"}})
 	if err := rec.Text("hello "); err != nil {
 		t.Fatal(err)
 	}
@@ -69,9 +77,16 @@ func TestAnswerRecorderAndReplay(t *testing.T) {
 		t.Fatalf("inner done=%d first=%d", inner.done, inner.first)
 	}
 
+	if len(inner.toolLabels) != 1 || len(inner.plans) != 1 {
+		t.Fatalf("transient signals not forwarded: tools=%v plans=%v", inner.toolLabels, inner.plans)
+	}
+
 	// Replay the snapshot onto a fresh sink → identical sequence.
 	out := &recordSink{}
 	replay(rec.snapshot(), out)
+	if len(out.toolLabels) != 0 || len(out.plans) != 0 {
+		t.Fatalf("transient signals must not be replayed: tools=%v plans=%v", out.toolLabels, out.plans)
+	}
 	if len(out.texts) != 1 || out.texts[0] != "hello " {
 		t.Fatalf("replay texts=%v", out.texts)
 	}

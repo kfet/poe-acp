@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/kfet/poe-acp/internal/poeupload"
+
+	"github.com/kfet/poe-acp/internal/statusline"
 )
 
 // scanSink records Text and File calls in order.
@@ -33,14 +35,15 @@ func (s *scanSink) File(url, ct, name, ref string) error {
 	s.mu.Unlock()
 	return nil
 }
-func (s *scanSink) Replace(string) error       { return nil }
-func (s *scanSink) Error(string, string) error { return nil }
-func (s *scanSink) Done() error                { return nil }
-func (s *scanSink) FirstChunk()                {}
-func (s *scanSink) SetProviderEmoji(string)    {}
-func (s *scanSink) SetStatus(string, string)   {}
-func (s *scanSink) ToolActivity(string)        {}
-func (s *scanSink) joined() string             { return strings.Join(s.texts, "") }
+func (s *scanSink) Replace(string) error           { return nil }
+func (s *scanSink) Error(string, string) error     { return nil }
+func (s *scanSink) Done() error                    { return nil }
+func (s *scanSink) FirstChunk()                    {}
+func (s *scanSink) SetProviderEmoji(string)        {}
+func (s *scanSink) SetStatus(string, string)       {}
+func (s *scanSink) ToolActivity(string)            {}
+func (s *scanSink) SetPlan([]statusline.PlanEntry) {}
+func (s *scanSink) joined() string                 { return strings.Join(s.texts, "") }
 
 func newTestScanner(t *testing.T, sink ChunkSink, cwd string) (*attachScanner, *int) {
 	t.Helper()

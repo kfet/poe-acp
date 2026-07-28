@@ -28,6 +28,21 @@ func TestResolve_ConfigWins(t *testing.T) {
 	}
 }
 
+// TestResolve_ProgressKnobDefaults pins the built-in defaults for the
+// progress knobs (both ON) and the operator's ability to turn either
+// off from config.json.
+func TestResolve_ProgressKnobDefaults(t *testing.T) {
+	t.Parallel()
+	d := Resolve(config.Defaults{}, twoModels, "")
+	if !d.ShowPlans || !d.ShowTools {
+		t.Fatalf("nil show_plans/show_tools should default to true, got %+v", d)
+	}
+	d = Resolve(config.Defaults{ShowPlans: boolPtr(false), ShowTools: boolPtr(false)}, twoModels, "")
+	if d.ShowPlans || d.ShowTools {
+		t.Fatalf("explicit false should override defaults, got %+v", d)
+	}
+}
+
 func TestResolve_HideThinkingDefault(t *testing.T) {
 	t.Parallel()
 	// nil (unset) → built-in default = true
@@ -398,6 +413,12 @@ func TestBuildAndResolveAgree_SingleProvider(t *testing.T) {
 	if got, want := schemaDefaults["hide_thinking"], d.HideThinking; got != want {
 		t.Errorf("hide_thinking: schema=%v defaults=%v", got, want)
 	}
+	if got, want := schemaDefaults["show_plans"], d.ShowPlans; got != want {
+		t.Errorf("show_plans: schema=%v defaults=%v", got, want)
+	}
+	if got, want := schemaDefaults["show_tools"], d.ShowTools; got != want {
+		t.Errorf("show_tools: schema=%v defaults=%v", got, want)
+	}
 }
 
 // TestBuild_DefaultModelProviderNotInList covers the defensive
@@ -464,6 +485,12 @@ func TestBuildAndResolveAgree(t *testing.T) {
 			}
 			if got, want := schemaDefaults["hide_thinking"], d.HideThinking; got != want {
 				t.Errorf("hide_thinking: schema=%v defaults=%v", got, want)
+			}
+			if got, want := schemaDefaults["show_plans"], d.ShowPlans; got != want {
+				t.Errorf("show_plans: schema=%v defaults=%v", got, want)
+			}
+			if got, want := schemaDefaults["show_tools"], d.ShowTools; got != want {
+				t.Errorf("show_tools: schema=%v defaults=%v", got, want)
 			}
 			// In the new cascading shape, defaults.Model is carried on
 			// `model_<provider>` for the matching provider, and the
