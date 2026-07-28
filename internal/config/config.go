@@ -76,6 +76,15 @@ type Defaults struct {
 	// HideThinking suppresses agent_thought_chunk in the SSE stream.
 	// nil means "use built-in default" (currently true).
 	HideThinking *bool `json:"hide_thinking,omitempty"`
+	// ShowPlans renders the agent's current plan (ACP `plan`
+	// session/update) as a transient checklist inside the mid-turn
+	// keepalive frame. nil means "use built-in default" (currently
+	// true).
+	ShowPlans *bool `json:"show_plans,omitempty"`
+	// ShowTools emits one durable transcript line per ACP `tool_call`
+	// so a tool-heavy turn leaves a trace of what the agent did. nil
+	// means "use built-in default" (currently true).
+	ShowTools *bool `json:"show_tools,omitempty"`
 }
 
 // Agent groups agent-profile knobs. Reserved.

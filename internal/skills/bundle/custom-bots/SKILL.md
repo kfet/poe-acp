@@ -17,6 +17,7 @@ One Poe bot = one `poe-acp` process with its own Poe access key, config dir, loo
 - **Poe access key**: server-bot secret; store as `POEACP_ACCESS_KEY`, mode `0600`.
 - **Public path + port**: e.g. `/sakana` → `127.0.0.1:8347`; each bot gets a free port (`8347`, `8348`, ... by convention).
 - **Model defaults**: `defaults.model`, `defaults.thinking`, `defaults.hide_thinking`.
+- **Progress defaults**: `defaults.show_plans`, `defaults.show_tools` (both default `true` — plan checklist in the live keepalive frame, one durable line per tool call).
 - **Credential boundary**: shared fir creds or a per-bot fir root such as `~/.config/fir-sakana`.
 - **Agent command**: default `fir --mode acp`.
 - **Introduction**.
@@ -90,7 +91,9 @@ umask 022
   "defaults": {
     "model": "<model-id>",
     "thinking": "medium",
-    "hide_thinking": false
+    "hide_thinking": false,
+    "show_plans": true,
+    "show_tools": true
   },
   "agent": {"profile": "fir"}
 }

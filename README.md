@@ -196,7 +196,9 @@ keep working.
   "defaults": {
     "model": "anthropic/claude-sonnet-4-6",
     "thinking": "medium",
-    "hide_thinking": true
+    "hide_thinking": true,
+    "show_plans": true,
+    "show_tools": true
   },
   "agent": {
     "profile": "fir"
@@ -221,6 +223,16 @@ keep working.
 - **`defaults.hide_thinking`** — relay-side filter for
   `agent_thought_chunk`. Omitted = built-in default (`true`); set
   explicitly to `false` to stream thoughts as a blockquote.
+- **`defaults.show_plans`** — render the agent's current plan (ACP
+  `plan` session update) as a checklist inside the live keepalive
+  frame. Omitted = built-in default (`true`). Transient: the checklist
+  is replaced on every plan revision and wiped when the final answer
+  lands, so it never accumulates in the answer body.
+- **`defaults.show_tools`** — emit one durable blockquote line per ACP
+  `tool_call` (e.g. ``> `🔧 go test ./...` ``) so a tool-heavy turn
+  leaves a readable trace of what the agent did. Omitted = built-in
+  default (`true`). Only the START of each call is recorded;
+  `tool_call_update` stays spinner-only.
 - **`agent.profile`** — reserved (today the relay only knows fir's
   `set_config_option` schema; multi-agent profile selection lands in a
   follow-up).
@@ -238,12 +250,16 @@ the config file.
   directory under `$STATE/convs/<conv_id>/`, passed to fir via the
   ACP `NewSessionRequest.Cwd`. Fir's session-history, `.fir/settings.json`,
   and (optional) `.fir/mcp.json` are naturally isolated per conv.
-- **Heartbeat.** While an agent turn is in flight but before any real
-  token has streamed, the relay emits a zero-width-space `text` event
-  every `--heartbeat-interval`. This keeps Poe's SSE connection alive
-  during slow first-token scenarios (fir cold start is ~50s with a
-  full extension set). The heartbeat stops on the first real agent
-  chunk.
+- **Heartbeat.** The relay keeps Poe's SSE connection alive for the
+  WHOLE turn, not just the cold start (fir cold start is ~50s with a
+  full extension set). Every `--heartbeat-interval` it checks the
+  stream; if no user-visible content has landed within
+  `--stall-threshold`, it emits a `replace_response` carrying the
+  answer so far plus a transient status line (spinner, running tool,
+  plan checklist). Replace — not append — so the animation updates in
+  place and the transient region vanishes when the final answer lands.
+  A normally-streaming turn stays on the cheap `text`-append fast path
+  and emits no frames at all.
 - **Status line.** poe-acp prepends a compact one-line header to
   assistant responses and the live "Thinking…" spinner, surfacing the
   provider emoji plus the agent's current mood / plan progress so
@@ -280,10 +296,32 @@ the config file.
   the GC ticker. Hostile filenames are confined inside the per-message
   dir via Go 1.24's `os.Root`. Full design in
   `docs/poe-acp-design.md → internal/router → Attachments`.
-- **Agent → Poe surface.** Agent-emitted attachments, thoughts (when
-  `hide_thinking=true`), plans, and tool-call updates are not
-  forwarded back to the Poe user in v1 — only `AgentMessageChunk`
-  text reaches the SSE stream.
+- **Mid-turn progress.** A long tool-heavy turn is not silent. Each
+  `tool_call` leaves a durable one-line blockquote in the answer
+  (`show_tools`), and the agent's latest plan renders as a checklist
+  inside the transient keepalive frame below the spinner
+  (`show_plans`):
+
+  ```
+  > _🏛️ opus-5 • Running tests.._
+  > ✅ wire config knobs
+  > ⏳ render tool lines
+  > ▫️ render plan checklist
+  ```
+
+  Tool titles are whitespace-collapsed, rune-capped and rendered
+  inside a backtick-free code span, so a hostile or multi-line title
+  cannot break the frame or inject markup. Plan checklists are capped
+  at 8 entries (`… +N more`) because every keepalive frame re-sends
+  them. Note that a tool line is real output, so on a tool-using turn
+  it flips the disconnect gate (below) early: a client drop after it is
+  treated as a user Stop, not as a pre-output transport drop to absorb
+  and redrive. `show_tools: false` restores the old window.
+- **Agent → Poe surface.** Agent-emitted attachments and thoughts
+  (when `hide_thinking=true`) are not forwarded back to the Poe user;
+  `tool_call_update` is spinner-only. Beyond `AgentMessageChunk` text,
+  the SSE stream carries tool-call lines (`show_tools`) and the
+  transient plan checklist (`show_plans`).
 
 ## Tests
 

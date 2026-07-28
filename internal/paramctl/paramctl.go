@@ -65,6 +65,19 @@ const DefaultThinking = "medium"
 // configured `defaults.hide_thinking` in config.json.
 const DefaultHideThinking = true
 
+// DefaultShowPlans is the built-in fallback when the operator has not
+// configured `defaults.show_plans` in config.json. On by default: a
+// long tool-heavy turn is otherwise silent, and the plan checklist is
+// transient (it lives in the keepalive frame, not the answer body), so
+// it costs nothing once the answer lands.
+const DefaultShowPlans = true
+
+// DefaultShowTools is the built-in fallback when the operator has not
+// configured `defaults.show_tools` in config.json. On by default: the
+// per-tool_call transcript line is the only durable record of what the
+// agent actually did during a turn.
+const DefaultShowTools = true
+
 // OtherProvider is the bucket label for models whose ID has no '/'
 // prefix. Kept stable so config defaults and tests can target it.
 const OtherProvider = "other"
@@ -85,12 +98,20 @@ func Resolve(cfg config.Defaults, models []client.ModelInfo, probeCurrent string
 	o := router.Options{
 		Thinking:     DefaultThinking,
 		HideThinking: DefaultHideThinking,
+		ShowPlans:    DefaultShowPlans,
+		ShowTools:    DefaultShowTools,
 	}
 	if cfg.Thinking != "" {
 		o.Thinking = cfg.Thinking
 	}
 	if cfg.HideThinking != nil {
 		o.HideThinking = *cfg.HideThinking
+	}
+	if cfg.ShowPlans != nil {
+		o.ShowPlans = *cfg.ShowPlans
+	}
+	if cfg.ShowTools != nil {
+		o.ShowTools = *cfg.ShowTools
 	}
 
 	// Model resolution: only meaningful if we have an available list.
@@ -201,8 +222,8 @@ func Providers(models []client.ModelInfo) []string {
 // UI's `default_value`s match what the relay applies at runtime.
 //
 // If models is empty (probe failed or agent is unauthed) the
-// provider+model dropdowns are omitted entirely; only Thinking and
-// Hide thinking remain.
+// provider+model dropdowns are omitted entirely; only Thinking, Hide
+// thinking, Plan and Tools remain.
 //
 // If the model list resolves to exactly one provider, the schema
 // collapses to a single bare `model` drop_down (no Provider picker, no
@@ -312,6 +333,18 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 			Label:         "Hide thinking output",
 			ParameterName: poeproto.ParamHideThinking,
 			DefaultValue:  defaults.HideThinking,
+		},
+		poeproto.Control{
+			Control:       "toggle_switch",
+			Label:         "Plan",
+			ParameterName: poeproto.ParamShowPlans,
+			DefaultValue:  defaults.ShowPlans,
+		},
+		poeproto.Control{
+			Control:       "toggle_switch",
+			Label:         "Tools",
+			ParameterName: poeproto.ParamShowTools,
+			DefaultValue:  defaults.ShowTools,
 		},
 	)
 

@@ -300,18 +300,19 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		latestPJ, _ := json.Marshal(req.LatestParameters())
 		defaults := h.cfg.Router.Defaults()
 		kitlog.Debugf("  latest_params=%s", string(latestPJ))
-		kitlog.Debugf("  defaults: model=%q thinking=%q hide_thinking=%v",
-			defaults.Model, defaults.Thinking, defaults.HideThinking)
-		kitlog.Debugf("  parsed_opts: model=%q thinking=%q hide_thinking=%v",
-			opts.Model, opts.Thinking, opts.HideThinking)
+		kitlog.Debugf("  defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v",
+			defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools)
+		kitlog.Debugf("  parsed_opts: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v",
+			opts.Model, opts.Thinking, opts.HideThinking, opts.ShowPlans, opts.ShowTools)
 	}
 
 	// Sink: SSE writer + heartbeat coordination + disconnect → cancel.
-	// The heartbeat animates a status-line spinner (provider emoji +
-	// mood + plan + Thinking…) that the orderedWriter clears the
-	// moment the first real chunk lands. (hide_thinking is a
-	// router-level concern: it suppresses agent_thought_chunk content
-	// from the stream, not the spinner.)
+	// The heartbeat animates a transient status frame (provider emoji +
+	// mood + plan + running tool + Thinking…, plus the show_plans
+	// checklist) that the orderedWriter strips the moment the next real
+	// chunk lands, re-arming on every subsequent stall for the whole
+	// turn. (hide_thinking is a router-level concern: it suppresses
+	// agent_thought_chunk content from the stream, not the spinner.)
 	s := newSink(sse, h.cfg.HeartbeatInterval, h.cfg.StallThreshold)
 	// Pre-seed the provider emoji from the handler-resolved model so
 	// tick #1 of the spinner already carries it. The router re-runs
@@ -763,6 +764,18 @@ type sink struct {
 	status        statusline.Status
 	activity      string // transient spinner label from the running tool
 	headerEmitted bool   // true once a final-header prepend has been considered
+	// plan is the agent's latest ACP plan, rendered as a transient
+	// checklist below the spinner line. Replaced wholesale on every
+	// SetPlan (ACP plans are complete-list updates).
+	plan []statusline.PlanEntry
+	// planDirty is a ONE-SHOT re-arm: it makes the next heartbeat tick
+	// emit a frame even when the stream is not stalled, so a plan change
+	// shows up within a tick instead of waiting out the stall threshold.
+	// A plan update is a rare, agent-driven event (a handful per turn),
+	// never a per-token one, so this cannot turn the cheap `text`-append
+	// fast path into a per-chunk replace storm — see the bandwidth note
+	// on emitSpinnerFrame.
+	planDirty bool
 }
 
 func newSink(w *poeproto.SSEWriter, hb, stall time.Duration) *sink {
@@ -824,11 +837,16 @@ func (s *sink) heartbeat(every time.Duration) {
 // The spinner is emitted on a tick when EITHER no user-visible output
 // has landed yet (cold start — close Poe's content-starvation window
 // immediately) OR the stream has gone stall-threshold silent since the
-// last content write (mid-turn keepalive during a long tool call). On a
-// normally-streaming turn neither holds, so the tick is a no-op and the
-// cheap `text` append fast-path is preserved. When it does fire, the
+// last content write (mid-turn keepalive during a long tool call) OR
+// the agent's plan changed since the last tick (the one-shot planDirty
+// re-arm, so progress appears within a tick instead of waiting out the
+// stall threshold). On a normally-streaming turn none holds, so the
+// tick is a no-op and the cheap `text` append fast-path is preserved.
+// When it does fire, the
 // frame is a `replace_response` carrying the accumulated answer plus a
-// transient status line (see orderedWriter.hbFrame): replace overwrites
+// transient status line (see orderedWriter.hbFrame) and, when the agent
+// has published a plan and the user enabled `show_plans`, a checklist of
+// plan entries directly below it: replace overwrites
 // the prior frame so the dots animate in place, and re-rendering `acc`
 // means the keepalive never discards the answer or corrupts Poe's
 // Markdown the way an appended `text` keepalive would. *spinTick is the
@@ -845,7 +863,11 @@ func (s *sink) emitSpinnerFrame(spinTick *int) (keepGoing bool) {
 	if heartbeatTickHook != nil {
 		heartbeatTickHook()
 	}
-	stalled := !s.o.hasOutput() || s.contentIdleSince() >= s.stall
+	// Consume the plan re-arm FIRST and unconditionally (never behind a
+	// short-circuit): leaving it set would force a redundant extra frame
+	// on the next tick.
+	planChanged := s.takePlanDirty()
+	stalled := planChanged || !s.o.hasOutput() || s.contentIdleSince() >= s.stall
 	if !stalled {
 		// Output is flowing (or just landed): nothing to keepalive.
 		// Keep ticking unless the stream has been sealed.
@@ -854,6 +876,12 @@ func (s *sink) emitSpinnerFrame(spinTick *int) (keepGoing bool) {
 	*spinTick++
 	dots := strings.Repeat(".", 1+(*spinTick-1)%3)
 	frame := statusline.Spinner(s.snapshotStatus(), s.snapshotActivity(), dots)
+	// Rendered only on an emitted frame: a no-op tick must stay
+	// allocation-free, since it runs every heartbeat interval of every
+	// normally-streaming turn.
+	if checklist := s.renderPlan(); checklist != "" {
+		frame += "\n" + checklist
+	}
 	gateOpen, _ := s.o.hbFrame(frame)
 	return gateOpen
 }
@@ -977,6 +1005,36 @@ func (s *sink) snapshotActivity() string {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	return s.activity
+}
+
+// SetPlan records the agent's latest plan for the transient keepalive
+// checklist and arms a one-shot frame refresh so the change is visible
+// within one heartbeat tick. The plan is NOT body text: it is replaced
+// on every update and would spam the answer if appended. Entries arrive
+// already normalised (single-line, capped, flag-escaped) from the router.
+func (s *sink) SetPlan(entries []statusline.PlanEntry) {
+	s.statusMu.Lock()
+	s.plan = entries
+	s.planDirty = true
+	s.statusMu.Unlock()
+}
+
+// takePlanDirty consumes the one-shot planDirty re-arm. true means the
+// caller must emit a frame this tick even if the stream is not stalled.
+func (s *sink) takePlanDirty() bool {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	dirty := s.planDirty
+	s.planDirty = false
+	return dirty
+}
+
+// renderPlan renders the latest plan as the transient checklist that
+// sits below the spinner line. Empty when there is no plan to show.
+func (s *sink) renderPlan() string {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return statusline.PlanChecklist(s.plan)
 }
 
 // maybePrependHeader injects the final-message status header in front
