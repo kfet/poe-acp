@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.48.1] - 2026-08-02
+
 ### Fixed
 
 - **Graceful abandon on a force-cut drain**: a worker whose drain deadline
