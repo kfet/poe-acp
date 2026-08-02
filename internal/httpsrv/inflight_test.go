@@ -13,9 +13,9 @@ func TestInflight_TracksAndReleases(t *testing.T) {
 	if got := i.snapshot(); len(got) != 0 {
 		t.Fatalf("empty registry => empty snapshot, got %+v", got)
 	}
-	relA := i.add("c-a", "u-a", "m-a")
+	idA, relA := i.add("c-a", "u-a", "m-a")
 	time.Sleep(2 * time.Millisecond) // ages differ; ordering is by age
-	relB := i.add("c-b", "u-b", "m-b")
+	_, relB := i.add("c-b", "u-b", "m-b")
 
 	got := i.snapshot()
 	if len(got) != 2 || got[0].ConvID != "c-a" || got[1].ConvID != "c-b" {
@@ -25,6 +25,7 @@ func TestInflight_TracksAndReleases(t *testing.T) {
 		t.Fatalf("entry not fully recorded: %+v", got[0])
 	}
 
+	_ = idA
 	relA()
 	if got := i.snapshot(); len(got) != 1 || got[0].ConvID != "c-b" {
 		t.Fatalf("release failed: %+v", got)
