@@ -490,6 +490,15 @@ func main() {
 			log.Printf("WARN   abandoned stream: conv=%s user=%s msg=%s age=%s",
 				s.ConvID, s.UserID, s.MessageID, s.Age.Round(time.Second))
 		}
+		// Graceful abandon: seal each still-registered stream at the
+		// Poe protocol level (error with allow_retry + terminal done)
+		// BEFORE DrainServer's srv.Close() truncates it. Poe then sees
+		// a well-formed terminal error instead of a cut connection, and
+		// may redrive the same message_id against the new worker, which
+		// resumes the same fir session by conversation cwd.
+		if n := h.SealInFlight(httpsrv.AbandonMessage, httpsrv.DefaultSealTimeout); n > 0 {
+			log.Printf("worker: sealed %d abandoned stream(s) with a retryable error", n)
+		}
 		// Cleanup below (agent shutdown, MCP host close) must not become
 		// the new place we hang: exit regardless once it has had its
 		// grace. Left armed deliberately — the process is exiting on
