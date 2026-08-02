@@ -205,7 +205,10 @@ Flags:
 --access-key-env       POEACP_ACCESS_KEY
 --session-ttl          2h
 --heartbeat-interval   10s
---drain-deadline       45s   (bounded worker drain; supervisor SIGKILLs at +15s)
+--drain-deadline       45s   (bounded worker drain on a service STOP;
+                             supervisor SIGKILLs at +15s)
+--swap-drain-deadline  30m   (same, for a worker retired by a SIGHUP swap:
+                             nothing external is waiting on that chain)
 ```
 
 ## Request flow
