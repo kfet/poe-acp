@@ -387,7 +387,8 @@ func TestHandler_SpinnerAnimatesUntilFirstChunk(t *testing.T) {
 			})
 
 			rec := httptest.NewRecorder()
-			wait := waitTicks(t, 2)
+			hook, wait := waitTicks(t, 2)
+			h.heartbeatTickHook = hook
 			done := make(chan struct{})
 			go func() {
 				req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
