@@ -142,8 +142,46 @@ publish: build notices
 	@if ! git diff --quiet -- $(NOTICE_FILE); then \
 		git add $(NOTICE_FILE) && git commit -m "chore: refresh THIRD_PARTY_NOTICES.md for $(RELEASE_TAG)"; \
 	fi
+	@echo "Preflight $(RELEASE_TAG)..."
+	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
+	if [ "$$BRANCH" != "main" ]; then \
+		echo "ABORT: on branch '$$BRANCH'; releases publish from 'main'."; \
+		exit 1; \
+	fi; \
+	git fetch origin >/dev/null 2>&1 || { echo "ABORT: 'git fetch origin' failed."; exit 1; }; \
+	LOCAL=$$(git rev-parse main); \
+	REMOTE=$$(git rev-parse origin/main); \
+	BASE=$$(git merge-base main origin/main); \
+	if [ "$$LOCAL" != "$$REMOTE" ] && [ "$$REMOTE" != "$$BASE" ]; then \
+		echo "ABORT: origin/main has moved ahead of local main."; \
+		echo "  local  main: $$LOCAL"; \
+		echo "  origin/main: $$REMOTE"; \
+		echo "A concurrent release landed while this one was in flight."; \
+		echo "Do NOT rebase this release commit: $(RELEASE_TAG) was cut against a"; \
+		echo "stale VERSION and rebasing it would publish the wrong version number."; \
+		echo "Re-cut the release instead:"; \
+		echo "  git tag -d $(RELEASE_TAG) && git reset --hard origin/main"; \
+		echo "  then bump VERSION above the new tip and re-run the release."; \
+		exit 1; \
+	fi; \
+	if [ -n "$$(git ls-remote --tags origin refs/tags/$(RELEASE_TAG) 2>/dev/null)" ]; then \
+		echo "ABORT: tag $(RELEASE_TAG) already exists on origin."; \
+		echo "Bump VERSION and re-cut the release."; \
+		exit 1; \
+	fi; \
+	HIGHEST=$$(git ls-remote --tags origin 2>/dev/null \
+		| awk '{print $$2}' \
+		| sed -e 's|^refs/tags/||' -e 's|\^{}$$||' \
+		| grep '^v[0-9]' | sort -V -u | tail -n 1); \
+	if [ -n "$$HIGHEST" ] && [ "$$HIGHEST" != "$(RELEASE_TAG)" ] && \
+	   [ "$$(printf '%s\n%s\n' "$(RELEASE_TAG)" "$$HIGHEST" | sort -V | tail -n 1)" = "$$HIGHEST" ]; then \
+		echo "ABORT: origin already has a higher version tag ($$HIGHEST > $(RELEASE_TAG))."; \
+		echo "Bump VERSION above $$HIGHEST and re-cut the release."; \
+		exit 1; \
+	fi; \
+	echo "  origin/main in sync, $(RELEASE_TAG) is the newest tag - OK"
 	@echo "Publishing $(RELEASE_TAG)..."
-	git push origin main $(RELEASE_TAG)
+	git push --atomic origin main $(RELEASE_TAG)
 	@echo "Pushed $(RELEASE_TAG)."
 
 # Cross-build, detect remote OS/arch via ssh, scp the matching binary.
