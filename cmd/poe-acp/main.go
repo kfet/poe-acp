@@ -22,6 +22,7 @@ import (
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/mcphost"
+	"github.com/kfet/poe-acp/internal/agentcfg"
 	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/httpsrv"
@@ -121,6 +122,10 @@ func main() {
 	if secret == "" {
 		log.Fatalf("missing $%s (Poe bearer secret)", *accessKeyEnv)
 	}
+	// Read the admin-reexec token here (not at its /admin/reexec use
+	// site) so it can be declared as a secret dropped from the spawned
+	// agent's environment before the agent is started.
+	adminToken := os.Getenv(agentcfg.AdminTokenEnv)
 
 	cfgPath := *configFlag
 	cfgExplicit := cfgPath != ""
@@ -203,17 +208,20 @@ func main() {
 		mcpHost = h
 		defer mcpHost.Close()
 	}
-	clientCfg := client.Config{
-		Command: argv,
-		Cwd:     stateDir, // agent proc cwd; per-session cwd is passed per NewSession
-		Env:     env,
+	clientCfg := agentcfg.New(agentcfg.Params{
+		Command:      argv,
+		Cwd:          stateDir, // agent proc cwd; per-session cwd is passed per NewSession
+		Env:          env,
+		AccessKeyEnv: *accessKeyEnv,
+		AccessKey:    secret,
+		AdminToken:   adminToken,
 		ClientMeta: map[string]any{
 			// Advertise support for the dev.acp-kit.status-line/v1
 			// extension so agents that care can emit mood/plan in
 			// session/update._meta. See docs/ext/status-line.md.
 			statusline.ExtensionID: map[string]any{"version": 1},
 		},
-	}
+	})
 	if mcpEnabled {
 		clientCfg.MCPServersForSession = func(cwd string) []acp.McpServer {
 			// Mint a fresh per-session token bound to this conversation.
@@ -400,7 +408,7 @@ func main() {
 	// worker cannot upgrade itself; it asks the supervisor. POST
 	// /admin/reexec -> SIGHUP supervisor (drained worker swap, the common
 	// path); ?scope=supervisor -> SIGUSR2 supervisor (self-upgrade, rare).
-	if adminTok := os.Getenv("ADMIN_TOKEN"); adminTok != "" {
+	if adminTok := adminToken; adminTok != "" {
 		mux.HandleFunc("/admin/reexec", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
