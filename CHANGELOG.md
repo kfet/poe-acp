@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.48.2] - 2026-08-02
+
 ### Fixed
 
 - **`make publish` can no longer half-land a release**: the push is now atomic
