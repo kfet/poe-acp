@@ -382,7 +382,7 @@ func TestSink_BasicFlow(t *testing.T) {
 	if err := w.Meta(); err != nil {
 		t.Fatal(err)
 	}
-	s := newSink(w, 0, time.Hour) // heartbeat disabled path
+	s := newSink(w, 0, time.Hour, nil) // heartbeat disabled path
 	if err := s.Text("hi"); err != nil {
 		t.Fatal(err)
 	}
@@ -405,8 +405,8 @@ func TestSink_FirstChunkWhileSpinning(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	wait := waitTicks(t, 2) // two ticks → first iteration's hbFrame has definitely written
-	s := newSink(w, 5*time.Millisecond, time.Hour)
+	hook, wait := waitTicks(t, 2) // two ticks → first iteration's hbFrame has definitely written
+	s := newSink(w, 5*time.Millisecond, time.Hour, hook)
 	wait()
 	// FirstChunk is now a no-op: the heartbeat runs the whole turn, so
 	// stop() is what disarms it (Done/Error do in production).
@@ -605,16 +605,14 @@ func TestSink_HeartbeatSelfDisarmsViaGate(t *testing.T) {
 
 	inTick := make(chan struct{})
 	proceed := make(chan struct{})
-	prev := heartbeatTickHook
-	heartbeatTickHook = func() {
+	tickHook := func() {
 		inTick <- struct{}{}
 		<-proceed
 	}
-	t.Cleanup(func() { heartbeatTickHook = prev })
 
 	// No output ever lands → every tick is "stalled" and would emit a
 	// cold-start spinner. stall value is irrelevant here.
-	s := newSink(w, time.Millisecond, time.Hour)
+	s := newSink(w, time.Millisecond, time.Hour, tickHook)
 
 	// Let tick #0 (the immediate pre-loop frame) emit with the gate
 	// still open, so the goroutine enters the ticker loop.
@@ -644,8 +642,8 @@ func TestSink_HeartbeatExitsOnStop(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	wait := waitTicks(t, 1)
-	s := newSink(w, time.Millisecond, time.Hour)
+	hook, wait := waitTicks(t, 1)
+	s := newSink(w, time.Millisecond, time.Hour, hook)
 	wait()
 	s.stop()
 	<-s.hbExited
@@ -732,14 +730,12 @@ func TestSink_HeartbeatNeverOverwritesUserContent(t *testing.T) {
 	// Hook: count ticks AND signal each one so we can sequence
 	// deterministically without time.Sleep.
 	ticks := make(chan struct{}, 256)
-	prev := heartbeatTickHook
-	heartbeatTickHook = func() { ticks <- struct{}{} }
-	t.Cleanup(func() { heartbeatTickHook = prev })
+	tickHook := func() { ticks <- struct{}{} }
 
 	// The heartbeat emits visible "Thinking…" frames so the test is
 	// sensitive to the buggy "tick after user write overwrites
 	// content" behaviour the structural fix is meant to prevent.
-	s := newSink(w, time.Millisecond, time.Hour)
+	s := newSink(w, time.Millisecond, time.Hour, tickHook)
 
 	// Wait for the heartbeat to definitely have ticked a few times.
 	for i := 0; i < 3; i++ {
@@ -833,21 +829,21 @@ func isHeartbeatFrame(s string) bool {
 	return strings.HasPrefix(s, "> _Thinking") && strings.HasSuffix(s, "_")
 }
 
-// waitTicks wires heartbeatTickHook to a channel and returns a func
-// that blocks until n heartbeat ticks have fired (or fails the test
-// after 3s). The hook is restored via t.Cleanup.
-func waitTicks(t *testing.T, n int) func() {
+// waitTicks returns a heartbeat tick hook and a func that blocks until n
+// heartbeat ticks have fired (or fails the test after 3s). Pass the
+// returned hook into newSink (sink tests) or set it on the Handler
+// (handler-path tests) BEFORE the heartbeat goroutine spawns, so nothing
+// is shared across goroutines.
+func waitTicks(t *testing.T, n int) (hook func(), wait func()) {
 	t.Helper()
 	ch := make(chan struct{}, 256)
-	prev := heartbeatTickHook
-	heartbeatTickHook = func() {
+	hook = func() {
 		select {
 		case ch <- struct{}{}:
 		default:
 		}
 	}
-	t.Cleanup(func() { heartbeatTickHook = prev })
-	return func() {
+	wait = func() {
 		t.Helper()
 		for i := 0; i < n; i++ {
 			select {
@@ -857,6 +853,7 @@ func waitTicks(t *testing.T, n int) func() {
 			}
 		}
 	}
+	return hook, wait
 }
 
 // Ensure the fmt import is used to satisfy goimports.
@@ -1012,7 +1009,7 @@ func TestSink_StatusLinePrependsHeaderOnce(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0, time.Hour)
+	s := newSink(w, 0, time.Hour, nil)
 	s.SetProviderEmoji("🏛️")
 	s.SetStatus("steady", "2/5")
 	if err := s.Text("hello"); err != nil {
@@ -1042,7 +1039,7 @@ func TestSink_StatusLineNoHeaderWhenAllEmpty(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0, time.Hour)
+	s := newSink(w, 0, time.Hour, nil)
 	// No SetProviderEmoji, no SetStatus.
 	if err := s.Text("only-content"); err != nil {
 		t.Fatal(err)
@@ -1064,7 +1061,7 @@ func TestSink_StatusLineEmojiOnlyWithoutAgentMeta(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0, time.Hour)
+	s := newSink(w, 0, time.Hour, nil)
 	s.SetProviderEmoji("🌐")
 	if err := s.Text("payload"); err != nil {
 		t.Fatal(err)
@@ -1086,8 +1083,8 @@ func TestSink_StatusLineSpinnerCarriesHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	wait := waitTicks(t, 2)
-	s := newSink(w, 5*time.Millisecond, time.Hour)
+	hook, wait := waitTicks(t, 2)
+	s := newSink(w, 5*time.Millisecond, time.Hour, hook)
 	s.SetProviderEmoji("🏛️")
 	s.SetStatus("steady", "2/5")
 	wait()
@@ -1116,7 +1113,7 @@ func TestSink_StatusLineHeaderSkippedOnReplace(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0, time.Hour)
+	s := newSink(w, 0, time.Hour, nil)
 	s.SetProviderEmoji("🏛️")
 	s.SetStatus("steady", "2/5")
 	if err := s.Replace("_(cancelled)_"); err != nil {
@@ -1181,7 +1178,7 @@ func TestSink_File(t *testing.T) {
 	if err := w.Meta(); err != nil {
 		t.Fatal(err)
 	}
-	s := newSink(w, 0, time.Hour)
+	s := newSink(w, 0, time.Hour, nil)
 	if err := s.File("https://poe/x", "text/markdown", "doc.md", ""); err != nil {
 		t.Fatalf("File: %v", err)
 	}

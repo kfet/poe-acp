@@ -32,9 +32,6 @@ func (a *startSignalAgent) Prompt(_ context.Context, _ acp.SessionId, _ []acp.Co
 
 func runFastCancel(t *testing.T, threshold time.Duration) string {
 	t.Helper()
-	orig := fastCancelThreshold
-	fastCancelThreshold = threshold
-	defer func() { fastCancelThreshold = orig }()
 
 	var buf bytes.Buffer
 	origOut := log.Writer()
@@ -47,6 +44,9 @@ func runFastCancel(t *testing.T, threshold time.Duration) string {
 		t.Fatal(err)
 	}
 	h := New(Config{Router: rtr, HeartbeatInterval: 0})
+	// Per-Handler threshold: no shared package global, so a watcher
+	// goroutine from another test can never read a value this test writes.
+	h.fastCancelThreshold = threshold
 
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c1", "user_id": "u", "message_id": "m",
