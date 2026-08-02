@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`make publish` can no longer half-land a release**: the push is now atomic
+  (`git push --atomic origin main $(RELEASE_TAG)`) so the branch and tag land
+  together or not at all, and a preflight runs first — `git fetch origin`, then
+  a loud abort if `origin/main` has moved ahead of local `main`, if the tag
+  already exists on origin, or if origin already carries a higher version tag.
+  Previously a concurrent release could push the tag while `main` was rejected
+  non-fast-forward, orphaning the tag on an unreachable commit. The preflight
+  never auto-rebases: a release commit rebased onto a newer release carries a
+  stale version number, so it aborts and tells you to re-cut instead.
+
 ## [0.48.1] - 2026-08-02
 
 ### Fixed
