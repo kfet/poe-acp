@@ -62,8 +62,7 @@ func TestHandler_PreOutputDropBuffersAndRedriveServes(t *testing.T) {
 	// The absorbDecidedHook lets us release the blocked turn only AFTER the
 	// watcher has latched its decision, so the test is race-free.
 	decided := make(chan struct{})
-	absorbDecidedHook = func() { close(decided) }
-	defer func() { absorbDecidedHook = nil }()
+	h.absorbDecidedHook = func() { close(decided) }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	rec1 := httptest.NewRecorder()
@@ -148,8 +147,7 @@ func TestHandler_NewMessageAfterAbsorbedDropAnswersCleanly(t *testing.T) {
 	})
 
 	decided := make(chan struct{})
-	absorbDecidedHook = func() { close(decided) }
-	defer func() { absorbDecidedHook = nil }()
+	h.absorbDecidedHook = func() { close(decided) }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	rec1 := httptest.NewRecorder()

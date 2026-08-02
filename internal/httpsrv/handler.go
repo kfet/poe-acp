@@ -18,12 +18,13 @@ import (
 	"github.com/kfet/poe-acp/internal/statusline"
 )
 
-// fastCancelThreshold is the elapsed-time floor below which a client
-// disconnect during a turn is logged as a permanent (always-on) WARN:
-// Poe dropped the bot-facing connection before the turn could realistically
-// start. See handleQuery. Declared as a var so tests can tighten/loosen it
-// deterministically without wall-clock waits.
-var fastCancelThreshold = 2 * time.Second
+// defaultFastCancelThreshold is the elapsed-time floor below which a
+// client disconnect during a turn is logged as a permanent (always-on)
+// WARN: Poe dropped the bot-facing connection before the turn could
+// realistically start. See handleQuery. It is copied onto each Handler
+// at construction (Handler.fastCancelThreshold); tests tighten/loosen the
+// per-Handler field so nothing is shared across goroutines.
+const defaultFastCancelThreshold = 2 * time.Second
 
 // Config configures a Handler.
 type Config struct {
@@ -148,6 +149,34 @@ type Handler struct {
 	// force-cut drain can report exactly what it abandoned (see
 	// inflight.go).
 	streams *inflight
+
+	// fastCancelThreshold is the per-Handler copy of
+	// defaultFastCancelThreshold (see its doc). A per-instance field, not
+	// a package global: the disconnect watcher goroutine can outlive its
+	// test (the turn is decoupled from the request ctx), so a shared
+	// global would be read by one test's watcher while another test wrote
+	// it — a data race. Each test constructs its own Handler and sets
+	// this field before issuing the request, so nothing is shared.
+	fastCancelThreshold time.Duration
+
+	// The hooks below are test-only seams, nil in production. They are
+	// per-Handler fields for the SAME reason as fastCancelThreshold:
+	// goroutines that read them (the disconnect watcher, watchIdle) can
+	// outlive their test, so a shared package global would race with a
+	// later test's assignment. Tests set them on their own Handler before
+	// issuing the request; the goroutines that read them are spawned
+	// during that request, so the write happens-before the read.
+	//
+	// absorbDecidedHook fires after the disconnect watcher latches its
+	// absorb/cancel decision, so a test can release a blocked turn only
+	// AFTER the decision is latched.
+	absorbDecidedHook func()
+	// idleWriteCancelHook fires after watchIdle cancels a wedged turn.
+	idleWriteCancelHook func()
+	// heartbeatTickHook is forwarded to each sink's heartbeat goroutine
+	// (see newSink); it fires after every heartbeat tick so spinner tests
+	// can wait on real ticks instead of wall-clock sleeps.
+	heartbeatTickHook func()
 }
 
 // New creates a Handler. HeartbeatInterval <=0 disables heartbeat;
@@ -168,7 +197,7 @@ func New(cfg Config) *Handler {
 	if cfg.SSEWriteTimeout <= 0 {
 		cfg.SSEWriteTimeout = defaultSSEWriteTimeout
 	}
-	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL), streams: newInflight()}
+	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL), streams: newInflight(), fastCancelThreshold: defaultFastCancelThreshold}
 }
 
 // ServeHTTP implements http.Handler.
@@ -313,7 +342,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// chunk lands, re-arming on every subsequent stall for the whole
 	// turn. (hide_thinking is a router-level concern: it suppresses
 	// agent_thought_chunk content from the stream, not the spinner.)
-	s := newSink(sse, h.cfg.HeartbeatInterval, h.cfg.StallThreshold)
+	s := newSink(sse, h.cfg.HeartbeatInterval, h.cfg.StallThreshold, h.heartbeatTickHook)
 	// Pre-seed the provider emoji from the handler-resolved model so
 	// tick #1 of the spinner already carries it. The router re-runs
 	// the resolution after applyOptions returns (success or failure)
@@ -380,7 +409,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		select {
 		case <-ctx.Done():
 			elapsed := time.Since(start)
-			if elapsed < fastCancelThreshold {
+			if elapsed < h.fastCancelThreshold {
 				log.Printf("WARN fast client disconnect: conv=%s elapsed=%s — Poe dropped the bot connection before the turn started", req.ConversationID, elapsed.Round(time.Millisecond))
 			}
 			// Latch the decision at the instant the client went away:
@@ -391,8 +420,8 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 			} else {
 				absorbed.Store(true)
 			}
-			if absorbDecidedHook != nil {
-				absorbDecidedHook()
+			if h.absorbDecidedHook != nil {
+				h.absorbDecidedHook()
 			}
 		case <-done:
 		}
@@ -425,8 +454,8 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 // idle clock and cancels the turn if no user-visible byte has landed
 // within IdleWriteTimeout. It exits as soon as the turn completes (done
 // closed) — so a turn that ends normally, or is cut by an opt-in
-// TurnTimeout ceiling, never trips the idle path. idleWriteCancelHook is a test-only seam fired when
-// the idle path cancels.
+// TurnTimeout ceiling, never trips the idle path. Handler.idleWriteCancelHook
+// is a test-only seam fired when the idle path cancels.
 func (h *Handler) watchIdle(cancelTurn context.CancelFunc, s *sink, done <-chan struct{}, convID string) {
 	t := time.NewTicker(idleCheckInterval(h.cfg.IdleWriteTimeout))
 	defer t.Stop()
@@ -439,18 +468,14 @@ func (h *Handler) watchIdle(cancelTurn context.CancelFunc, s *sink, done <-chan 
 				log.Printf("WARN idle-write timeout: conv=%s no agent output in %s — cutting wedged stream",
 					convID, h.cfg.IdleWriteTimeout)
 				cancelTurn()
-				if idleWriteCancelHook != nil {
-					idleWriteCancelHook()
+				if h.idleWriteCancelHook != nil {
+					h.idleWriteCancelHook()
 				}
 				return
 			}
 		}
 	}
 }
-
-// idleWriteCancelHook, when non-nil, is invoked after watchIdle cancels a
-// wedged turn. Test-only seam. nil in production.
-var idleWriteCancelHook func()
 
 // idleCheckInterval derives the idle poll cadence from the timeout: a
 // quarter of the window, floored at 10ms so tiny test timeouts still tick.
@@ -460,12 +485,6 @@ func idleCheckInterval(timeout time.Duration) time.Duration {
 	}
 	return 10 * time.Millisecond
 }
-
-// absorbDecidedHook, when non-nil, is invoked after the disconnect watcher
-// latches its absorb/cancel decision. Test-only seam so a test can release
-// a blocked turn only AFTER the decision is latched, avoiding a race
-// between client-disconnect and turn-completion. nil in production.
-var absorbDecidedHook func()
 
 // sink adapts SSEWriter to router.ChunkSink, with an animated
 // status-line spinner that doubles as the SSE keepalive. There is no
@@ -776,14 +795,25 @@ type sink struct {
 	// fast path into a per-chunk replace storm — see the bandwidth note
 	// on emitSpinnerFrame.
 	planDirty bool
+
+	// tickHook, when non-nil, is invoked after each heartbeat tick
+	// completes (see emitSpinnerFrame). Test-only seam so spinner tests
+	// can wait on real ticks instead of wall-clock sleeps; nil in
+	// production. It is a per-sink field set at construction (never a
+	// package global): the heartbeat goroutine can outlive its test if a
+	// handler-path turn leaks, so a shared global would race with a later
+	// test's assignment. Passed into newSink before the goroutine spawns,
+	// so the write happens-before the goroutine's read.
+	tickHook func()
 }
 
-func newSink(w *poeproto.SSEWriter, hb, stall time.Duration) *sink {
+func newSink(w *poeproto.SSEWriter, hb, stall time.Duration, tickHook func()) *sink {
 	s := &sink{
 		o:        &orderedWriter{w: w},
 		stall:    stall,
 		hbDone:   make(chan struct{}),
 		hbExited: make(chan struct{}),
+		tickHook: tickHook,
 	}
 	now := time.Now().UnixNano()
 	s.lastWrite.Store(now)
@@ -798,11 +828,6 @@ func newSink(w *poeproto.SSEWriter, hb, stall time.Duration) *sink {
 	}
 	return s
 }
-
-// heartbeatTickHook, when non-nil, is invoked after each heartbeat tick
-// completes. Test-only seam so spinner tests can wait on real ticks
-// instead of wall-clock sleeps. nil in production.
-var heartbeatTickHook func()
 
 func (s *sink) heartbeat(every time.Duration) {
 	defer close(s.hbExited)
@@ -830,7 +855,7 @@ func (s *sink) heartbeat(every time.Duration) {
 }
 
 // emitSpinnerFrame is called once per heartbeat tick. It fires
-// heartbeatTickHook (so tick #0 is observed by tests just like
+// s.tickHook (so tick #0 is observed by tests just like
 // ticker-driven ticks) and returns keepGoing=false only when the stream
 // is sealed and the goroutine should exit.
 //
@@ -860,8 +885,8 @@ func (s *sink) heartbeat(every time.Duration) {
 // animation (but not the first re-arm frame, which is what defeats
 // starvation) could be decimated to every Nth tick.
 func (s *sink) emitSpinnerFrame(spinTick *int) (keepGoing bool) {
-	if heartbeatTickHook != nil {
-		heartbeatTickHook()
+	if s.tickHook != nil {
+		s.tickHook()
 	}
 	// Consume the plan re-arm FIRST and unconditionally (never behind a
 	// short-circuit): leaving it set would force a redundant extra frame

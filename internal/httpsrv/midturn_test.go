@@ -28,7 +28,7 @@ func TestSink_MidTurnSpinnerToggleSSE(t *testing.T) {
 	_ = w.Meta()
 	// hb=0: no goroutine, we tick by hand. stall=0: any content-idle
 	// interval counts as a stall, so a manual tick after a write re-arms.
-	s := newSink(w, 0, 0)
+	s := newSink(w, 0, 0, nil)
 
 	var spinTick int
 	// Cold-start spinner (no output yet → stalled).
@@ -115,7 +115,7 @@ func TestSink_SpinnerFrameDoesNotResetWedgeClock(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0, 0)
+	s := newSink(w, 0, 0, nil)
 
 	if err := s.Text("hi"); err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestSink_ToolActivityResetsWedgeClockOnly(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
-	s := newSink(w, 0, time.Hour)
+	s := newSink(w, 0, time.Hour, nil)
 
 	// Backdate both clocks so a reset is observable.
 	old := time.Now().Add(-time.Hour).UnixNano()
@@ -181,7 +181,7 @@ func TestSink_EmitSpinnerFrameNotStalled(t *testing.T) {
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	// Large stall so a just-written stream is never considered stalled.
-	s := newSink(w, 0, time.Hour)
+	s := newSink(w, 0, time.Hour, nil)
 	if err := s.Text("hi"); err != nil {
 		t.Fatal(err)
 	}
@@ -259,9 +259,7 @@ func TestHandler_ToolActivityKeepsWedgeAlive(t *testing.T) {
 	h := New(Config{Router: rtr, IdleWriteTimeout: 50 * time.Millisecond})
 
 	idleFired := make(chan struct{})
-	old := idleWriteCancelHook
-	idleWriteCancelHook = func() { close(idleFired) }
-	defer func() { idleWriteCancelHook = old }()
+	h.idleWriteCancelHook = func() { close(idleFired) }
 
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c-toolping",

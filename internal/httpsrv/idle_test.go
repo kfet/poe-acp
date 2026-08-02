@@ -41,9 +41,7 @@ func TestHandler_IdleWriteTimeout_CutsWedgedTurn(t *testing.T) {
 	h := New(Config{Router: rtr, HeartbeatInterval: 20 * time.Millisecond, IdleWriteTimeout: 40 * time.Millisecond})
 
 	fired := make(chan struct{})
-	old := idleWriteCancelHook
-	idleWriteCancelHook = func() { close(fired) }
-	defer func() { idleWriteCancelHook = old }()
+	h.idleWriteCancelHook = func() { close(fired) }
 
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c-wedge",
@@ -130,9 +128,7 @@ func TestHandler_NoTurnCeiling_ProgressKeepsTurnAlive(t *testing.T) {
 	h := New(Config{Router: rtr, IdleWriteTimeout: 50 * time.Millisecond})
 
 	idleFired := make(chan struct{})
-	old := idleWriteCancelHook
-	idleWriteCancelHook = func() { close(idleFired) }
-	defer func() { idleWriteCancelHook = old }()
+	h.idleWriteCancelHook = func() { close(idleFired) }
 
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c-progress",
@@ -186,7 +182,7 @@ func TestSink_IdleSince(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := newSink(sse, 0, time.Hour)
+	s := newSink(sse, 0, time.Hour, nil)
 	if s.idleSince() > time.Second {
 		t.Fatalf("fresh sink idle too high: %v", s.idleSince())
 	}

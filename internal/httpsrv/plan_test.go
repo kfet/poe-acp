@@ -23,7 +23,7 @@ import (
 // becomes durable answer text.
 func TestSink_PlanRendersInsideTransientFrame(t *testing.T) {
 	rec := newSSERecorder(t)
-	s := newSink(rec.w, 0, 0)
+	s := newSink(rec.w, 0, 0, nil)
 
 	if err := s.Text("answer so far"); err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestSink_PlanRendersInsideTransientFrame(t *testing.T) {
 func TestSink_PlanChangeForcesFrameWhileStreaming(t *testing.T) {
 	rec := newSSERecorder(t)
 	// stall is effectively infinite: only the plan re-arm can fire.
-	s := newSink(rec.w, 0, time.Hour)
+	s := newSink(rec.w, 0, time.Hour, nil)
 
 	if err := s.Text("streaming"); err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestSink_PlanChangeForcesFrameWhileStreaming(t *testing.T) {
 // SetPlan touches neither clock and never marks realWritten.
 func TestSink_PlanIsNotUserVisibleOutput(t *testing.T) {
 	rec := newSSERecorder(t)
-	s := newSink(rec.w, 0, 0)
+	s := newSink(rec.w, 0, 0, nil)
 	lw, lc := s.lastWrite.Load(), s.lastContent.Load()
 	s.SetPlan([]statusline.PlanEntry{{Content: "step", Status: "pending"}})
 	if s.realWritten() {
@@ -113,7 +113,7 @@ func TestSink_PlanIsNotUserVisibleOutput(t *testing.T) {
 // so the frame is exactly the spinner line.
 func TestSink_EmptyPlanAddsNothing(t *testing.T) {
 	rec := newSSERecorder(t)
-	s := newSink(rec.w, 0, 0)
+	s := newSink(rec.w, 0, 0, nil)
 	s.SetPlan([]statusline.PlanEntry{{Content: "", Status: "pending"}})
 	var spinTick int
 	s.emitSpinnerFrame(&spinTick)
