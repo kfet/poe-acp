@@ -45,6 +45,9 @@
 //
 //	POE_ACP_WORKER_FD=3   listener inherited as ExtraFiles[0]; presence => worker
 //	POE_ACP_DEATH_FD=4    parent-liveness pipe read end as ExtraFiles[1]
+//	POE_ACP_CONTROL_FD=5  per-worker control pipe read end as ExtraFiles[2];
+//	                      carries the drain order (deadline + swap/stop kind)
+//	                      the supervisor writes just before SIGTERM
 //
 // And on a supervisor self-reexec:
 //
@@ -54,6 +57,7 @@
 package supervisor
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -75,12 +79,21 @@ const (
 	// EnvSupervisorFD names the env var carrying the listener fd a
 	// supervisor recovers after a self-reexec instead of binding fresh.
 	EnvSupervisorFD = "POE_ACP_SUPERVISOR_FD"
+	// EnvControlFD names the env var carrying the per-worker control
+	// pipe read end. The supervisor writes exactly one drain order to it
+	// (see DrainOrder) immediately before the retiring SIGTERM, so the
+	// worker never has to INFER why it is being stopped. Its presence
+	// also tells the worker "this supervisor speaks drain orders": an
+	// older supervisor that forked a newer worker leaves it unset, and
+	// the worker falls back to its own flag default.
+	EnvControlFD = "POE_ACP_CONTROL_FD"
 
-	// listenerChildFD / deathChildFD are the fixed fds the inherited
-	// files land on in a worker (0,1,2 are stdio, so ExtraFiles[0]=3,
-	// ExtraFiles[1]=4).
+	// listenerChildFD / deathChildFD / controlChildFD are the fixed fds
+	// the inherited files land on in a worker (0,1,2 are stdio, so
+	// ExtraFiles[0]=3, ExtraFiles[1]=4, ExtraFiles[2]=5).
 	listenerChildFD = 3
 	deathChildFD    = 4
+	controlChildFD  = 5
 )
 
 // IsWorker reports whether this process was forked as a worker (the
@@ -102,6 +115,27 @@ var kill = syscall.Kill
 // ---------------------------------------------------------------------------
 // Worker side
 // ---------------------------------------------------------------------------
+
+// SealInheritedFDs re-arms O_CLOEXEC on every fd this worker inherited
+// from its supervisor (listener, parent-liveness pipe, control pipe).
+// os/exec delivers ExtraFiles to the child with O_CLOEXEC CLEARED, so
+// without this every process the worker spawns — the long-lived ACP
+// agent, and anything that agent forks — inherits a dup of the listening
+// socket and of both pipes. An orphaned agent holding the listener keeps
+// the port bound after the relay is gone: exactly the
+// EADDRINUSE-on-relaunch failure this whole model exists to prevent.
+//
+// Call it FIRST in worker mode, before any child process is spawned.
+// Setting FD_CLOEXEC does not disturb our own use of the fds.
+func SealInheritedFDs() {
+	for _, env := range []string{EnvWorkerFD, EnvDeathFD, EnvControlFD} {
+		fd, err := strconv.Atoi(os.Getenv(env))
+		if err != nil || fd <= 2 { // unset/malformed, or stdio: leave alone
+			continue
+		}
+		syscall.CloseOnExec(fd)
+	}
+}
 
 // WorkerListener recovers the serving listener from the inherited fd named
 // by EnvWorkerFD. It is an error to call this in a process that is not a
@@ -142,6 +176,9 @@ func WatchParent(onDeath func()) {
 		return
 	}
 	f := os.NewFile(uintptr(fd), "parent-liveness")
+	// Belt and braces with SealInheritedFDs: this fd stays open for the
+	// worker's whole life, so it must never reach an exec'd child.
+	syscall.CloseOnExec(fd)
 	go func() {
 		defer closeFile(f)
 		// Any read return (EOF on parent death, or error) means the
@@ -204,6 +241,11 @@ type Supervisor struct {
 
 	mu  sync.Mutex
 	cur *os.Process // the current serving worker
+	// control holds the write end of each live worker's control pipe,
+	// keyed by pid. drain writes that worker's drain order there before
+	// SIGTERM; ReleaseWorker closes it when the worker is reaped.
+	// Guarded by mu.
+	control map[int]*os.File
 	// retiring tracks worker generations that have been told to retire
 	// (SIGTERM sent) but whose exit has not been observed yet, keyed by
 	// pid with the moment retirement began. A non-empty set at swap time
@@ -316,37 +358,98 @@ func (s *Supervisor) Spawn() (*os.Process, error) {
 		return nil, fmt.Errorf("supervisor: dup listener: %w", err)
 	}
 	defer closeFile(lf)
+	// Per-worker control pipe: the supervisor keeps the write end and
+	// uses it to hand THIS worker its DrainOrder when the time comes
+	// (see drain). One pipe per worker, so an order can never reach the
+	// wrong generation.
+	ctlR, ctlW, err := pipeFn()
+	if err != nil {
+		return nil, fmt.Errorf("supervisor: control pipe: %w", err)
+	}
+	defer closeFile(ctlR) // the child gets its own copy via ExtraFiles
 
 	cmd := exec.Command(s.binPath, s.args...)
 	cmd.Env = append(append([]string{}, s.env...),
 		fmt.Sprintf("%s=%d", EnvWorkerFD, listenerChildFD),
 		fmt.Sprintf("%s=%d", EnvDeathFD, deathChildFD),
+		fmt.Sprintf("%s=%d", EnvControlFD, controlChildFD),
 	)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.ExtraFiles = []*os.File{lf, s.deathR}
+	cmd.ExtraFiles = []*os.File{lf, s.deathR, ctlR}
 	// Put each worker in its own process group so a signal aimed at the
 	// supervisor's group (e.g. a terminal SIGINT) never reaches workers
 	// directly: the supervisor mediates all worker lifecycle signals.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := s.start(cmd); err != nil {
+		closeFile(ctlW)
 		return nil, fmt.Errorf("supervisor: start worker: %w", err)
 	}
+	s.mu.Lock()
+	if s.control == nil {
+		s.control = make(map[int]*os.File)
+	}
+	s.control[cmd.Process.Pid] = ctlW
+	s.mu.Unlock()
 	return cmd.Process, nil
 }
 
-// drain tells worker p to stop accepting and drain its in-flight streams
-// by sending SIGTERM (the worker maps SIGTERM to a DEADLINE-BOUNDED
-// http.Server.Shutdown — see DrainServer). p exits once drained or once
-// its own deadline force-cuts the drain; the caller reaps it. Prefer
-// Retire, which additionally escalates to SIGKILL if the worker does not
-// exit at all — Retire is the only caller and the only supported entry
-// point for retiring a worker.
-func (s *Supervisor) drain(p *os.Process) error {
+// drain tells worker p to stop accepting and drain its in-flight streams.
+// It first hands p the DrainOrder for this retirement over p's control
+// pipe, then sends SIGTERM (which the worker maps to a DEADLINE-BOUNDED
+// http.Server.Shutdown — see DrainServer). The write completes before the
+// signal is sent, so the order is already buffered when the worker's
+// SIGTERM handler reads it.
+//
+// A failed order delivery is deliberately NOT fatal to the retirement.
+// The only realistic causes are a worker that has already exited (EPIPE,
+// or its control pipe already released by the reaper), and in that case
+// the SIGTERM below fails too and reports the real problem. If the
+// SIGTERM does succeed, the worker simply falls back to its own
+// -drain-deadline: a shorter, safe bound, never a longer one — so a lost
+// order can only ever under-grant time, never make a worker immortal.
+// The delivery error is still surfaced when the signal fails, so nothing
+// is silently swallowed.
+//
+// p exits once drained or once its own deadline force-cuts the drain; the
+// caller reaps it. Prefer Retire, which additionally escalates to SIGKILL
+// if the worker does not exit at all — Retire is the only caller and the
+// only supported entry point for retiring a worker.
+func (s *Supervisor) drain(p *os.Process, order DrainOrder) error {
+	orderErr := s.sendDrainOrder(p.Pid, order)
 	if err := signalProc(p, syscall.SIGTERM); err != nil {
-		return fmt.Errorf("supervisor: drain worker %d: %w", p.Pid, err)
+		return errors.Join(fmt.Errorf("supervisor: drain worker %d: %w", p.Pid, err), orderErr)
 	}
 	return nil
+}
+
+// sendDrainOrder writes the one-shot retirement order for worker pid to
+// its control pipe. Exactly one order is ever written per worker.
+func (s *Supervisor) sendDrainOrder(pid int, order DrainOrder) error {
+	s.mu.Lock()
+	w := s.control[pid]
+	s.mu.Unlock()
+	if w == nil {
+		return fmt.Errorf("supervisor: no control pipe for worker %d", pid)
+	}
+	if _, err := w.Write(order.encode()); err != nil {
+		return fmt.Errorf("supervisor: send drain order to worker %d: %w", pid, err)
+	}
+	return nil
+}
+
+// ReleaseWorker drops the supervisor-side state of a worker whose exit
+// has been reaped: it closes that worker's control pipe write end. Call
+// it once per worker, from the reaper. Calling it for an unknown pid is a
+// no-op, so a double reap is harmless.
+func (s *Supervisor) ReleaseWorker(pid int) {
+	s.mu.Lock()
+	w := s.control[pid]
+	delete(s.control, pid)
+	s.mu.Unlock()
+	if w != nil {
+		closeFile(w)
+	}
 }
 
 // SelfReexec replaces the supervisor process in place with a fresh copy of

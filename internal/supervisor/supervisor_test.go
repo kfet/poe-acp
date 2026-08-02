@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -43,6 +44,15 @@ func newSup(t *testing.T) *Supervisor {
 		closeListener(s.ln)
 		closeFile(s.deathR)
 		closeFile(s.deathW)
+		s.mu.Lock()
+		pids := make([]int, 0, len(s.control))
+		for pid := range s.control {
+			pids = append(pids, pid)
+		}
+		s.mu.Unlock()
+		for _, pid := range pids {
+			s.ReleaseWorker(pid)
+		}
 	})
 	return s
 }
@@ -397,6 +407,47 @@ func TestSpawn_StartFail(t *testing.T) {
 	}
 }
 
+// ---- SealInheritedFDs ----
+
+// TestSealInheritedFDs: the fds the supervisor hands a worker arrive with
+// O_CLOEXEC cleared (ExtraFiles). Unless they are re-armed, every agent
+// the worker spawns inherits a dup of the listening socket and of both
+// pipes — and an orphaned agent holding the listener keeps the port bound.
+func TestSealInheritedFDs(t *testing.T) {
+	cloexec := func(fd int) bool {
+		flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFD, 0)
+		if errno != 0 {
+			t.Fatalf("fcntl(%d): %v", fd, errno)
+		}
+		return flags&syscall.FD_CLOEXEC != 0
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer closeFile(r)
+	defer closeFile(w)
+	fd := int(r.Fd())
+	if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_SETFD, 0); errno != 0 {
+		t.Fatalf("clear cloexec: %v", errno)
+	}
+	if cloexec(fd) {
+		t.Fatal("precondition: fd must start without FD_CLOEXEC")
+	}
+
+	t.Setenv(EnvWorkerFD, strconv.Itoa(fd))
+	t.Setenv(EnvDeathFD, "") // unset/malformed: skipped, not fatal
+	t.Setenv(EnvControlFD, "2")
+	SealInheritedFDs()
+
+	if !cloexec(fd) {
+		t.Fatal("inherited fd still leaks across exec")
+	}
+	if cloexec(2) {
+		t.Fatal("stderr must never be marked close-on-exec")
+	}
+}
+
 // ---- drain ----
 
 func TestDrain_Success(t *testing.T) {
@@ -408,7 +459,7 @@ func TestDrain_Success(t *testing.T) {
 		t.Fatalf("start sleep: %v", err)
 	}
 	s := newSup(t)
-	if err := s.drain(cmd.Process); err != nil {
+	if err := s.drain(cmd.Process, DrainOrder{Kind: DrainStop, Deadline: time.Minute}); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	_, _ = cmd.Process.Wait()
@@ -422,8 +473,14 @@ func TestDrain_Error(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	_, _ = cmd.Process.Wait() // reap so the next Signal errors
-	if err := s.drain(cmd.Process); err == nil {
+	err := s.drain(cmd.Process, DrainOrder{Kind: DrainSwap, Deadline: time.Minute})
+	if err == nil {
 		t.Fatal("want error signalling a finished process")
+	}
+	// A worker with no control pipe cannot be handed an order either; the
+	// signal failure must not swallow that.
+	if !strings.Contains(err.Error(), "no control pipe") {
+		t.Fatalf("want the order-delivery failure joined in, got %v", err)
 	}
 }
 
