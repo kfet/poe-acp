@@ -2,34 +2,25 @@
 
 ## Current release state
 
-- Standalone repo path: `/Users/kfet/dev/ai/poe-acp`
 - Branch: `main`
-- Latest local release commit: `da79a39c29948fb088a6c1eaec920b35347eff7f`
-- Release tag: `v0.2.0`
-- VERSION: `0.2.0`
+- Latest release commit: `2ae400a` (`release: v0.48.1`)
+- Release tag: `v0.48.1` (pushed)
+- VERSION: `0.48.1`
 
-## Release workflow status (completed)
+## Release workflow status (completed and published)
 
-### Done
-- `make all` executed and passed (vet, test-race-cover, native build, 5 cross-builds, check-licenses).
-- `CHANGELOG.md` updated with:
-  - fresh `## [Unreleased]` section at top
-  - release section `## [0.2.0] - 2026-04-22`
-- `VERSION` updated to `0.2.0`.
-- Changes committed:
-  - `git commit -m "release: v0.2.0"`
-- Annotated tag created:
-  - `git tag -a v0.2.0 -m "release: v0.2.0"`
-- Local install + verification:
-  - `make install`
-  - `poe-acp --version` prints `0.2.0`
-- Working tree clean after these steps.
-
-### Remaining (requires explicit user confirmation)
-- Publish release artifacts and Homebrew tap update:
-  - `make publish` (pushes main + tag, triggers GitHub release workflow)
-  - poll release runs via `gh run list` by `headSha`
-  - verify tap update via `gh api repos/kfet/homebrew-ai/contents/Formula/poe-acp.rb`
+- `make all` passed (vet, test-race-cover, native build, 5 cross-builds, check-licenses).
+- `CHANGELOG.md`: `## [0.48.1] - 2026-08-02` released section, fresh `## [Unreleased]` on top.
+- `VERSION` = `0.48.1`; committed as `release: v0.48.1`; annotated tag `v0.48.1`.
+- `make install` + `poe-acp --version` → `0.48.1`.
+- `make publish` pushed `main` + `v0.48.1`.
+- GitHub Actions for the release commit: `release` and `ci` both **success**
+  (release run <https://github.com/kfet/poe-acp/actions/runs/30747830254>).
+- Release published with binaries, `checksums.txt`, `LICENSE`,
+  `THIRD_PARTY_NOTICES.md`: <https://github.com/kfet/poe-acp/releases/tag/v0.48.1>
+- Homebrew tap `kfet/homebrew-ai` `Formula/poe-acp.rb` updated to `0.48.1`.
 
 ## Notes
-- Do not push or publish until user explicitly confirms.
+
+- The canonical release procedure lives in `.fir/skills/release/SKILL.md`.
+- Do not push or publish a new version until the user explicitly confirms.
