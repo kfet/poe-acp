@@ -26,6 +26,12 @@ package supervisor
 //     worker has not exited within its own (longer) deadline, so a wedged
 //     worker can never outlive the supervisor that retired it.
 //
+// ...and it is bounded by a DIFFERENT deadline in each of the two
+// situations a worker is retired in — a service stop (externally bounded,
+// DefaultDrainDeadline) and a SIGHUP worker swap (nothing external
+// waiting, DefaultSwapDrainDeadline). The supervisor says which, over the
+// control pipe; see drainorder.go.
+//
 // Graceful semantics are unchanged below the deadline: a normal in-flight
 // SSE stream completes undisturbed on a reload, and the worker exits as
 // soon as the last one finishes.
@@ -41,23 +47,39 @@ import (
 	"time"
 )
 
-// DefaultDrainDeadline bounds a worker's graceful drain after SIGTERM.
-//
-// The budget is set by systemd's TimeoutStopSec=90s on the deployed unit:
-// everything must be finished well before systemd gives up and SIGKILLs
-// the control group. The chain on a service stop is
+// DefaultDrainDeadline bounds a worker's graceful drain when the SERVICE
+// is stopping (DrainStop): systemd SIGTERMs the cgroup and gives up at
+// TimeoutStopSec=90s, and a supervisor self-upgrade is not serving until
+// the worker is gone. Something external is waiting either way, so the
+// budget is short. The chain on a service stop is
 //
 //	worker drain (45s) + ForceExitGrace (5s)   => worker gone by ~50s
 //	supervisor escalation (45s + RetireGrace)  => SIGKILL at ~60s
 //	supervisor exits                           => ~60s, 30s of margin
 //
-// 45s is also comfortably longer than any healthy stream tail: the
-// in-flight turn keeps streaming while the NEW worker already serves new
-// traffic, so the only thing at risk from the bound is the tail of an
-// unusually long turn — and the alternative (the old behaviour) is an
-// immortal worker. Operators who want more room raise -drain-deadline;
-// keep it under TimeoutStopSec minus RetireGrace.
+// Operators who want more room raise -drain-deadline; keep it under
+// TimeoutStopSec minus RetireGrace.
 const DefaultDrainDeadline = 45 * time.Second
+
+// DefaultSwapDrainDeadline bounds a worker's graceful drain when it has
+// been SWAPPED OUT by a SIGHUP reload (DrainSwap). Nothing external is
+// waiting on this chain: the supervisor survives, the new worker is
+// already accepting, and the retiring generation exists only to finish
+// the streams it still holds. The chain on a swap is
+//
+//	worker drain (30m) + ForceExitGrace (5s)   => worker gone by ~30m
+//	supervisor escalation (30m + RetireGrace)  => SIGKILL at ~30m15s
+//	supervisor keeps serving throughout        => no external timeout
+//
+// Agent turns legitimately run tens of minutes, and bounding them by
+// wall-clock is what made a reload force-close a HEALTHY 42-minute turn
+// and show the user a red "peer disconnected before response". Liveness,
+// not time, is the right resource to bound here: the per-stream
+// idle-write backstop (-idle-write-timeout, progress-resetting) already
+// reaps a genuinely wedged turn in minutes, so this is a LEAK BACKSTOP —
+// the thing that stops an unkillable generation living forever — not a
+// working bound. Raise it with -swap-drain-deadline.
+const DefaultSwapDrainDeadline = 30 * time.Minute
 
 // RetireGrace is the extra headroom the supervisor allows a retiring
 // worker beyond that worker's own drain deadline before escalating to
@@ -196,26 +218,28 @@ type RetiringWorker struct {
 }
 
 // Retire drains worker p and escalates to SIGKILL if it has not exited
-// within deadline. dead is the caller's reaper signal — a channel closed
-// (or sent to) once p's Wait has returned. after is the timer seam
-// (defaults to time.After).
+// within order.RetireDeadline(). order is the retirement contract (see
+// drainorder.go): it is handed to the worker over its control pipe just
+// before the SIGTERM, so BOTH bounds — the worker's own drain deadline
+// and this escalation — are derived from the same value and can never
+// drift apart. dead is the caller's reaper signal — a channel closed (or
+// sent to) once p's Wait has returned. after is the timer seam (defaults
+// to time.After).
 //
 // Retire blocks until p's exit is observed or escalation has run, so a
 // caller that must be quiescent (supervisor self-reexec, shutdown) can
 // call it inline; a caller that must keep serving (SIGHUP worker swap)
 // runs it in a goroutine. While it is in flight the pid is listed by
 // Retiring, so a pileup of undead generations is observable.
-func (s *Supervisor) Retire(p *os.Process, dead <-chan struct{}, deadline time.Duration, after func(time.Duration) <-chan time.Time) (RetireResult, error) {
+func (s *Supervisor) Retire(p *os.Process, dead <-chan struct{}, order DrainOrder, after func(time.Duration) <-chan time.Time) (RetireResult, error) {
 	if after == nil {
 		after = time.After
 	}
-	if deadline <= 0 {
-		deadline = DefaultDrainDeadline + RetireGrace
-	}
+	deadline := order.RetireDeadline()
 	s.trackRetiring(p.Pid)
 	defer s.untrackRetiring(p.Pid)
 
-	if err := s.drain(p); err != nil {
+	if err := s.drain(p, order); err != nil {
 		return RetireFailed, err
 	}
 	select {
