@@ -249,8 +249,11 @@ func DebugHandler(r *router.Router) http.Handler {
 
 func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *poeproto.Request) {
 	// Register for the whole turn so a force-cut drain can name this
-	// stream in its abandoned-streams log.
-	defer h.streams.add(req.ConversationID, req.UserID, req.MessageID)()
+	// stream in its abandoned-streams log — and, once the sink exists,
+	// seal it gracefully instead of having it truncated by the
+	// force-close (see Handler.SealInFlight).
+	streamID, release := h.streams.add(req.ConversationID, req.UserID, req.MessageID)
+	defer release()
 
 	sse, err := poeproto.NewSSEWriter(w)
 	if err != nil {
@@ -349,6 +352,8 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// so the header tracks the actually-applied model, not the
 	// requested one. Unknown providers return "" → segment dropped.
 	s.SetProviderEmoji(statusline.ProviderEmojiForModel(opts.Model))
+	// Now that the stream has a sink, let the drain path seal it.
+	h.streams.setSeal(streamID, s.seal)
 	defer s.stop()
 	// Finalization backstop: whatever path Prompt takes, guarantee the
 	// stream is sealed (idempotent userDone) before handleQuery returns,
@@ -974,6 +979,23 @@ func (s *sink) Text(t string) error      { s.touch(); return s.o.userText(s.mayb
 func (s *sink) Replace(t string) error   { s.touch(); return s.o.userReplace(t) }
 func (s *sink) Error(t, et string) error { s.touch(); s.stop(); return s.o.userError(t, et) }
 func (s *sink) Done() error              { s.touch(); s.stop(); return s.o.userDone() }
+
+// seal terminates the stream at the protocol level from ANOTHER
+// goroutine (the drain path): a Poe `error` event carrying allow_retry,
+// then the terminal `done`. Both writes go through orderedWriter, so
+// they are serialized against whatever the turn's own goroutine is
+// writing, and both are no-ops once the stream is closed — sealing can
+// never double-emit `done`, and a stream sealed here makes the
+// handler's trailing userDone backstop a no-op in turn.
+//
+// Errors are deliberately swallowed: the connection is about to be
+// force-closed, and each write is already bounded by the SSE write
+// deadline.
+func (s *sink) seal(text string) {
+	s.stop()
+	_ = s.o.userError(text, "")
+	_ = s.o.userDone()
+}
 
 func (s *sink) File(url, contentType, name, inlineRef string) error {
 	s.touch()

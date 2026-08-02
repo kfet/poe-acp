@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Graceful abandon on a force-cut drain**: a worker whose drain deadline
+  expires now seals each still-in-flight SSE stream at the protocol level —
+  an `error` event carrying `allow_retry` plus the terminal `done` — before
+  `srv.Close()` truncates it. Poe sees a well-formed terminal error instead
+  of a cut connection and may redrive the same `message_id` against the new
+  worker, which resumes the same session by conversation cwd. The seal is
+  idempotent with the handler's finalization backstop (never a double `done`)
+  and bounded so a stalled reader cannot wedge the drain.
+
 ## [0.48.0] - 2026-08-02
 
 ### Added
