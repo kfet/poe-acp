@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-08-01
+
+### Added
+
+- **`delegate-remote` builtin skill.** Nontrivial work on another host —
+  building a project, fixing a suite, implementing a change — should be
+  handed to a coding agent running on that host, not hand-driven command
+  by command over ssh from the relay session. The skill states the rule,
+  where the line sits between hand-driving and delegating, and the launch
+  detached / poll / verify loop the relay owns.
+
 ## [0.45.0] - 2026-07-29
 
 ### Added
