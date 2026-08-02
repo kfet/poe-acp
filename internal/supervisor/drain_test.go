@@ -261,7 +261,7 @@ func TestRetire_Graceful(t *testing.T) {
 	rec := stubSignals(t, nil)
 	dead := make(chan struct{})
 	close(dead)
-	res, err := s.Retire(&os.Process{Pid: 4242}, dead, time.Minute, nil)
+	res, err := s.Retire(&os.Process{Pid: 4242}, dead, DrainOrder{Deadline: time.Minute}, nil)
 	if err != nil || res != RetireGraceful {
 		t.Fatalf("got (%v,%v) want (graceful,nil)", res, err)
 	}
@@ -283,7 +283,7 @@ func TestRetire_EscalatesToSIGKILL(t *testing.T) {
 	dead := make(chan struct{})
 	// The worker "exits" only once the group SIGKILL has been delivered.
 	go func() { <-killed.ch; close(dead) }()
-	res, err := s.Retire(&os.Process{Pid: 4242}, dead, time.Millisecond, fireOnce())
+	res, err := s.Retire(&os.Process{Pid: 4242}, dead, DrainOrder{Deadline: time.Millisecond}, fireOnce())
 	if err != nil || res != RetireKilled {
 		t.Fatalf("got (%v,%v) want (killed,nil)", res, err)
 	}
@@ -300,7 +300,7 @@ func TestRetire_EscalatesToSIGKILL(t *testing.T) {
 func TestRetire_SigtermFails(t *testing.T) {
 	s := newSup(t)
 	stubSignals(t, func(os.Signal) error { return errors.New("boom") })
-	res, err := s.Retire(&os.Process{Pid: 4242}, make(chan struct{}), time.Minute, nil)
+	res, err := s.Retire(&os.Process{Pid: 4242}, make(chan struct{}), DrainOrder{Deadline: time.Minute}, nil)
 	if err == nil || res != RetireFailed {
 		t.Fatalf("got (%v,%v) want (failed,err)", res, err)
 	}
@@ -319,7 +319,7 @@ func TestRetire_KillRacesNaturalExit(t *testing.T) {
 		return errors.New("process already finished")
 	}
 	t.Cleanup(func() { kill = old })
-	res, err := s.Retire(&os.Process{Pid: 4242}, dead, time.Millisecond, fireOnce())
+	res, err := s.Retire(&os.Process{Pid: 4242}, dead, DrainOrder{Deadline: time.Millisecond}, fireOnce())
 	if err != nil || res != RetireGraceful {
 		t.Fatalf("got (%v,%v) want (graceful,nil)", res, err)
 	}
@@ -329,7 +329,7 @@ func TestRetire_KillFails(t *testing.T) {
 	s := newSup(t)
 	stubSignals(t, nil)
 	stubKill(t, errors.New("boom"))
-	res, err := s.Retire(&os.Process{Pid: 4242}, make(chan struct{}), time.Millisecond, fireOnce())
+	res, err := s.Retire(&os.Process{Pid: 4242}, make(chan struct{}), DrainOrder{Deadline: time.Millisecond}, fireOnce())
 	if err == nil || res != RetireFailed {
 		t.Fatalf("got (%v,%v) want (failed,err)", res, err)
 	}
@@ -341,7 +341,7 @@ func TestRetire_KilledButNeverReaped(t *testing.T) {
 	s := newSup(t)
 	stubSignals(t, nil)
 	stubKill(t, nil)
-	res, err := s.Retire(&os.Process{Pid: 4242}, make(chan struct{}), time.Millisecond, fireAfter)
+	res, err := s.Retire(&os.Process{Pid: 4242}, make(chan struct{}), DrainOrder{Deadline: time.Millisecond}, fireAfter)
 	if err == nil || res != RetireFailed {
 		t.Fatalf("got (%v,%v) want (failed,err)", res, err)
 	}
@@ -353,7 +353,7 @@ func TestRetire_DefaultDeadline(t *testing.T) {
 	stubSignals(t, nil)
 	dead := make(chan struct{})
 	close(dead)
-	if res, err := s.Retire(&os.Process{Pid: 4242}, dead, 0, nil); err != nil || res != RetireGraceful {
+	if res, err := s.Retire(&os.Process{Pid: 4242}, dead, DrainOrder{}, nil); err != nil || res != RetireGraceful {
 		t.Fatalf("got (%v,%v) want (graceful,nil)", res, err)
 	}
 }

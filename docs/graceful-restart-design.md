@@ -14,8 +14,10 @@ The same binary runs in one of two modes, selected at startup:
   (systemd `MainPID` / launchd job PID). It binds the listen socket
   **once** (`net.Listen`) and **never rebinds or exits during an
   upgrade**. It forks worker processes, handing each the listener fd
-  (cleared of `O_CLOEXEC`, delivered as `POE_ACP_WORKER_FD=3`) plus the
-  read end of a parent-liveness pipe (`POE_ACP_DEATH_FD=4`). S is tiny
+  (cleared of `O_CLOEXEC`, delivered as `POE_ACP_WORKER_FD=3`), the
+  read end of a parent-liveness pipe (`POE_ACP_DEATH_FD=4`) and the read
+  end of a per-worker control pipe (`POE_ACP_CONTROL_FD=5`, carrying the
+  drain order for that worker's eventual retirement). S is tiny
   and rarely changes. Implementation: `internal/supervisor/`.
 - **Worker W** is detected by `POE_ACP_WORKER_FD` being set. It recovers
   the listener via `net.FileListener` and runs ALL the relay logic
@@ -283,15 +285,52 @@ generation behind (five were found alive after 17 days, plus their agent
 children, until systemd's `TimeoutStopSec=90s` SIGKILLed the whole control
 group). So there is now an **outer** net as well:
 
-- worker: `supervisor.DrainServer(srv, -drain-deadline, onForce)` —
-  force-closes and exits at the deadline (default 45s), logging every
-  abandoned stream (conv/user/message/age) from the httpsrv in-flight
-  registry, with `ForceExitAfter` guaranteeing the process leaves even if
+- worker: `supervisor.DrainServer(srv, <the applicable deadline>, onForce)`
+  — force-closes and exits at the deadline, logging every abandoned
+  stream (conv/user/message/age) from the httpsrv in-flight registry,
+  with `ForceExitAfter` guaranteeing the process leaves even if
   post-drain cleanup wedges;
 - supervisor: `Supervisor.Retire` escalates SIGTERM → SIGKILL at
-  `drain-deadline + RetireGrace` (15s), tracks retiring generations
+  `<that same deadline> + RetireGrace` (15s), tracks retiring generations
   (`Retiring()`), and `KillRetiring()` on shutdown ensures no worker
   outlives its supervisor.
+
+**Update (after the 2026-08-02 kopi-fir reload incident): there are
+TWO chains, not one.** A worker is retired
+in two situations with opposite contracts, and one constant governed
+both — so a `systemctl --user reload` landing on a conversation whose
+agent turn had been running 42 minutes force-closed a perfectly healthy
+SSE stream after 45s and Poe showed the user a red *"Internal error /
+peer disconnected before response"*.
+
+| | **stop chain** (`DrainStop`) | **swap chain** (`DrainSwap`) |
+|---|---|---|
+| Trigger | service stop/restart, supervisor self-upgrade (`SIGUSR2`), a never-ready worker | `SIGHUP` worker swap (`systemctl --user reload`) |
+| Who is waiting | systemd (`TimeoutStopSec=90s`), or the supervisor itself before it re-execs | nobody — the supervisor survives and the NEW worker is already accepting |
+| Worker bound | `-drain-deadline`, default **45s** | `-swap-drain-deadline`, default **30m** |
+| Supervisor escalation | 45s + `RetireGrace` (15s) → SIGKILL at ~60s | 30m + `RetireGrace` → SIGKILL at ~30m15s |
+| Role of the bound | a real budget: everything must finish before systemd SIGKILLs the cgroup | a **leak backstop**: what actually reaps a wedged turn is `-idle-write-timeout` (2m, progress-resetting) |
+
+Agent turns legitimately run tens of minutes, so wall-clock is simply the
+wrong resource to bound the swap chain with — liveness is, and the
+per-stream idle-write backstop already provides it. 30m only exists so an
+unkillable generation cannot live forever.
+
+**How the worker knows which chain it is on:** it does not infer it — a
+SIGTERM looks identical either way, and on a service stop it comes
+straight from systemd rather than from the supervisor. The SUPERVISOR
+always knows, so it says so: `Spawn` gives every worker a private control
+pipe (read end inherited as `POE_ACP_CONTROL_FD=5`), and `Retire` writes
+one `DrainOrder` line (`drain kind=swap deadline=30m0s`) to it and *then*
+sends SIGTERM. The pipe write completes before the `kill(2)`, so the
+bytes are already buffered when the worker's SIGTERM handler does its
+single non-blocking read. **No order ⇒ stop semantics**, which is what
+makes this safe under version skew, under a direct systemd SIGTERM, and
+for a worker run outside a supervisor.
+
+A stop that lands *during* a swap drain leaves the retiring worker on its
+30m order, but it never gets to use it: `KillRetiring()` SIGKILLs every
+still-retiring generation as the supervisor exits.
 
 Below the deadline the semantics are unchanged: zero-downtime swap, no
 refusal window, in-flight streams complete undisturbed.
@@ -340,7 +379,7 @@ recommended — it'd let any Poe user trigger relay restarts.
 | Child crashes before SIGUSR1 | Parent observes `cmd.Wait()` return, stays in serve mode, logs |
 | Child crashes after SIGUSR1 | Parent already in drain mode; once drained it exits, supervisor restarts → temporary outage but matches today's behaviour |
 | Wedged turn (idle-write timeout) | That one handler's idle backstop fires, its stream gets RST; all other streams keep draining |
-| Parent never drains (all turns wedged) | The worker's own `-drain-deadline` (45s) force-closes the remaining conns and it exits, logging every abandoned stream; the supervisor SIGKILLs it at `+RetireGrace` (15s) if it still hasn't. systemd's `TimeoutStopSec=90s` is never reached |
+| Parent never drains (all turns wedged) | The worker's own drain deadline force-closes the remaining conns and it exits, logging every abandoned stream; the supervisor SIGKILLs it at `+RetireGrace` (15s) if it still hasn't. On a stop that is `-drain-deadline` (45s), so systemd's `TimeoutStopSec=90s` is never reached; on a SIGHUP swap it is `-swap-drain-deadline` (30m), which nothing external is waiting on |
 | Two upgrades in flight | Reject second SIGHUP if a child PID is already tracked |
 
 ### Files to touch (when implemented)

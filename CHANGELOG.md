@@ -2,8 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`-swap-drain-deadline`** (default 30m): the drain bound for a worker
+  retired by a SIGHUP swap, separate from `-drain-deadline` (45s, service
+  stop). The supervisor tells each retiring worker which contract applies by
+  writing a one-line drain order to that worker's private control pipe
+  (`POE_ACP_CONTROL_FD`) immediately before the SIGTERM — the worker never
+  infers it. No order means stop semantics, so a SIGTERM straight from systemd
+  and a worker running outside a supervisor both keep the conservative bound.
+  The force-close WARN line names the flag worth raising.
+
 ### Fixed
 
+- **A `reload` (SIGHUP worker swap) no longer force-closes healthy
+  long-running turns after 45s.** One constant, `-drain-deadline`, governed two
+  different contracts: a service STOP (externally bounded by systemd's
+  `TimeoutStopSec=90s`) and a worker SWAP (nothing external waiting — the
+  supervisor survives and the new worker is already serving). A `systemctl
+  --user reload` landing on a 42-minute agent turn therefore cut the in-flight
+  SSE stream and Poe showed the user a red *"Internal error / peer disconnected
+  before response"*. Swap drains now use `-swap-drain-deadline` (30m, a leak
+  backstop rather than a working bound — `-idle-write-timeout` is what reaps a
+  genuinely wedged turn), and the supervisor escalates a swapped-out worker at
+  `swap-drain-deadline + RetireGrace`. The stop chain is unchanged at 45s.
+- **The parent-liveness pipe no longer leaks into spawned agent processes.**
+  `ExtraFiles` hands the worker its inherited fds with `O_CLOEXEC` cleared, so
+  every agent the worker spawned inherited the death-pipe read end; it is now
+  re-armed as close-on-exec (as is the new control pipe).
 - **Eliminate a flaky data race on the `internal/httpsrv` test seams.** The
   disconnect-watch / watchIdle / heartbeat goroutines can outlive their test
   (the turn is decoupled from the request ctx), so package-global test seams

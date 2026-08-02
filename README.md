@@ -173,13 +173,20 @@ update    Self-update the binary from GitHub Releases (see Updating above).
 --session-ttl          Idle TTL for a conv (default 2h)
 --gc-interval          GC sweep interval (default 5m)
 --heartbeat-interval   SSE heartbeat tick (default 10s, 0 to disable)
---drain-deadline       Bound on a worker's post-SIGTERM drain (default 45s).
-                       In-flight streams complete undisturbed below it; past
-                       it the worker force-closes what remains, logs the
-                       abandoned streams, and exits — and the supervisor
-                       SIGKILLs it 15s later if it still has not. Keep well
-                       under the init system's stop timeout (systemd
+--drain-deadline       Bound on a worker's drain when the SERVICE is stopping
+                       (default 45s). In-flight streams complete undisturbed
+                       below it; past it the worker force-closes what remains,
+                       logs the abandoned streams, and exits — and the
+                       supervisor SIGKILLs it 15s later if it still has not.
+                       Keep well under the init system's stop timeout (systemd
                        TimeoutStopSec=90s).
+--swap-drain-deadline  Bound on the drain of a worker SWAPPED OUT by a SIGHUP
+                       reload (default 30m). Nothing external is waiting on
+                       that chain — the supervisor survives and the new worker
+                       is already serving — so a healthy turn that runs tens of
+                       minutes is left alone; -idle-write-timeout is what reaps
+                       a wedged one. This is a leak backstop, not a working
+                       bound.
 --version              Print version and exit
 ```
 

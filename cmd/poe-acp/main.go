@@ -79,7 +79,8 @@ func main() {
 		idleWriteTO     = flag.Duration("idle-write-timeout", 2*time.Minute, "Per-stream wedged-turn backstop: cancel a turn that writes no agent output within this window (heartbeat keepalives do not reset it; a tool_call update does). The only force-kill path during a graceful drain")
 		stallThreshold  = flag.Duration("stall-threshold", 8*time.Second, "Output-silence window before the mid-turn keepalive spinner re-arms via replace_response. Keeps Poe from content-starvation-dropping a long tool-heavy turn. Must stay well under Poe's drop tolerance")
 		sseWriteTO      = flag.Duration("sse-write-timeout", 30*time.Second, "Per-write deadline on every SSE wire write. A client that stopped reading (Poe Stop, dead transport) applies TCP backpressure; without this a blocked write — including the terminal done — never returns and the turn never finalizes. Generous enough never to cut a slow-but-live reader mid-frame")
-		drainDeadline   = flag.Duration("drain-deadline", supervisor.DefaultDrainDeadline, "OUTER drain bound. After SIGTERM a worker drains its in-flight SSE streams to natural completion; if any are still open after this window the worker force-closes them and exits anyway, and the supervisor SIGKILLs a worker that still has not exited "+supervisor.RetireGrace.String()+" later. Must stay comfortably under the init system's stop timeout (systemd TimeoutStopSec=90s)")
+		drainDeadline   = flag.Duration("drain-deadline", supervisor.DefaultDrainDeadline, "OUTER drain bound for a service STOP (systemd stop/restart, supervisor self-upgrade). After SIGTERM a worker drains its in-flight SSE streams to natural completion; if any are still open after this window the worker force-closes them and exits anyway, and the supervisor SIGKILLs a worker that still has not exited "+supervisor.RetireGrace.String()+" later. Something external is waiting on this chain, so it must stay comfortably under the init system's stop timeout (systemd TimeoutStopSec=90s). A SIGHUP worker swap uses -swap-drain-deadline instead")
+		swapDrainDL     = flag.Duration("swap-drain-deadline", supervisor.DefaultSwapDrainDeadline, "OUTER drain bound for a worker SWAPPED OUT by a SIGHUP reload. Nothing external is waiting on this chain — the supervisor survives and the new worker is already serving — so the retiring worker is given long enough to finish healthy turns that legitimately run tens of minutes; -idle-write-timeout (progress-resetting) is what reaps a wedged one. This is a leak backstop, not a working bound: on expiry the worker force-closes what is left and exits, and the supervisor SIGKILLs it "+supervisor.RetireGrace.String()+" later")
 		answerTTL       = flag.Duration("answer-ttl", 2*time.Minute, "How long a buffered (absorbed) turn answer is held for a redrive before discard")
 		allowAtt        = flag.Bool("allow-attachments", true, "Advertise allow_attachments in settings; forwards Poe attachments to the agent as ACP ResourceLink/Resource blocks")
 		showVersion     = flag.Bool("version", false, "Print version and exit")
@@ -105,14 +106,17 @@ func main() {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.Printf("poe-acp %s starting", version)
-	// Clamp the drain bound ONCE, here, so the worker's own deadline and
-	// the supervisor's escalation deadline (drain + RetireGrace) are
+	// Clamp both drain bounds ONCE, here, so the worker's own deadline
+	// and the supervisor's escalation deadline (drain + RetireGrace) are
 	// always derived from the same effective value. Without this,
 	// -drain-deadline 0 would leave the worker on the 45s default while
 	// the supervisor escalated at 15s — SIGKILLing healthy streams on
 	// every reload.
 	if *drainDeadline <= 0 {
 		*drainDeadline = supervisor.DefaultDrainDeadline
+	}
+	if *swapDrainDL <= 0 {
+		*swapDrainDL = supervisor.DefaultSwapDrainDeadline
 	}
 	if kitlog.Enabled() {
 		log.Printf("debug logging: ON")
@@ -169,10 +173,15 @@ func main() {
 	// inherited listener and runs all the relay logic below. The
 	// supervisor is tiny and never reaches the agent/router setup.
 	if !supervisor.IsWorker() {
-		runSupervisor(*httpAddr, version, *drainDeadline)
+		runSupervisor(*httpAddr, version, *drainDeadline, *swapDrainDL)
 		return
 	}
 	log.Printf("worker mode (pid=%d, supervisor=%d)", os.Getpid(), os.Getppid())
+	// Before anything is exec'd: the listener and both supervisor pipes
+	// arrive with O_CLOEXEC cleared, so without this the ACP agent
+	// spawned below would inherit a dup of the listening socket and keep
+	// the port bound if it were ever orphaned.
+	supervisor.SealInheritedFDs()
 
 	stateDir := *stateDirFlag
 	if stateDir == "" {
@@ -371,19 +380,34 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// SIGTERM from the supervisor = stop accepting, drain in-flight
-	// streams to natural completion (the per-stream idle-write backstop
-	// cuts a wedged turn), then exit cleanly — BOUNDED by
-	// -drain-deadline so a stream the idle-write backstop cannot clear
-	// can never make this worker immortal.
+	// SIGTERM = stop accepting, drain in-flight streams to natural
+	// completion (the per-stream idle-write backstop cuts a wedged turn),
+	// then exit cleanly — BOUNDED so a stream the idle-write backstop
+	// cannot clear can never make this worker immortal.
+	//
+	// WHICH bound depends on why we are being retired, and only the
+	// supervisor knows that: it writes a DrainOrder to this worker's
+	// control pipe just before the SIGTERM. A swap (SIGHUP reload) grants
+	// -swap-drain-deadline; anything else — including a SIGTERM systemd
+	// delivers straight to the cgroup on a service stop — falls back to
+	// -drain-deadline, the externally bounded contract.
+	ctl := supervisor.WorkerControl()
 	drainCh := make(chan struct{})
+	var drainOrder supervisor.DrainOrder
 	var drainOnce sync.Once
 	term := make(chan os.Signal, 1)
 	signal.Notify(term, syscall.SIGTERM)
 	go func() {
 		for range term {
-			log.Printf("SIGTERM: draining in-flight streams (deadline %s; idle-write backstop active)", *drainDeadline)
-			drainOnce.Do(func() { close(drainCh) })
+			order, err := ctl.DrainOrder(*drainDeadline)
+			if err != nil {
+				log.Printf("worker: WARN %v; assuming a %s", err, order)
+			}
+			drainOnce.Do(func() {
+				drainOrder = order
+				log.Printf("SIGTERM: %s of in-flight streams (idle-write backstop active)", order)
+				close(drainCh)
+			})
 		}
 	}()
 
@@ -458,9 +482,10 @@ func main() {
 	// idle clock cannot see — the deadline force-closes what is left and
 	// this worker exits anyway, instead of joining the pile of undead
 	// generations systemd eventually SIGKILLs.
-	res, derr := supervisor.DrainServer(srv, *drainDeadline, func() {
+	res, derr := supervisor.DrainServer(srv, drainOrder.Deadline, func() {
 		abandoned := h.InFlight()
-		log.Printf("WARN drain deadline %s exceeded: force-closing %d in-flight stream(s)", *drainDeadline, len(abandoned))
+		log.Printf("WARN %s drain deadline %s exceeded: force-closing %d in-flight stream(s) — raise %s to give them longer",
+			drainOrder.Kind, drainOrder.Deadline, len(abandoned), drainOrder.Kind.Flag())
 		for _, s := range abandoned {
 			log.Printf("WARN   abandoned stream: conv=%s user=%s msg=%s age=%s",
 				s.ConvID, s.UserID, s.MessageID, s.Age.Round(time.Second))
@@ -475,7 +500,7 @@ func main() {
 		})
 	})
 	if res == supervisor.DrainForced {
-		log.Printf("worker: drain FORCED after %s, exiting", *drainDeadline)
+		log.Printf("worker: %s drain FORCED after %s, exiting", drainOrder.Kind, drainOrder.Deadline)
 	} else {
 		if derr != nil {
 			log.Printf("worker: drain completed with error: %v", derr)
@@ -504,16 +529,23 @@ type worker struct {
 // launchd and systemd. It does not return: it os.Exit()s on shutdown, or
 // re-execs itself in place on a supervisor self-upgrade.
 //
-// drainDeadline is the worker-side bound; the supervisor allows the
-// worker that plus supervisor.RetireGrace before escalating to SIGKILL,
-// so a wedged worker generation can never survive its retirement.
-func runSupervisor(addr, version string, drainDeadline time.Duration) {
+// drainDeadline and swapDrainDeadline are the two worker-side bounds (a
+// service stop vs a SIGHUP worker swap — see supervisor/drainorder.go).
+// The supervisor hands the applicable one to each worker it retires and
+// allows that worker the same value plus supervisor.RetireGrace before
+// escalating to SIGKILL, so a wedged worker generation can never survive
+// its retirement.
+func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.Duration) {
 	sup, err := supervisor.New(supervisor.Config{Addr: addr})
 	if err != nil {
 		log.Fatalf("supervisor: %v", err)
 	}
 	log.Printf("supervisor %s on %s (pid=%d)", version, sup.Addr(), os.Getpid())
-	retireDeadline := drainDeadline + supervisor.RetireGrace
+	// The two retirement contracts. A stop is externally bounded (systemd
+	// TimeoutStopSec); a swap is not — the supervisor keeps serving via
+	// the new worker while the old one finishes its tails.
+	stopOrder := supervisor.DrainOrder{Kind: supervisor.DrainStop, Deadline: drainDeadline}.Normalize()
+	swapOrder := supervisor.DrainOrder{Kind: supervisor.DrainSwap, Deadline: swapDrainDeadline}.Normalize()
 
 	// SIGUSR1 from a freshly spawned worker => it is ready to serve.
 	readySig := make(chan os.Signal, 8)
@@ -531,17 +563,17 @@ func runSupervisor(addr, version string, drainDeadline time.Duration) {
 	// Worker exits funnel here as pids (one waiter goroutine per worker).
 	exitCh := make(chan int, 8)
 
-	// retire drains w and escalates to SIGKILL if it has not exited
-	// within retireDeadline. Blocks until w's exit is observed (or the
-	// escalation has run), so callers that need quiescence — self-reexec,
-	// shutdown — can call it inline.
-	retire := func(w *worker) {
-		res, err := sup.Retire(w.proc, w.dead, retireDeadline, nil)
+	// retire drains w under order and escalates to SIGKILL if it has not
+	// exited within order.RetireDeadline(). Blocks until w's exit is
+	// observed (or the escalation has run), so callers that need
+	// quiescence — self-reexec, shutdown — can call it inline.
+	retire := func(w *worker, order supervisor.DrainOrder) {
+		res, err := sup.Retire(w.proc, w.dead, order, nil)
 		switch {
 		case err != nil:
 			log.Printf("supervisor: WARN retire worker %d (%s): %v", w.proc.Pid, res, err)
 		case res == supervisor.RetireKilled:
-			log.Printf("supervisor: WARN worker %d still had streams open %s after SIGTERM; SIGKILLed", w.proc.Pid, retireDeadline)
+			log.Printf("supervisor: WARN worker %d still had streams open %s after SIGTERM; SIGKILLed", w.proc.Pid, order.RetireDeadline())
 		default:
 			log.Printf("supervisor: worker %d drained and exited", w.proc.Pid)
 		}
@@ -578,6 +610,10 @@ func runSupervisor(addr, version string, drainDeadline time.Duration) {
 		go func() {
 			_, _ = p.Wait()
 			close(dead)
+			// The worker is reaped: drop its control pipe before
+			// announcing the exit, so nothing can try to hand an order to
+			// a pid that is gone.
+			sup.ReleaseWorker(p.Pid)
 			exitCh <- p.Pid
 		}()
 		switch supervisor.WaitReady(readyCh, dead, 90*time.Second, nil) {
@@ -590,8 +626,9 @@ func runSupervisor(addr, version string, drainDeadline time.Duration) {
 			// and competes on the accept queue. Retire it (SIGTERM, then
 			// a process-group SIGKILL on the deadline) instead of
 			// abandoning it — an untracked live worker is precisely the
-			// leak this whole change exists to prevent.
-			go retire(&worker{proc: p, dead: dead})
+			// leak this whole change exists to prevent. It has no streams
+			// to finish, so it retires under the STOP contract.
+			go retire(&worker{proc: p, dead: dead}, stopOrder)
 			return nil, fmt.Errorf("worker %d not ready within budget", p.Pid)
 		}
 	}
@@ -631,22 +668,30 @@ func runSupervisor(addr, version string, drainDeadline time.Duration) {
 			old := current
 			current = nw
 			sup.SetCurrent(nw.proc)
-			log.Printf("supervisor: worker %d serving; retiring old worker %d (deadline %s)", nw.proc.Pid, old.proc.Pid, retireDeadline)
+			log.Printf("supervisor: worker %d serving; retiring old worker %d (%s)", nw.proc.Pid, old.proc.Pid, swapOrder)
 			// Retire off the loop: the old worker keeps draining its
 			// in-flight streams while the supervisor stays responsive.
-			go retire(old)
+			// This is the SWAP contract — nothing external is waiting on
+			// it, so a healthy multi-minute turn is left alone.
+			go retire(old, swapOrder)
 		case <-usr2:
 			log.Printf("SIGUSR2: supervisor self-upgrade (retiring worker %d first)", current.proc.Pid)
-			retire(current)
+			// A self-upgrade is NOT a swap: no replacement worker is
+			// serving and the supervisor blocks here, so this drain is
+			// externally bounded exactly like a stop.
+			retire(current, stopOrder)
 			log.Printf("supervisor: quiescent; re-exec self")
 			if err := sup.SelfReexec(); err != nil {
 				log.Fatalf("supervisor: self-reexec: %v", err)
 			}
 		case s := <-stop:
 			log.Printf("supervisor: %v; retiring worker %d then exiting", s, current.proc.Pid)
-			retire(current)
+			retire(current, stopOrder)
 			// Anything still retiring from an earlier swap gets the same
 			// treatment: no worker generation outlives its supervisor.
+			// That also bounds a swap drain that a stop landed in the
+			// middle of — it keeps its 30m order, but it never gets to
+			// use it.
 			for _, k := range sup.KillRetiring() {
 				log.Printf("supervisor: WARN worker %d still retiring after %s at shutdown; SIGKILL", k.Pid, time.Since(k.Since).Round(time.Second))
 				if k.Err != nil {
