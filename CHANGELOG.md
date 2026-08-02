@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-08-02
+
+### Security
+
+- **Scrub the relay's own inbound secrets from the spawned agent's
+  environment.** The ACP agent is driven by text from arbitrary Poe users, not
+  the operator; it must never inherit the Poe bearer secret (the resolved
+  `--access-key-env` var, default `POEACP_ACCESS_KEY`) or `ADMIN_TOKEN`, which
+  would let it impersonate the relay or trigger worker swaps. Declared on the
+  acp-kit `client.Config` (bumped to v0.4.0) by name and by literal value, so a
+  copy exported under a bespoke name is caught too. Provider credentials the
+  agent legitimately needs (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `POE_API_KEY`)
+  pass through untouched. The declaration lives in `internal/agentcfg` under the
+  100% coverage gate so the wiring cannot silently regress.
+
+
 ## [0.46.1] - 2026-08-01
 
 ### Changed
