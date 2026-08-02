@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-08-01
+
+### Changed
+
+- **`delegate-remote` skill reframed and renamed to `delegate`.** The value of
+  handing work to an independent agent is not remote-specific — it holds on the
+  relay host too. A fresh agent brings its own context and can run a different
+  model; the relay brings judgement and steering, and that pairing beats the
+  same model grinding the task out inline. The skill now leads with delegation
+  plus active steering (check in, correct early, push back on premature
+  victory), with host selection as one step among many rather than the premise.
+
 ## [0.46.0] - 2026-08-01
 
 ### Added
