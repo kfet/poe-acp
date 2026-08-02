@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-08-02
+
 ### Added
 
 - **`-swap-drain-deadline`** (default 30m): the drain bound for a worker
