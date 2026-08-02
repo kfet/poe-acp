@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Eliminate a flaky data race on the `internal/httpsrv` test seams.** The
+  disconnect-watch / watchIdle / heartbeat goroutines can outlive their test
+  (the turn is decoupled from the request ctx), so package-global test seams
+  (`fastCancelThreshold` and the `absorbDecidedHook` / `idleWriteCancelHook` /
+  `heartbeatTickHook` hooks) were read by one test's leaked goroutine while a
+  later test wrote them — a rare race that only surfaced under full parallel
+  suite load. Made all four per-instance (`Handler` fields; the tick hook is
+  threaded through `newSink`), removing the shared-state entirely so each test
+  owns its own values.
+
 ## [0.47.0] - 2026-08-02
 
 ### Security
