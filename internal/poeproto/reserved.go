@@ -27,6 +27,10 @@ const (
 	ParamHideThinking = "hide_thinking"
 	ParamShowPlans    = "show_plans"
 	ParamShowTools    = "show_tools"
+	// ParamShowToolDetails renders each tool call's content blocks and
+	// its terminal result under the durable tool line. Only has effect
+	// when ParamShowTools is also on.
+	ParamShowToolDetails = "show_tool_details"
 	// ProviderParamPrefix + a sanitised provider id forms the per-provider
 	// model dropdown's parameter_name (e.g. "model_anthropic").
 	ProviderParamPrefix = "model_"
@@ -43,6 +47,7 @@ var reservedFlagRe = regexp.MustCompile(
 		`|` + ParamProvider +
 		`|` + ParamHideThinking +
 		`|` + ParamShowPlans +
+		`|` + ParamShowToolDetails +
 		`|` + ParamShowTools +
 		`|` + ParamThinking +
 		`)\b`)

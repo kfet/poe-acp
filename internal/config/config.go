@@ -85,6 +85,13 @@ type Defaults struct {
 	// so a tool-heavy turn leaves a trace of what the agent did. nil
 	// means "use built-in default" (currently true).
 	ShowTools *bool `json:"show_tools,omitempty"`
+	// ShowToolDetails renders each tool call's `content` blocks under
+	// its durable line, plus one group per COMPLETED/FAILED
+	// `tool_call_update` carrying the result text. Bounded per block
+	// (head/tail with an elision marker). Only has effect when
+	// ShowTools is also on. nil means "use built-in default"
+	// (currently true).
+	ShowToolDetails *bool `json:"show_tool_details,omitempty"`
 }
 
 // Agent groups agent-profile knobs. Reserved.

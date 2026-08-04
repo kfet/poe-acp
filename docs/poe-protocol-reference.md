@@ -28,7 +28,7 @@ minimum needed to make a single-user chat bot work. Specifically:
 | `error` event               | ✅                 | Emitted on agent refusal / internal errors.         |
 | Tool calling                | ❌                 | Tools live on the ACP side (fir does its own).      |
 | Attachments                 | ✅                 | Pre-parsed text → inline `Resource` (when agent supports `embeddedContext`). Otherwise downloaded to `<cwd>/.poe-attachments/<message_id>/<name>` and forwarded as `file://` `ResourceLink`; for jpeg/png/gif/webp ≤ 3 MiB an additive `ImageBlock` follows. See `internal/router` design notes. |
-| Parameter controls          | ✅                 | `model` + `thinking` dropdowns + `hide_thinking` / `show_plans` / `show_tools` toggles. |
+| Parameter controls          | ✅                 | `model` + `thinking` dropdowns + `hide_thinking` / `show_plans` / `show_tools` / `show_tool_details` toggles. |
 | Monetisation                | ❌                 | Not used.                                           |
 | `suggested_reply`           | ❌                 | Not emitted; easy to add if useful.                 |
 | `file` / `json` / `data`    | ❌                 | Not emitted.                                        |

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`show_tool_details`** (config `defaults.show_tool_details`, Poe Options
+  toggle "Tool details", default **true**, requires `show_tools`): tool calls
+  now carry their payload into the answer body instead of a bare title. On
+  `tool_call` the ACP `content` blocks are rendered as continuation lines of
+  the tool line's blockquote — for a remote-exec tool that is the host and the
+  full fenced command, which previously never reached the user. `tool_call_update`
+  is now correlated by `toolCallId` and, on a TERMINAL status only, emits one
+  more group: ``> `✓ <title>` `` / ``> `✗ <title>` `` plus the result text.
+  Non-terminal updates stay spinner-only exactly as before.
+  Every block is bounded (12 lines / 800 chars, per-line cap, head and tail
+  kept, middle replaced by `… N lines elided …`) so a 4000-line test log cannot
+  bury the answer on a phone, and framing is enforced: every line is quoted,
+  code fences are normalised and balanced (an unbalanced fence gets a synthetic
+  closer), stray backticks are neutralised, reserved `--flag` tokens defused.
+  `show_tool_details=false` reproduces the previous output byte for byte.
+
 ## [0.48.2] - 2026-08-02
 
 ### Fixed
