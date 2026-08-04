@@ -146,7 +146,8 @@ type Stream struct {
 
 // Stream resolves the stream-shaping knobs against their built-in
 // defaults. A zero Defaults yields today's behaviour: no coalescing,
-// animated spinner.
+// animated spinner. Assumes a Config that passed Validate (which is
+// what bounds CoalesceMs — see MaxCoalesceMs).
 func (d Defaults) Stream() Stream {
 	s := Stream{
 		CoalesceGrid:   DefaultCoalesceGrid,
@@ -197,12 +198,23 @@ func Load(path string) (cfg Config, ok bool, err error) {
 	return cfg, true, nil
 }
 
+// MaxCoalesceMs bounds `defaults.coalesce_ms`. The knob trades output
+// latency for radio wakeups, and past a few seconds the trade stops
+// making sense: a 10-minute buffer starves mid-turn output completely,
+// and a value large enough to overflow time.Duration's nanosecond int64
+// would wrap negative and silently degrade to "off" — the worst failure
+// mode, since the operator would see no error and no effect. 60s is far
+// beyond any defensible setting (3s is the recommended one) while
+// keeping the arithmetic nowhere near the overflow boundary.
+const MaxCoalesceMs = 60_000
+
 // Validate checks field-level invariants. Cross-field checks against
 // the agent's runtime state (e.g. "is Defaults.Model in the probed
 // list?") happen in main.go after the probe completes.
 func (c Config) Validate() error {
-	if c.Defaults.CoalesceMs < 0 {
-		return fmt.Errorf("defaults.coalesce_ms: must be >= 0, got %d", c.Defaults.CoalesceMs)
+	if c.Defaults.CoalesceMs < 0 || c.Defaults.CoalesceMs > MaxCoalesceMs {
+		return fmt.Errorf("defaults.coalesce_ms: invalid %d (want 0..%d, 0 = disabled)",
+			c.Defaults.CoalesceMs, MaxCoalesceMs)
 	}
 	switch c.Defaults.Thinking {
 	case "", "off", "minimal", "low", "medium", "high", "xhigh", "max":
