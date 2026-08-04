@@ -262,11 +262,17 @@ keep working.
   slow to be an efficient bulk transfer. Coalescing here is monotone:
   Poe cannot relay frames it was never given. The relay→Poe hop is
   wired, so nothing is traded away. `3000` is the recommended first
-  rollout value. The opening ~30 chunks (or first 1.5s) of every turn
-  still stream 1:1 so the answer starts instantly and Poe's cold-start
-  drop is never reintroduced, and a paragraph break in a non-trivial
-  buffer flushes early because paragraph-at-a-time reads better than
-  token jitter.
+  rollout value; valid range is `0..60000` (larger is rejected at boot —
+  it starves mid-turn output, and a big enough value would overflow
+  `time.Duration` and silently degrade to "off"). The first chunk of
+  every turn is ALWAYS written straight through — that, not the
+  heartbeat, is what closes Poe's cold-start drop window, so the
+  guarantee holds even with `-heartbeat-interval 0`. The following ~30
+  chunks (or 1.5s, measured from the FIRST CHUNK, not from query
+  arrival — agent TTFT routinely exceeds the whole window) also stream
+  1:1 so the answer starts instantly, and a paragraph break in a
+  non-trivial buffer flushes early because paragraph-at-a-time reads
+  better than token jitter.
 - **`defaults.coalesce_grid`** — align flushes to absolute wall-clock
   instants (multiples of `coalesce_ms` since the epoch) instead of a
   per-stream timer. Omitted = built-in default (`true`). This matters
