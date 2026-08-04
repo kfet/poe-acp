@@ -975,11 +975,22 @@ func (o *orderedWriter) hbFrame(line string) (gateOpen bool, err error) {
 		o.mu.Unlock()
 		return true, nil
 	}
-	o.lastHB = body
-	o.lastHBAt = time.Now()
 	o.spinnerVisible = true
 	o.mu.Unlock()
-	return true, o.writeReplace(body)
+	err = o.writeReplace(body)
+	if err != nil {
+		// Nothing landed, so nothing is on screen to dedupe against:
+		// leave lastHB/lastHBAt alone. Recording a frame that failed
+		// would suppress every identical retry until the liveness floor
+		// lapsed, turning one transient write error into seconds of
+		// silence on a stream that is Poe's starvation keepalive.
+		return true, err
+	}
+	o.mu.Lock()
+	o.lastHB = body
+	o.lastHBAt = time.Now()
+	o.mu.Unlock()
+	return true, nil
 }
 
 // hasOutput reports whether the first user-visible write has landed.
