@@ -12,7 +12,10 @@
   the relay buffers outbound `text` and emits at most one frame per period.
   Coalescing here is monotone (Poe cannot relay frames it was never given)
   and the relay→Poe hop is wired, so nothing is traded away. Synthetic
-  2000-chunk / 60s answer: **2003 frames → 54 (37×)**.
+  2000-chunk / 60s answer: **2003 frames → 54 (37×)**. Valid range
+  `0..60000`; the first chunk of every turn always goes straight to the
+  wire, so Poe's cold-start drop window stays closed even with the
+  heartbeat disabled.
 - **`defaults.coalesce_grid`** (default **true**): flush on a shared
   wall-clock grid rather than per-stream timers, so several bots on several
   hosts land in the SAME wake window instead of interleaving into a wake
