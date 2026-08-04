@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"time"
 )
 
 // Config is the on-disk shape. Add fields with care — every field is
@@ -85,6 +86,32 @@ type Defaults struct {
 	// so a tool-heavy turn leaves a trace of what the agent did. nil
 	// means "use built-in default" (currently true).
 	ShowTools *bool `json:"show_tools,omitempty"`
+	// CoalesceMs, when > 0, buffers outbound SSE `text` events and
+	// flushes them on a shared wall-clock grid instead of emitting one
+	// frame per agent chunk. Frames-per-turn is a direct proxy for
+	// mobile radio wakeups: a packet every 20–100ms is too frequent for
+	// LTE/5G cDRX micro-sleep (which needs ~100–320ms quiet gaps) and
+	// too slow to be an efficient bulk transfer. Coalescing upstream is
+	// monotone — Poe cannot relay frames it was never given — and the
+	// relay→Poe hop is wired, so the buffering is energetically free.
+	// 0 (the default) preserves today's 1:1 chunk→frame behaviour.
+	CoalesceMs int `json:"coalesce_ms,omitempty"`
+	// CoalesceGrid aligns flushes to absolute wall-clock instants
+	// (multiples of coalesce_ms since the epoch) rather than a
+	// per-stream timer. With several bots on several hosts, independent
+	// timers interleave and the phone's modem never gets a quiet gap;
+	// the wall clock is shared state needing no coordination protocol,
+	// so every stream everywhere lands in the same wake window. nil
+	// means "use built-in default" (currently true). Only has effect
+	// when CoalesceMs > 0.
+	CoalesceGrid *bool `json:"coalesce_grid,omitempty"`
+	// SpinnerAnimate animates the keepalive spinner's dots on every
+	// heartbeat tick. Animation changes the payload every tick, which
+	// defeats the identical-frame dedupe (and any coalescing Poe itself
+	// might do) — turning it off collapses the keepalive down to genuine
+	// state changes plus a liveness floor. nil means "use built-in
+	// default" (currently true = today's behaviour).
+	SpinnerAnimate *bool `json:"spinner_animate,omitempty"`
 	// ShowToolDetails renders each tool call's `content` blocks under
 	// its durable line, plus one group per COMPLETED/FAILED
 	// `tool_call_update` carrying the result text. Bounded per block
@@ -92,6 +119,49 @@ type Defaults struct {
 	// ShowTools is also on. nil means "use built-in default"
 	// (currently true).
 	ShowToolDetails *bool `json:"show_tool_details,omitempty"`
+}
+
+// DefaultCoalesceGrid is the built-in fallback for
+// `defaults.coalesce_grid`. Grid alignment is the whole point of the
+// feature once coalescing is on (see Defaults.CoalesceGrid), so it is
+// on by default; an operator must opt OUT to get per-stream timers.
+const DefaultCoalesceGrid = true
+
+// DefaultSpinnerAnimate is the built-in fallback for
+// `defaults.spinner_animate`. True = today's behaviour, so a config
+// that says nothing keeps the animated spinner byte-for-byte.
+const DefaultSpinnerAnimate = true
+
+// Stream is the resolved outbound stream-shaping configuration handed
+// to the HTTP layer. It exists so the nil-means-default resolution
+// lives in one tested place instead of in main.go.
+type Stream struct {
+	// CoalesceInterval is the text-flush period; 0 disables coalescing.
+	CoalesceInterval time.Duration
+	// CoalesceGrid aligns flushes to wall-clock multiples of the period.
+	CoalesceGrid bool
+	// SpinnerAnimate advances the spinner dots on every heartbeat tick.
+	SpinnerAnimate bool
+}
+
+// Stream resolves the stream-shaping knobs against their built-in
+// defaults. A zero Defaults yields today's behaviour: no coalescing,
+// animated spinner.
+func (d Defaults) Stream() Stream {
+	s := Stream{
+		CoalesceGrid:   DefaultCoalesceGrid,
+		SpinnerAnimate: DefaultSpinnerAnimate,
+	}
+	if d.CoalesceMs > 0 {
+		s.CoalesceInterval = time.Duration(d.CoalesceMs) * time.Millisecond
+	}
+	if d.CoalesceGrid != nil {
+		s.CoalesceGrid = *d.CoalesceGrid
+	}
+	if d.SpinnerAnimate != nil {
+		s.SpinnerAnimate = *d.SpinnerAnimate
+	}
+	return s
 }
 
 // Agent groups agent-profile knobs. Reserved.
@@ -131,6 +201,9 @@ func Load(path string) (cfg Config, ok bool, err error) {
 // the agent's runtime state (e.g. "is Defaults.Model in the probed
 // list?") happen in main.go after the probe completes.
 func (c Config) Validate() error {
+	if c.Defaults.CoalesceMs < 0 {
+		return fmt.Errorf("defaults.coalesce_ms: must be >= 0, got %d", c.Defaults.CoalesceMs)
+	}
 	switch c.Defaults.Thinking {
 	case "", "off", "minimal", "low", "medium", "high", "xhigh", "max":
 	default:
