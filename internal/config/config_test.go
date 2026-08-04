@@ -195,10 +195,23 @@ func TestLoad_StreamKnobs(t *testing.T) {
 	}
 }
 
-func TestValidate_NegativeCoalesceMs(t *testing.T) {
+func TestValidate_CoalesceMsBounds(t *testing.T) {
 	t.Parallel()
-	err := Config{Defaults: Defaults{CoalesceMs: -1}}.Validate()
-	if err == nil || !strings.Contains(err.Error(), "coalesce_ms") {
-		t.Fatalf("want a coalesce_ms error, got %v", err)
+	// Out of range: negative is nonsense, and an unbounded value starves
+	// mid-turn output (or, large enough, overflows time.Duration
+	// negative and silently degrades to "off" — a failure the operator
+	// would never see).
+	for _, ms := range []int{-1, MaxCoalesceMs + 1, 600_000} {
+		err := Config{Defaults: Defaults{CoalesceMs: ms}}.Validate()
+		if err == nil || !strings.Contains(err.Error(), "coalesce_ms") {
+			t.Errorf("coalesce_ms=%d: want a coalesce_ms error, got %v", ms, err)
+		}
+	}
+	// In range, including both endpoints.
+	for _, ms := range []int{0, 1, 3000, MaxCoalesceMs} {
+		c := Config{Defaults: Defaults{CoalesceMs: ms}}
+		if err := c.Validate(); err != nil {
+			t.Errorf("coalesce_ms=%d: %v", ms, err)
+		}
 	}
 }
