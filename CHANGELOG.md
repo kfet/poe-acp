@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-08-05
+
 ### Added
 
 - **Battery-aware SSE flush coalescing** (config `defaults.coalesce_ms`,
