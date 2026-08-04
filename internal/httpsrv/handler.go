@@ -101,6 +101,23 @@ type Config struct {
 	// defaultSSEWriteTimeout (30s): generous enough never to cut a
 	// slow-but-live reader mid-frame, tight enough to bound finalization.
 	SSEWriteTimeout time.Duration
+	// CoalesceInterval, when >0, buffers outbound `text` events and
+	// flushes them periodically instead of emitting one SSE frame per
+	// agent chunk. Frames-per-turn is a direct proxy for the phone's
+	// radio wakeups, and coalescing upstream is monotone — Poe cannot
+	// relay frames it was never given. 0 (the default) preserves the
+	// 1:1 chunk→frame behaviour exactly. See coalesce.go.
+	CoalesceInterval time.Duration
+	// CoalesceGrid aligns coalesced flushes to absolute wall-clock
+	// instants so several bots on several hosts wake the modem in the
+	// SAME window instead of interleaving. Only meaningful when
+	// CoalesceInterval > 0. Callers resolve the default (see
+	// config.Defaults.Stream); this struct takes the explicit value.
+	CoalesceGrid bool
+	// SpinnerStatic freezes the keepalive spinner's dots so identical
+	// keepalive frames can be deduped (see orderedWriter.hbFrame). Zero
+	// value = animated = today's behaviour.
+	SpinnerStatic bool
 }
 
 // TurnTimeout has no default: <=0 means no absolute ceiling, leaving the
@@ -345,7 +362,20 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// chunk lands, re-arming on every subsequent stall for the whole
 	// turn. (hide_thinking is a router-level concern: it suppresses
 	// agent_thought_chunk content from the stream, not the spinner.)
-	s := newSink(sse, h.cfg.HeartbeatInterval, h.cfg.StallThreshold, h.heartbeatTickHook)
+	s := newSinkOpts(sse, sinkOpts{
+		heartbeat:     h.cfg.HeartbeatInterval,
+		stall:         h.cfg.StallThreshold,
+		coalesce:      h.cfg.CoalesceInterval,
+		grid:          h.cfg.CoalesceGrid,
+		spinnerStatic: h.cfg.SpinnerStatic,
+		tickHook:      h.heartbeatTickHook,
+	})
+	// FRAMESTATS is the measurement the coalescing work is judged on:
+	// frames-per-turn is the phone's radio-wake count. Registered BEFORE
+	// the seal defers so it runs AFTER them (LIFO) and therefore counts
+	// the terminal `done`.
+	turnStart := time.Now()
+	defer func() { logFrameStats(req.ConversationID, s.o.snapshotStats(), time.Since(turnStart)) }()
 	// Pre-seed the provider emoji from the handler-resolved model so
 	// tick #1 of the spinner already carries it. The router re-runs
 	// the resolution after applyOptions returns (success or failure)
@@ -568,6 +598,140 @@ type orderedWriter struct {
 	// a `replace_response` AFTER the error on the wire. hbFrame gates on
 	// both.
 	spinnerSealed bool
+
+	// coalesce is the outbound text-flush period; 0 (the default)
+	// disables coalescing entirely and every chunk goes on the wire
+	// immediately, exactly as before. See coalesce.go for why.
+	coalesce time.Duration
+	// pending holds text buffered by the coalescing path, waiting for a
+	// flush. Guarded by mu. It is ALWAYS drained before any other event
+	// (Replace/File/Error/Done/heartbeat) reaches the wire, so a
+	// buffered chunk can never be overtaken and the turn's final visible
+	// text is byte-identical to the un-coalesced stream.
+	pending strings.Builder
+	// chunks counts text chunks seen this turn; with turnStart it bounds
+	// the eager first-flush window (see eagerFlushChunks).
+	chunks int
+	// turnStart is when this writer was created — the origin of the
+	// eager first-flush window.
+	turnStart time.Time
+
+	// lastHB is the body of the most recent heartbeat frame actually
+	// written, and lastHBAt when it went out. An identical body is
+	// suppressed (see hbFrame): the client would render exactly what it
+	// is already rendering, so the write is pure radio wake with zero
+	// information. hbFloor is the liveness floor — how long a stream may
+	// go with NO frame at all before an identical one is re-sent anyway,
+	// because the heartbeat doubles as Poe's content-starvation
+	// keepalive.
+	lastHB   string
+	lastHBAt time.Time
+	hbFloor  time.Duration
+
+	// stats is the outbound frame accounting reported as FRAMESTATS at
+	// end of turn. Atomics, not mu-guarded: they are incremented on the
+	// wire-write path (which holds writeMu, not mu) and read by the
+	// handler after the turn.
+	textFrames    atomic.Int64
+	replaceFrames atomic.Int64
+	otherFrames   atomic.Int64
+	bytesOut      atomic.Int64
+}
+
+// snapshotStats returns the current outbound frame accounting.
+func (o *orderedWriter) snapshotStats() frameStats {
+	return frameStats{
+		TextFrames:    o.textFrames.Load(),
+		ReplaceFrames: o.replaceFrames.Load(),
+		OtherFrames:   o.otherFrames.Load(),
+		BytesOut:      o.bytesOut.Load(),
+	}
+}
+
+// The write* helpers are the single choke point for every SSE event
+// that leaves this writer, so frame accounting cannot drift from what
+// actually went on the wire. Callers hold writeMu.
+
+func (o *orderedWriter) writeText(s string) error {
+	if s == "" {
+		// SSEWriter.Text drops empty chunks; don't count a frame that
+		// never existed.
+		return nil
+	}
+	o.textFrames.Add(1)
+	o.bytesOut.Add(int64(len(s)))
+	return o.w.Text(s)
+}
+
+func (o *orderedWriter) writeReplace(s string) error {
+	o.replaceFrames.Add(1)
+	o.bytesOut.Add(int64(len(s)))
+	return o.w.Replace(s)
+}
+
+func (o *orderedWriter) writeError(text, et string) error {
+	o.otherFrames.Add(1)
+	o.bytesOut.Add(int64(len(text)))
+	return o.w.Error(text, et)
+}
+
+func (o *orderedWriter) writeFile(url, contentType, name, inlineRef string) error {
+	o.otherFrames.Add(1)
+	return o.w.File(url, contentType, name, inlineRef)
+}
+
+func (o *orderedWriter) writeDone() error {
+	o.otherFrames.Add(1)
+	return o.w.Done()
+}
+
+// flushLocked drains the coalescing buffer onto the wire as one `text`
+// frame. Caller holds writeMu and must NOT hold mu. A no-op when the
+// buffer is empty or the stream is sealed. It is the same code path a
+// direct write takes — spinner strip, accumulator append, realWritten —
+// so a coalesced turn and an un-coalesced one produce identical body
+// text, only in fewer frames.
+func (o *orderedWriter) flushLocked() error {
+	o.mu.Lock()
+	if o.closed || o.pending.Len() == 0 {
+		o.mu.Unlock()
+		return nil
+	}
+	s := o.pending.String()
+	o.pending.Reset()
+	strip, prevAcc := o.spinnerVisible, o.acc
+	o.spinnerVisible = false
+	o.realWritten = true
+	o.acc += s
+	o.mu.Unlock()
+	if strip {
+		_ = o.writeReplace(prevAcc)
+	}
+	return o.writeText(s)
+}
+
+// flush drains the coalescing buffer from another goroutine (the
+// grid-aligned flusher, see sink.coalesceLoop).
+func (o *orderedWriter) flush() error {
+	o.writeMu.Lock()
+	defer o.writeMu.Unlock()
+	return o.flushLocked()
+}
+
+// shouldFlushLocked decides whether the just-buffered text must go out
+// now rather than waiting for the grid tick. Caller holds mu.
+//
+//   - Eager first flush: the opening chunks of a turn stream 1:1 so the
+//     cold-start content-starvation window stays closed (see
+//     eagerFlushChunks) and the answer still *feels* immediate.
+//   - Paragraph boundary: a non-trivial buffer ending a paragraph is
+//     worth one extra wake because it reads far better than token
+//     jitter (see paragraphFlushMin).
+func (o *orderedWriter) shouldFlushLocked() bool {
+	if o.chunks <= eagerFlushChunks && time.Since(o.turnStart) < eagerFlushWindow {
+		return true
+	}
+	return o.pending.Len() > paragraphFlushMin && strings.Contains(o.pending.String(), "\n\n")
 }
 
 // userText writes a `text` SSE event and marks the stream as having
@@ -577,7 +741,13 @@ type orderedWriter struct {
 // append to the renderer's current body, so without the strip the
 // answer would render below the spinner line. The strip's IO error is
 // intentionally swallowed: if the SSE connection has dropped, the
-// subsequent o.w.Text(s) will surface the same failure.
+// subsequent write will surface the same failure.
+//
+// When coalescing is enabled the chunk is buffered instead, and goes on
+// the wire at the next grid tick (or immediately, per
+// shouldFlushLocked). Note that realWritten flips only on an ACTUAL
+// wire write: the handler's absorb/cancel discriminator asks "did the
+// client see anything?", and buffered text has not been seen.
 func (o *orderedWriter) userText(s string) error {
 	o.writeMu.Lock()
 	defer o.writeMu.Unlock()
@@ -586,23 +756,35 @@ func (o *orderedWriter) userText(s string) error {
 		o.mu.Unlock()
 		return nil
 	}
+	if o.coalesce > 0 {
+		o.pending.WriteString(s)
+		o.chunks++
+		flushNow := o.shouldFlushLocked()
+		o.mu.Unlock()
+		if flushNow {
+			return o.flushLocked()
+		}
+		return nil
+	}
 	strip, prevAcc := o.spinnerVisible, o.acc
 	o.spinnerVisible = false
 	o.realWritten = true
 	o.acc += s
 	o.mu.Unlock()
 	if strip {
-		_ = o.w.Replace(prevAcc)
+		_ = o.writeReplace(prevAcc)
 	}
-	return o.w.Text(s)
+	return o.writeText(s)
 }
 
 // userReplace writes a user-driven `replace_response` event. The
 // replace overwrites the whole body, so it becomes the new accumulator
-// value and no pre-clear is needed.
+// value and no pre-clear is needed. Any buffered text is flushed first
+// so the replace cannot overtake it (ordering safety).
 func (o *orderedWriter) userReplace(s string) error {
 	o.writeMu.Lock()
 	defer o.writeMu.Unlock()
+	_ = o.flushLocked()
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
@@ -612,14 +794,16 @@ func (o *orderedWriter) userReplace(s string) error {
 	o.acc = s
 	o.spinnerVisible = false
 	o.mu.Unlock()
-	return o.w.Replace(s)
+	return o.writeReplace(s)
 }
 
-// userError writes an `error` SSE event. Pre-strips a visible spinner
-// so the error rendering isn't preceded by the transient status line.
+// userError writes an `error` SSE event. Flushes buffered text first
+// (ordering safety) and pre-strips a visible spinner so the error
+// rendering isn't preceded by the transient status line.
 func (o *orderedWriter) userError(text, et string) error {
 	o.writeMu.Lock()
 	defer o.writeMu.Unlock()
+	_ = o.flushLocked()
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
@@ -631,9 +815,9 @@ func (o *orderedWriter) userError(text, et string) error {
 	o.spinnerSealed = true
 	o.mu.Unlock()
 	if strip {
-		_ = o.w.Replace(prevAcc)
+		_ = o.writeReplace(prevAcc)
 	}
-	return o.w.Error(text, et)
+	return o.writeError(text, et)
 }
 
 // userDone writes the terminal `done` event and seals the stream so
@@ -662,6 +846,15 @@ func (o *orderedWriter) userDone() error {
 		return nil
 	}
 	strip, prevAcc := o.spinnerVisible, o.acc
+	// Drain the coalescing buffer under the SAME mu section that seals
+	// the stream: once closed is set, flushLocked would no-op and the
+	// tail of the answer would be silently dropped.
+	pend := o.pending.String()
+	o.pending.Reset()
+	if pend != "" {
+		o.acc += pend
+		o.realWritten = true
+	}
 	o.spinnerVisible = false
 	o.spinnerSealed = true
 	o.closed = true
@@ -670,18 +863,23 @@ func (o *orderedWriter) userDone() error {
 	o.writeMu.Lock()
 	defer o.writeMu.Unlock()
 	if strip {
-		_ = o.w.Replace(prevAcc)
+		_ = o.writeReplace(prevAcc)
 	}
-	return o.w.Done()
+	if pend != "" {
+		_ = o.writeText(pend)
+	}
+	return o.writeDone()
 }
 
 // userFile emits a `file` SSE event advertising an output attachment.
 // Like userText it counts as real content: it strips any visible
 // spinner and marks realWritten. A file event does not add to the text
-// accumulator (it is a distinct event type, not body text).
+// accumulator (it is a distinct event type, not body text). Buffered
+// text is flushed first so the file event cannot overtake it.
 func (o *orderedWriter) userFile(url, contentType, name, inlineRef string) error {
 	o.writeMu.Lock()
 	defer o.writeMu.Unlock()
+	_ = o.flushLocked()
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
@@ -692,9 +890,9 @@ func (o *orderedWriter) userFile(url, contentType, name, inlineRef string) error
 	o.realWritten = true
 	o.mu.Unlock()
 	if strip {
-		_ = o.w.Replace(prevAcc)
+		_ = o.writeReplace(prevAcc)
 	}
-	return o.w.File(url, contentType, name, inlineRef)
+	return o.writeFile(url, contentType, name, inlineRef)
 }
 
 // hbFrame writes a heartbeat-driven keepalive spinner as a
@@ -716,6 +914,10 @@ func (o *orderedWriter) userFile(url, contentType, name, inlineRef string) error
 func (o *orderedWriter) hbFrame(line string) (gateOpen bool, err error) {
 	o.writeMu.Lock()
 	defer o.writeMu.Unlock()
+	// Ordering safety: a keepalive carries `acc`, so it must never be
+	// composed from a stale accumulator with text still sitting in the
+	// buffer — that would render the answer minus its tail.
+	_ = o.flushLocked()
 	o.mu.Lock()
 	if o.closed || o.spinnerSealed {
 		o.mu.Unlock()
@@ -725,9 +927,24 @@ func (o *orderedWriter) hbFrame(line string) (gateOpen bool, err error) {
 	if o.acc != "" {
 		body = o.acc + "\n\n" + line
 	}
+	// Identical-frame dedupe. A `replace_response` byte-identical to the
+	// one already on screen carries zero information: the client renders
+	// exactly what it is rendering now. Skipping it is behaviourally
+	// invisible, and with a static spinner it collapses the 1.5s
+	// keepalive down to genuine state changes. The suppression is
+	// conditional on the spinner still being VISIBLE — if a user write
+	// stripped it in between, the frame must be re-sent or the status
+	// line silently disappears — and on the liveness floor, because the
+	// heartbeat is also Poe's content-starvation keepalive.
+	if o.spinnerVisible && body == o.lastHB && time.Since(o.lastHBAt) < o.hbFloor {
+		o.mu.Unlock()
+		return true, nil
+	}
+	o.lastHB = body
+	o.lastHBAt = time.Now()
 	o.spinnerVisible = true
 	o.mu.Unlock()
-	return true, o.w.Replace(body)
+	return true, o.writeReplace(body)
 }
 
 // hasOutput reports whether the first user-visible write has landed.
@@ -810,28 +1027,139 @@ type sink struct {
 	// test's assignment. Passed into newSink before the goroutine spawns,
 	// so the write happens-before the goroutine's read.
 	tickHook func()
+
+	// spinnerStatic freezes the keepalive spinner's dots. Animation
+	// changes the frame payload every tick, which by construction
+	// defeats the identical-frame dedupe in orderedWriter.hbFrame (and
+	// any coalescing Poe's own servers might do). Zero value = false =
+	// animated = today's behaviour.
+	spinnerStatic bool
+
+	// coDone is closed by stop() to wake the coalescing flusher, and
+	// coExited is closed by that goroutine on exit (pre-closed when no
+	// flusher runs) so tests can join it race-free. They are separate
+	// from hbDone/hbExited because the heartbeat may be disabled while
+	// coalescing is on, and vice versa.
+	coDone   chan struct{}
+	coStop   sync.Once
+	coExited chan struct{}
+	// flushHook, when non-nil, fires after each grid-tick flush.
+	// Test-only seam (same rationale as tickHook).
+	flushHook func()
 }
 
+// sinkOpts configures a sink. It exists so new stream-shaping knobs do
+// not keep widening newSink's positional signature.
+type sinkOpts struct {
+	// heartbeat is the spinner/keepalive tick; <=0 disables it.
+	heartbeat time.Duration
+	// stall is how long content silence lasts before the spinner re-arms.
+	stall time.Duration
+	// coalesce is the outbound text-flush period; <=0 disables buffering.
+	coalesce time.Duration
+	// grid aligns coalesced flushes to the shared wall-clock grid.
+	grid bool
+	// spinnerStatic freezes the spinner dots (see sink.spinnerStatic).
+	spinnerStatic bool
+	// tickHook / flushHook are test-only seams.
+	tickHook  func()
+	flushHook func()
+}
+
+// newSink builds a sink with default stream shaping: no coalescing,
+// animated spinner. Kept as the narrow constructor because most call
+// sites (and every pre-existing cadence test) only care about the
+// heartbeat and stall knobs.
 func newSink(w *poeproto.SSEWriter, hb, stall time.Duration, tickHook func()) *sink {
+	return newSinkOpts(w, sinkOpts{heartbeat: hb, stall: stall, tickHook: tickHook})
+}
+
+// hbDedupeFloorMin is the lower bound on the heartbeat dedupe liveness
+// floor (see hbDedupeFloor).
+const hbDedupeFloorMin = 10 * time.Second
+
+// hbDedupeFloor derives how long a stream may go with NO frame at all
+// before an identical keepalive is re-sent purely as liveness.
+//
+// The floor exists because the heartbeat is not only a spinner: it is
+// what stops Poe content-starvation-dropping a long tool-heavy turn.
+// Poe's real mid-turn tolerance is not documented and we have not
+// measured it — the only hard datum in this codebase is that a
+// NEW-conversation connection is dropped within milliseconds if it sees
+// no content event at all (hence the eager first frame). The operator's
+// own declared safety margin is StallThreshold (default 8s,
+// "conservatively under Poe's drop tolerance"), so the floor is derived
+// from it — 2× the stall threshold, never below 10s — rather than from
+// a made-up absolute. That keeps dedupe aggressive enough to be worth
+// having (a 1.5s keepalive becomes a 16s one by default: ~10× fewer
+// wakes) while never pushing silence far past a window the operator has
+// already declared safe. An operator who lengthens StallThreshold
+// because their bot survives longer gaps automatically gets a longer
+// floor too.
+func hbDedupeFloor(stall time.Duration) time.Duration {
+	if f := 2 * stall; f > hbDedupeFloorMin {
+		return f
+	}
+	return hbDedupeFloorMin
+}
+
+func newSinkOpts(w *poeproto.SSEWriter, opts sinkOpts) *sink {
 	s := &sink{
-		o:        &orderedWriter{w: w},
-		stall:    stall,
-		hbDone:   make(chan struct{}),
-		hbExited: make(chan struct{}),
-		tickHook: tickHook,
+		o: &orderedWriter{
+			w:         w,
+			coalesce:  opts.coalesce,
+			turnStart: time.Now(),
+			hbFloor:   hbDedupeFloor(opts.stall),
+		},
+		stall:         opts.stall,
+		hbDone:        make(chan struct{}),
+		hbExited:      make(chan struct{}),
+		tickHook:      opts.tickHook,
+		spinnerStatic: opts.spinnerStatic,
+		coDone:        make(chan struct{}),
+		coExited:      make(chan struct{}),
+		flushHook:     opts.flushHook,
 	}
 	now := time.Now().UnixNano()
 	s.lastWrite.Store(now)
 	s.lastContent.Store(now)
-	if hb > 0 {
-		go s.heartbeat(hb)
+	if opts.heartbeat > 0 {
+		go s.heartbeat(opts.heartbeat)
 	} else {
 		// Heartbeat disabled: pre-close so stop() is a no-op and tests
 		// that wait on hbExited don't block.
 		s.hbStop.Do(func() { close(s.hbDone) })
 		close(s.hbExited)
 	}
+	if opts.coalesce > 0 {
+		go s.coalesceLoop(opts.coalesce, opts.grid)
+	} else {
+		s.coStop.Do(func() { close(s.coDone) })
+		close(s.coExited)
+	}
 	return s
+}
+
+// coalesceLoop drains the outbound text buffer on the shared wall-clock
+// grid (see coalesce.go). It is the ONLY periodic flusher: everything
+// else that flushes does so synchronously, because it is about to write
+// an event that must not overtake buffered text. Exits on stop(), which
+// every terminal path (Done / Error / File / the handler's defer) calls.
+func (s *sink) coalesceLoop(period time.Duration, grid bool) {
+	defer close(s.coExited)
+	for {
+		t := time.NewTimer(nextFlushDelay(time.Now(), period, grid))
+		select {
+		case <-s.coDone:
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		_ = s.o.flush()
+		if s.flushHook != nil {
+			s.flushHook()
+		}
+	}
 }
 
 func (s *sink) heartbeat(every time.Duration) {
@@ -904,8 +1232,7 @@ func (s *sink) emitSpinnerFrame(spinTick *int) (keepGoing bool) {
 		return !s.o.isClosed()
 	}
 	*spinTick++
-	dots := strings.Repeat(".", 1+(*spinTick-1)%3)
-	frame := statusline.Spinner(s.snapshotStatus(), s.snapshotActivity(), dots)
+	frame := statusline.Spinner(s.snapshotStatus(), s.snapshotActivity(), s.dots(*spinTick))
 	// Rendered only on an emitted frame: a no-op tick must stay
 	// allocation-free, since it runs every heartbeat interval of every
 	// normally-streaming turn.
@@ -916,12 +1243,30 @@ func (s *sink) emitSpinnerFrame(spinTick *int) (keepGoing bool) {
 	return gateOpen
 }
 
+// staticSpinnerDots is the frozen dot sequence used when spinner
+// animation is off. Three dots (the animation's terminal frame) so a
+// static spinner looks like a settled "Thinking..." rather than a
+// truncated one.
+const staticSpinnerDots = "..."
+
+// dots renders the spinner's animation frame for tick n. With
+// spinnerStatic the string is constant, which is the whole point: an
+// unchanging payload lets the identical-frame dedupe in
+// orderedWriter.hbFrame collapse the keepalive to genuine state changes.
+func (s *sink) dots(n int) string {
+	if s.spinnerStatic {
+		return staticSpinnerDots
+	}
+	return strings.Repeat(".", 1+(n-1)%3)
+}
+
 // stop wakes the heartbeat goroutine for prompt shutdown. Idempotent.
 // Safe to call any number of times from any goroutine. Even if never
 // called, the heartbeat self-disarms via the orderedWriter gate on its
 // next tick after the stream is sealed (Done/Error).
 func (s *sink) stop() {
 	s.hbStop.Do(func() { close(s.hbDone) })
+	s.coStop.Do(func() { close(s.coDone) })
 }
 
 // FirstChunk — router calls this on the first real agent chunk. In the
