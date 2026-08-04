@@ -308,3 +308,114 @@ by default (it is behaviourally invisible), so if Poe *does* drop a long
 tool-call turn that it previously survived, the 16s liveness floor is
 the first suspect — lower `hbDedupeFloorMin` / the `2×` multiplier, or
 raise `StallThreshold`, and it moves together.
+
+---
+
+# Review fixes (round 2)
+
+Five review commits on top of the original three. All six findings
+**accepted and fixed — none rejected.** `make all` green (100% coverage
+gate held) and `go test -race -count=5 ./internal/httpsrv/` clean.
+
+## F1 — `userDone` claimed unwritten text — **confirmed reachable**
+
+I traced this before fixing, because the reviewer flagged that they
+could not verify the read-ordering. They were right to be suspicious,
+and the answer is worse than the diff suggests:
+
+- Via the handler's **trailing defer** (`handler.go:394`) it is *not*
+  reachable. The watcher is joined inside the function body
+  (`<-watcherDone`, `:478`) before any defer runs, so the drain always
+  happens after the watcher's read.
+- Via the router's **in-turn `sink.Done()`** it *is* reachable. That is
+  the normal termination path: it runs inside `Router.Prompt` (`:476`),
+  strictly before `close(done)` (`:477`), while the watcher is still
+  parked on `select`. Nothing orders it against `ctx.Done()` firing, so
+  the watcher at `:453` can read `realWritten == true` for a tail that
+  never left the process, take the `Cancel` branch instead of
+  `absorbed.Store(true)`, and the answer is never buffered for the
+  redrive.
+
+Preconditions: `coalesce > 0`, no text on the wire yet this turn, and
+the drop landing in that window. Narrow — **but F2 widened it
+materially**: with the eager window anchored at query arrival, any bot
+with TTFT > 1.5s buffered its *entire* short answer until `Done`, which
+is exactly the state that makes this fire. The two findings compound,
+which neither the reviewer nor I saw separately.
+
+Fix: `acc` is still updated in the sealing section (it is what the
+client *will* show if the write lands), but `realWritten` is set only
+after `writeText(pend)` returns nil. Two tests —
+`TestCoalesce_DoneDoesNotClaimUnwrittenText` (fails on the previous
+code) and `TestCoalesce_DoneMarksWrittenTail` for the positive half,
+because "never set it" would break a genuine Stop.
+
+## F2 — eager window anchored at query arrival
+
+Correct and the more consequential of the two. `turnStart` was set in
+`newSinkOpts`; TTFT for an agent bot regularly exceeds the whole 1.5s
+window, so the window was already expired when chunk #1 arrived and the
+first visible token waited up to a full `coalesce_ms`.
+
+Fixed by latching `eagerStart` on the first chunk. Note the
+construction-time anchor is now **gone from the struct entirely** — the
+bug class is removed rather than retuned, which is checkable by grep
+rather than by reasoning.
+
+## F3 — heartbeat-disabled + coalescing reopened the cold-start window
+
+Took the reviewer's second option (unconditional flush of chunk #1)
+over a boot-time reject/warn, for the reason they gave: it makes the
+guarantee independent of the heartbeat instead of forbidding one
+supported configuration. `shouldFlushLocked` now returns true whenever
+`chunks == 1`, before any window arithmetic.
+`TestCoalesce_FirstChunkFlushesWithoutHeartbeat` asserts a content
+event reaches the client with `heartbeat: 0` and asserts no
+`replace_response` exists to have done the job.
+
+## F4 / F5 / F6 — all applied
+
+- **F4**: `MaxCoalesceMs = 60_000`; `Validate` now rejects `<0` and
+  `>60000` with the range in the message. The overflow argument is the
+  real one — a wrapped negative `time.Duration` degrades silently to
+  "off", which an operator would never diagnose.
+- **F5**: `lastHB`/`lastHBAt` are assigned only after `writeReplace`
+  returns nil. Test fails on the previous code.
+- **F6**: free, so fixed — `nextFlushDelay` rounds `now` to the nearest
+  millisecond instead of truncating.
+
+## Measurements
+
+**The headline numbers did not move**: 2003 → 54 frames, 37.1×,
+identical rendered body. That is expected and it is precisely the
+reviewer's point about masking — the synthetic workload emits from
+t≈6ms, so the old and new anchors coincide there and the frame ratio
+never saw the bug.
+
+What moved is a number the original report did not measure, and the
+claim it invalidated:
+
+| | before fixes | after fixes |
+|---|---|---|
+| eager frames, TTFT < 1.5s (synthetic) | 30 | 30 |
+| eager frames, **TTFT > 1.5s (real bots)** | **0** | 30 |
+| first-token delay, TTFT > 1.5s, `coalesce_ms: 3000` | **up to 3000ms** | **0ms** |
+| first-token delay, heartbeat disabled | up to 3000ms | 0ms |
+
+So REPORT.md's "the answer still starts instantly" was **false for the
+actual deployment target** before these fixes, and is true now. I have
+left the original section as written rather than quietly editing it —
+the claim was wrong when made, and that is worth being able to see.
+
+I did not add a slow-TTFT variant to the synthetic measurement: with no
+construction-time anchor left in the code there is nothing for it to
+discriminate, and faking one would test the mock. The anchoring is
+pinned at the decision level instead
+(`TestShouldFlush_EagerAnchoring`), which needs no wall clock.
+
+## Nothing rejected
+
+Every finding held up on inspection. The one thing I would add to the
+reviewer's model: F1 and F2 are not independent — F2 is what makes F1's
+narrow race routinely reachable, so the pair should be treated as one
+defect for the purposes of "is this a blocker". It was.
