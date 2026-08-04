@@ -46,13 +46,13 @@ func newTestSink(t *testing.T, opts sinkOpts) (*sink, *httptest.ResponseRecorder
 }
 
 // exhaustEagerWindow pushes the writer past the eager first-flush window
-// (see eagerFlushChunks) without any wall-clock waiting, by backdating
-// the turn start and consuming the chunk budget. After this, buffering
-// is governed purely by the grid tick and the paragraph rule.
+// (see eagerFlushChunks) without any wall-clock waiting, by consuming
+// the chunk budget and backdating the window origin. After this,
+// buffering is governed purely by the grid tick and the paragraph rule.
 func exhaustEagerWindow(o *orderedWriter) {
 	o.mu.Lock()
-	o.turnStart = time.Now().Add(-2 * eagerFlushWindow)
 	o.chunks = eagerFlushChunks + 1
+	o.eagerStart = time.Now().Add(-2 * eagerFlushWindow)
 	o.mu.Unlock()
 }
 
@@ -188,9 +188,9 @@ func TestCoalesce_EagerWindowExpiresOnTime(t *testing.T) {
 	if err := s.Text("a"); err != nil {
 		t.Fatal(err)
 	}
-	// Backdate only the clock, leaving the chunk budget untouched.
+	// Backdate only the window origin, leaving the chunk budget untouched.
 	s.o.mu.Lock()
-	s.o.turnStart = time.Now().Add(-2 * eagerFlushWindow)
+	s.o.eagerStart = time.Now().Add(-2 * eagerFlushWindow)
 	s.o.mu.Unlock()
 	if err := s.Text("b"); err != nil {
 		t.Fatal(err)
@@ -645,5 +645,66 @@ func TestCoalesce_DoneMarksWrittenTail(t *testing.T) {
 	}
 	if body := renderBody(parseSSE(t, rec.Body.String())); body != "tail" {
 		t.Fatalf("body = %q, want %q", body, "tail")
+	}
+}
+
+// TestShouldFlush_EagerAnchoring pins F2 and F3 at the decision level,
+// where they can be asserted without wall-clock waiting.
+//
+//   - F3: chunk #1 of a turn ALWAYS goes straight to the wire, even
+//     with the window long expired. Cold-start protection must not
+//     depend on the heartbeat, which an operator may disable.
+//   - F2: the window is measured from the FIRST CHUNK, not from query
+//     arrival. An agent bot's TTFT (session resume, model latency, a
+//     tool call before any prose) routinely exceeds the whole window,
+//     so anchoring at arrival would give real turns zero eager frames
+//     and make the first visible token wait a full grid period.
+func TestShouldFlush_EagerAnchoring(t *testing.T) {
+	expired := time.Now().Add(-2 * eagerFlushWindow)
+
+	o := &orderedWriter{coalesce: time.Hour, chunks: 1, eagerStart: expired}
+	if !o.shouldFlushLocked() {
+		t.Fatal("chunk #1 must flush unconditionally — the cold-start window cannot depend on the heartbeat")
+	}
+
+	// A slow first token: the window opens when that chunk lands, so the
+	// chunks that follow it are still eager.
+	o = &orderedWriter{coalesce: time.Hour, chunks: 5, eagerStart: time.Now()}
+	if !o.shouldFlushLocked() {
+		t.Fatal("eager window must be anchored on the first chunk, not on query arrival")
+	}
+
+	// Once the window has genuinely elapsed since the first chunk,
+	// buffering takes over.
+	o = &orderedWriter{coalesce: time.Hour, chunks: 5, eagerStart: expired}
+	if o.shouldFlushLocked() {
+		t.Fatal("expired eager window still flushing")
+	}
+	// …as it does once the chunk budget is spent, however fresh.
+	o = &orderedWriter{coalesce: time.Hour, chunks: eagerFlushChunks + 1, eagerStart: time.Now()}
+	if o.shouldFlushLocked() {
+		t.Fatal("chunk budget exhausted but still flushing")
+	}
+}
+
+// TestCoalesce_FirstChunkFlushesWithoutHeartbeat is the F3 end-to-end
+// guard: with -heartbeat-interval 0 there is no spinner tick #0, so the
+// first buffered chunk is the ONLY thing that can close Poe's
+// cold-start content-starvation window.
+func TestCoalesce_FirstChunkFlushesWithoutHeartbeat(t *testing.T) {
+	s, rec := newTestSink(t, sinkOpts{coalesce: time.Hour, heartbeat: 0, grid: true})
+	defer s.stop()
+
+	if err := s.Text("first token"); err != nil {
+		t.Fatal(err)
+	}
+	events := parseSSE(t, rec.Body.String())
+	if len(events) < 2 || events[1].event != "text" {
+		t.Fatalf("no content event reached the client with the heartbeat disabled: %s", rec.Body.String())
+	}
+	for _, e := range events {
+		if e.event == "replace_response" {
+			t.Fatal("heartbeat is disabled; no spinner frame can be relied on here")
+		}
 	}
 }
