@@ -849,11 +849,20 @@ func (o *orderedWriter) userDone() error {
 	// Drain the coalescing buffer under the SAME mu section that seals
 	// the stream: once closed is set, flushLocked would no-op and the
 	// tail of the answer would be silently dropped.
+	//
+	// `acc` is updated here (it is what the client WILL be showing if
+	// the write lands) but realWritten deliberately is NOT: it means
+	// "the client has actually seen output", and it is the
+	// discriminator the handler's absorb/redrive path uses to tell a
+	// user Stop from a transport drop. Buffered text that never made it
+	// onto a live wire has been seen by nobody — claiming otherwise
+	// makes a dropped turn look like a Stop, so it is never buffered
+	// for the redrive and the whole answer is lost. It is set below,
+	// only once writeText has actually succeeded.
 	pend := o.pending.String()
 	o.pending.Reset()
 	if pend != "" {
 		o.acc += pend
-		o.realWritten = true
 	}
 	o.spinnerVisible = false
 	o.spinnerSealed = true
@@ -866,7 +875,12 @@ func (o *orderedWriter) userDone() error {
 		_ = o.writeReplace(prevAcc)
 	}
 	if pend != "" {
-		_ = o.writeText(pend)
+		if err := o.writeText(pend); err == nil {
+			// The tail is on the wire: the client HAS seen output now.
+			o.mu.Lock()
+			o.realWritten = true
+			o.mu.Unlock()
+		}
 	}
 	return o.writeDone()
 }
