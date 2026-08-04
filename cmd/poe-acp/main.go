@@ -314,6 +314,11 @@ func main() {
 		}
 		log.Printf("auth methods: %v", ids)
 	}
+	// Outbound stream shaping (flush coalescing + spinner animation) is
+	// per-bot config, resolved in one tested place.
+	stream := cfg.Defaults.Stream()
+	log.Printf("stream shaping: coalesce=%s grid=%v spinner_animate=%v",
+		stream.CoalesceInterval, stream.CoalesceGrid, stream.SpinnerAnimate)
 	h := httpsrv.New(httpsrv.Config{
 		Router: rtr,
 		Settings: poeproto.SettingsResponse{
@@ -328,6 +333,9 @@ func main() {
 		StallThreshold:    *stallThreshold,
 		SSEWriteTimeout:   *sseWriteTO,
 		AnswerTTL:         *answerTTL,
+		CoalesceInterval:  stream.CoalesceInterval,
+		CoalesceGrid:      stream.CoalesceGrid,
+		SpinnerStatic:     !stream.SpinnerAnimate,
 		ParameterControlsProvider: func() *poeproto.ParameterControls {
 			m, _ := agent.Models()
 			return paramctl.Build(m, defaults)

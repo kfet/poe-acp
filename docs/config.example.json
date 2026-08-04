@@ -6,7 +6,10 @@
     "hide_thinking": true,
     "show_plans": true,
     "show_tools": true,
-    "show_tool_details": true
+    "show_tool_details": true,
+    "coalesce_ms": 0,
+    "coalesce_grid": true,
+    "spinner_animate": true
   },
   "agent": {
     "profile": "fir"
