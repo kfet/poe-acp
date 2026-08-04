@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-08-04
+
 ### Added
 
 - **`show_tool_details`** (config `defaults.show_tool_details`, Poe Options
