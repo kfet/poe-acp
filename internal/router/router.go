@@ -150,6 +150,11 @@ type Options struct {
 	// ShowTools emits one durable blockquote line per ACP `tool_call`
 	// into the answer body. Relay-side only.
 	ShowTools bool
+	// ShowToolDetails renders each tool call's content blocks under its
+	// durable line, plus one bounded group per TERMINAL
+	// (completed/failed) `tool_call_update`. Only has effect when
+	// ShowTools is also true. Relay-side only.
+	ShowToolDetails bool
 }
 
 // Config configures a Router.
@@ -550,6 +555,17 @@ type turnDef struct {
 	// (turn START only, never tool_call_update) so a tool-heavy turn
 	// leaves a readable trace instead of just an animated spinner.
 	showTools bool
+	// showToolDetails renders each tool call's `content` blocks under
+	// its durable line, and one extra group per TERMINAL
+	// (completed/failed) tool_call_update carrying the result. Only
+	// consulted when showTools is true.
+	showToolDetails bool
+	// tools remembers, per turn, the title of each tool_call seen (by
+	// ToolCallId) so a later tool_call_update can be rendered with the
+	// call it belongs to, and whether its terminal group was already
+	// emitted. Non-nil only when detail rendering is on; the map lives
+	// and dies with the turn.
+	tools map[acp.ToolCallId]*toolState
 	// scanner extracts poe-attach directives from message chunks; nil
 	// when output attachments are disabled.
 	scanner *attachScanner
@@ -766,12 +782,22 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 		td.sink.ToolActivity(toolActivityLabel(u.ToolCall.Title, u.ToolCall.Kind))
 		if td.showTools {
 			emitToolLine(td, first, chunkMode, u.ToolCall.Title, u.ToolCall.Kind)
+			if td.showToolDetails {
+				td.rememberTool(u.ToolCall.ToolCallId, u.ToolCall.Title, u.ToolCall.Kind)
+				emitToolDetail(td, u.ToolCall.Content)
+			}
 		}
 		return
 	case u.ToolCallUpdate != nil:
 		// Deliberately spinner-only: a running tool emits many updates
-		// per call, and one body line each would drown the answer.
+		// per call, and one body line each would drown the answer. The
+		// single exception, when show_tool_details is on, is the
+		// TERMINAL update — it carries the outcome and the result text,
+		// which is the whole point of the detail rendering.
 		td.sink.ToolActivity(toolUpdateLabel(u.ToolCallUpdate))
+		if td.showTools && td.showToolDetails {
+			emitToolResult(td, first, chunkMode, u.ToolCallUpdate)
+		}
 		return
 	case u.Plan != nil:
 		// The plan REPLACES the previous one (ACP semantics), and it is
@@ -935,6 +961,16 @@ func toolLineLabel(title string, kind acp.ToolKind) string {
 // old window. See TestHandler_ToolLineIsFirstOutputAndGatesCancel.
 func emitToolLine(td *turnDef, first *bool, chunkMode *chunkKind, title string, kind acp.ToolKind) {
 	label := toolLineLabel(title, kind)
+	prefix := openToolBlock(td, first, chunkMode)
+	line := "> `" + toolKindEmoji(kind) + " " + strings.ReplaceAll(label, "`", "'") + "`"
+	_ = td.sink.Text(prefix + poeproto.EscapeReservedFlags(line))
+}
+
+// openToolBlock prepares the stream for a durable tool-block write and
+// returns the separator that must precede it. Shared by the tool line
+// and the tool-result group so both join/interrupt surrounding text
+// identically.
+func openToolBlock(td *turnDef, first *bool, chunkMode *chunkKind) string {
 	// A tool line interrupts message text: release any partial token the
 	// escaper holds and flush the scanner first, so held text can never
 	// land after the line that logically follows it.
@@ -957,8 +993,7 @@ func emitToolLine(td *turnDef, first *bool, chunkMode *chunkKind, title string, 
 		*first = true
 		td.sink.FirstChunk()
 	}
-	line := "> `" + toolKindEmoji(kind) + " " + strings.ReplaceAll(label, "`", "'") + "`"
-	_ = td.sink.Text(prefix + poeproto.EscapeReservedFlags(line))
+	return prefix
 }
 
 // toolKindEmoji maps an ACP tool kind to a single glyph for the durable
@@ -1373,12 +1408,14 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	}
 
 	st.chunkCh <- chunkMsg{beginTurn: &turnDef{
-		sink:         sink,
-		hideThinking: req.opts.HideThinking,
-		showPlans:    req.opts.ShowPlans,
-		showTools:    req.opts.ShowTools,
-		scanner:      r.newAttachScanner(sink, st.cwd),
-		escaper:      &flagEscaper{},
+		sink:            sink,
+		hideThinking:    req.opts.HideThinking,
+		showPlans:       req.opts.ShowPlans,
+		showTools:       req.opts.ShowTools,
+		showToolDetails: req.opts.ShowTools && req.opts.ShowToolDetails,
+		tools:           newToolStates(req.opts),
+		scanner:         r.newAttachScanner(sink, st.cwd),
+		escaper:         &flagEscaper{},
 	}}
 
 	r.setActiveTurn(st.convID, sink, st.cwd)
@@ -1521,6 +1558,9 @@ func ParseOptions(params map[string]any, defaults Options) Options {
 	}
 	if v, ok := params[poeproto.ParamShowTools].(bool); ok {
 		o.ShowTools = v
+	}
+	if v, ok := params[poeproto.ParamShowToolDetails].(bool); ok {
+		o.ShowToolDetails = v
 	}
 	return o
 }

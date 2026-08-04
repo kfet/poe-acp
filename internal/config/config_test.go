@@ -57,7 +57,8 @@ func TestLoad_Valid(t *testing.T) {
 			"thinking": "medium",
 			"hide_thinking": false,
 			"show_plans": false,
-			"show_tools": true
+			"show_tools": true,
+			"show_tool_details": false
 		},
 		"agent": {"profile": "fir"},
 		"system_prompt_file": "prompt.md",
@@ -84,6 +85,9 @@ func TestLoad_Valid(t *testing.T) {
 	}
 	if cfg.Defaults.ShowTools == nil || *cfg.Defaults.ShowTools != true {
 		t.Errorf("show_tools: %v", cfg.Defaults.ShowTools)
+	}
+	if cfg.Defaults.ShowToolDetails == nil || *cfg.Defaults.ShowToolDetails != false {
+		t.Errorf("show_tool_details: %v", cfg.Defaults.ShowToolDetails)
 	}
 	if cfg.Agent.Profile != "fir" {
 		t.Errorf("profile: %q", cfg.Agent.Profile)

@@ -268,8 +268,8 @@ func main() {
 	// Router.Defaults (runtime apply on first turn) so they cannot drift.
 	models, current := agent.Models()
 	defaults := paramctl.Resolve(cfg.Defaults, models, current)
-	log.Printf("resolved defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v",
-		defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools)
+	log.Printf("resolved defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
+		defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails)
 
 	// Router
 	broker := command.New(agent)

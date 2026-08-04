@@ -332,10 +332,10 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		latestPJ, _ := json.Marshal(req.LatestParameters())
 		defaults := h.cfg.Router.Defaults()
 		kitlog.Debugf("  latest_params=%s", string(latestPJ))
-		kitlog.Debugf("  defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v",
-			defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools)
-		kitlog.Debugf("  parsed_opts: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v",
-			opts.Model, opts.Thinking, opts.HideThinking, opts.ShowPlans, opts.ShowTools)
+		kitlog.Debugf("  defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
+			defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails)
+		kitlog.Debugf("  parsed_opts: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
+			opts.Model, opts.Thinking, opts.HideThinking, opts.ShowPlans, opts.ShowTools, opts.ShowToolDetails)
 	}
 
 	// Sink: SSE writer + heartbeat coordination + disconnect → cancel.

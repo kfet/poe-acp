@@ -78,6 +78,13 @@ const DefaultShowPlans = true
 // agent actually did during a turn.
 const DefaultShowTools = true
 
+// DefaultShowToolDetails is the built-in fallback when the operator has
+// not configured `defaults.show_tool_details` in config.json. On by
+// default: a bare tool title ("rexec") tells the user almost nothing,
+// while the bounded content/result rendering shows the actual command
+// and its outcome. Only has effect when ShowTools is also on.
+const DefaultShowToolDetails = true
+
 // OtherProvider is the bucket label for models whose ID has no '/'
 // prefix. Kept stable so config defaults and tests can target it.
 const OtherProvider = "other"
@@ -96,10 +103,11 @@ const OtherProvider = "other"
 // relay does not call set_model with a phantom value.
 func Resolve(cfg config.Defaults, models []client.ModelInfo, probeCurrent string) router.Options {
 	o := router.Options{
-		Thinking:     DefaultThinking,
-		HideThinking: DefaultHideThinking,
-		ShowPlans:    DefaultShowPlans,
-		ShowTools:    DefaultShowTools,
+		Thinking:        DefaultThinking,
+		HideThinking:    DefaultHideThinking,
+		ShowPlans:       DefaultShowPlans,
+		ShowTools:       DefaultShowTools,
+		ShowToolDetails: DefaultShowToolDetails,
 	}
 	if cfg.Thinking != "" {
 		o.Thinking = cfg.Thinking
@@ -112,6 +120,9 @@ func Resolve(cfg config.Defaults, models []client.ModelInfo, probeCurrent string
 	}
 	if cfg.ShowTools != nil {
 		o.ShowTools = *cfg.ShowTools
+	}
+	if cfg.ShowToolDetails != nil {
+		o.ShowToolDetails = *cfg.ShowToolDetails
 	}
 
 	// Model resolution: only meaningful if we have an available list.
@@ -345,6 +356,12 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 			Label:         "Tools",
 			ParameterName: poeproto.ParamShowTools,
 			DefaultValue:  defaults.ShowTools,
+		},
+		poeproto.Control{
+			Control:       "toggle_switch",
+			Label:         "Tool details",
+			ParameterName: poeproto.ParamShowToolDetails,
+			DefaultValue:  defaults.ShowToolDetails,
 		},
 	)
 

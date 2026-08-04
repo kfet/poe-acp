@@ -34,11 +34,11 @@ func TestResolve_ConfigWins(t *testing.T) {
 func TestResolve_ProgressKnobDefaults(t *testing.T) {
 	t.Parallel()
 	d := Resolve(config.Defaults{}, twoModels, "")
-	if !d.ShowPlans || !d.ShowTools {
-		t.Fatalf("nil show_plans/show_tools should default to true, got %+v", d)
+	if !d.ShowPlans || !d.ShowTools || !d.ShowToolDetails {
+		t.Fatalf("nil show_plans/show_tools/show_tool_details should default to true, got %+v", d)
 	}
-	d = Resolve(config.Defaults{ShowPlans: boolPtr(false), ShowTools: boolPtr(false)}, twoModels, "")
-	if d.ShowPlans || d.ShowTools {
+	d = Resolve(config.Defaults{ShowPlans: boolPtr(false), ShowTools: boolPtr(false), ShowToolDetails: boolPtr(false)}, twoModels, "")
+	if d.ShowPlans || d.ShowTools || d.ShowToolDetails {
 		t.Fatalf("explicit false should override defaults, got %+v", d)
 	}
 }
@@ -418,6 +418,9 @@ func TestBuildAndResolveAgree_SingleProvider(t *testing.T) {
 	}
 	if got, want := schemaDefaults["show_tools"], d.ShowTools; got != want {
 		t.Errorf("show_tools: schema=%v defaults=%v", got, want)
+	}
+	if got, want := schemaDefaults["show_tool_details"], d.ShowToolDetails; got != want {
+		t.Errorf("show_tool_details: schema=%v defaults=%v", got, want)
 	}
 }
 
