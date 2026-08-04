@@ -2,9 +2,11 @@ package httpsrv
 
 import (
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -564,5 +566,84 @@ func TestCoalesce_SyntheticLongAnswer(t *testing.T) {
 	// jitter must not make the assertion flaky.
 	if afterTotal*10 > beforeTotal {
 		t.Fatalf("coalescing cut frames only from %d to %d; want at least a 10× reduction", beforeTotal, afterTotal)
+	}
+}
+
+// failingWriter is an SSE transport that can be made to fail every
+// write, simulating a client whose connection dropped mid-turn.
+type failingWriter struct {
+	*httptest.ResponseRecorder
+	fail atomic.Bool
+}
+
+func (f *failingWriter) Write(b []byte) (int, error) {
+	if f.fail.Load() {
+		return 0, io.ErrShortWrite
+	}
+	return f.ResponseRecorder.Write(b)
+}
+
+func (f *failingWriter) Flush() {}
+
+func newFailableSink(t *testing.T, opts sinkOpts) (*sink, *failingWriter) {
+	t.Helper()
+	fw := &failingWriter{ResponseRecorder: httptest.NewRecorder()}
+	w, err := poeproto.NewSSEWriter(fw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newSinkOpts(w, opts), fw
+}
+
+// TestCoalesce_DoneDoesNotClaimUnwrittenText is the F1 regression guard.
+//
+// realWritten means "the client has actually SEEN output". It is the
+// discriminator the handler's absorb/redrive path uses to tell a real
+// user Stop (forward session/cancel) from a transport drop (absorb the
+// turn and buffer the answer for Poe's redrive). If userDone marks a
+// buffered tail as written and the wire write then fails, a dropped
+// turn is misclassified as a Stop, never buffered, and the entire
+// visible answer is lost.
+//
+// Reachable in production via the router's in-turn sink.Done(), which
+// runs inside Router.Prompt while the disconnect watcher is still armed
+// — not only via the handler's trailing defer.
+func TestCoalesce_DoneDoesNotClaimUnwrittenText(t *testing.T) {
+	s, fw := newFailableSink(t, sinkOpts{coalesce: time.Hour})
+	defer s.stop()
+	exhaustEagerWindow(s.o)
+
+	if err := s.Text("the whole answer"); err != nil {
+		t.Fatal(err)
+	}
+	if s.realWritten() {
+		t.Fatal("buffered text must not count as seen by the client")
+	}
+	// Transport drops before the terminal drain can land.
+	fw.fail.Store(true)
+	_ = s.Done()
+	if s.realWritten() {
+		t.Fatal("userDone claimed output the client never received — a dropped turn would be misclassified as a user Stop and never redriven")
+	}
+}
+
+// TestCoalesce_DoneMarksWrittenTail is the positive half of F1: when the
+// terminal drain DOES land, the client has seen output and realWritten
+// must say so (otherwise a genuine Stop would be absorbed and replayed).
+func TestCoalesce_DoneMarksWrittenTail(t *testing.T) {
+	s, rec := newTestSink(t, sinkOpts{coalesce: time.Hour})
+	defer s.stop()
+	exhaustEagerWindow(s.o)
+	if err := s.Text("tail"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Done(); err != nil {
+		t.Fatal(err)
+	}
+	if !s.realWritten() {
+		t.Fatal("drained tail landed on the wire but realWritten is false")
+	}
+	if body := renderBody(parseSSE(t, rec.Body.String())); body != "tail" {
+		t.Fatalf("body = %q, want %q", body, "tail")
 	}
 }
