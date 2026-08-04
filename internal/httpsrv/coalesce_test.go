@@ -708,3 +708,38 @@ func TestCoalesce_FirstChunkFlushesWithoutHeartbeat(t *testing.T) {
 		}
 	}
 }
+
+// TestHeartbeatDedupe_FailedWriteNotRecorded is the F5 guard: a
+// keepalive whose write FAILED never reached the screen, so it must not
+// suppress the next identical frame. Recording it would turn one
+// transient write error into seconds of silence on the stream that is
+// Poe's starvation keepalive.
+func TestHeartbeatDedupe_FailedWriteNotRecorded(t *testing.T) {
+	s, fw := newFailableSink(t, sinkOpts{spinnerStatic: true})
+	defer s.stop()
+	var tick int
+
+	fw.fail.Store(true)
+	if gate, err := s.o.hbFrame("> _Thinking..._"); !gate || err == nil {
+		t.Fatalf("want gate open + write error, got gate=%v err=%v", gate, err)
+	}
+	fw.fail.Store(false)
+	// The identical frame must now go out: nothing ever landed.
+	s.emitSpinnerFrame(&tick)
+	if got := fw.Body.String(); !strings.Contains(got, "replace_response") {
+		t.Fatalf("identical frame stayed suppressed after a failed write: %q", got)
+	}
+}
+
+// TestNextFlushDelay_RoundsToNearestMilli is the F6 guard: a timer that
+// fires a fraction of a millisecond early must not schedule a 1ms sleep
+// plus an empty no-op flush.
+func TestNextFlushDelay_RoundsToNearestMilli(t *testing.T) {
+	const period = 3 * time.Second
+	base := time.UnixMilli((1_700_000_000_000 / period.Milliseconds()) * period.Milliseconds())
+	for _, skew := range []time.Duration{-400 * time.Microsecond, 0, 400 * time.Microsecond} {
+		if d := nextFlushDelay(base.Add(skew), period, true); d != period {
+			t.Fatalf("skew=%s: delay = %s, want a full period", skew, d)
+		}
+	}
+}

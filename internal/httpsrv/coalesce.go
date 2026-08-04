@@ -65,6 +65,12 @@ const paragraphFlushMin = 200
 //
 // The returned delay is always > 0: landing exactly on a grid instant
 // yields a full period, never a zero-length timer that would spin.
+//
+// `now` is rounded to the nearest millisecond rather than truncated. A
+// timer that fires a fraction of a millisecond EARLY would otherwise
+// compute rem = ms-1 and schedule a 1ms sleep followed by an empty
+// no-op flush; rounding snaps it onto the grid instant it was aiming
+// for so the next deadline is a clean full period.
 func nextFlushDelay(now time.Time, period time.Duration, grid bool) time.Duration {
 	if !grid {
 		return period
@@ -75,7 +81,8 @@ func nextFlushDelay(now time.Time, period time.Duration, grid bool) time.Duratio
 		// the plain period so the caller still makes progress.
 		return period
 	}
-	rem := now.UnixMilli() % ms
+	nowMs := (now.UnixNano() + int64(time.Millisecond)/2) / int64(time.Millisecond)
+	rem := nowMs % ms
 	return time.Duration(ms-rem) * time.Millisecond
 }
 
