@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Battery-aware SSE flush coalescing** (config `defaults.coalesce_ms`,
+  default **0 = off**, current behaviour byte-for-byte). Radio energy on the
+  phone leg is dominated by how often the modem wakes, not by bytes, and a
+  frame every 20–100ms is the worst case: too frequent for LTE/5G cDRX
+  micro-sleep, too slow for efficient bulk transfer. When `coalesce_ms > 0`
+  the relay buffers outbound `text` and emits at most one frame per period.
+  Coalescing here is monotone (Poe cannot relay frames it was never given)
+  and the relay→Poe hop is wired, so nothing is traded away. Synthetic
+  2000-chunk / 60s answer: **2003 frames → 54 (37×)**.
+- **`defaults.coalesce_grid`** (default **true**): flush on a shared
+  wall-clock grid rather than per-stream timers, so several bots on several
+  hosts land in the SAME wake window instead of interleaving into a wake
+  every 750ms. No coordination protocol — the wall clock is the shared state.
+- **`defaults.spinner_animate`** (default **true** = current behaviour):
+  set `false` for a static spinner, which lets the new identical-frame
+  keepalive dedupe collapse the 1.5s heartbeat down to genuine state changes
+  plus a liveness floor (2× the stall threshold, min 10s).
+- **`FRAMESTATS conv=… text_frames=… replace_frames=… bytes_out=… dur=…`**
+  logged once per turn: frames-per-turn is the direct proxy for phone radio
+  wakeups, so the before/after ratio is the radio-wake ratio.
+
+### Changed
+
+- Heartbeat keepalive frames byte-identical to the frame already on screen
+  are now skipped (behaviourally invisible — the client would render exactly
+  what it is rendering), unless the spinner has been stripped in between or
+  the liveness floor has lapsed.
+
 ## [0.49.0] - 2026-08-04
 
 ### Added
