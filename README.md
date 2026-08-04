@@ -205,7 +205,8 @@ keep working.
     "thinking": "medium",
     "hide_thinking": true,
     "show_plans": true,
-    "show_tools": true
+    "show_tools": true,
+    "show_tool_details": true
   },
   "agent": {
     "profile": "fir"
@@ -238,8 +239,16 @@ keep working.
 - **`defaults.show_tools`** — emit one durable blockquote line per ACP
   `tool_call` (e.g. ``> `🔧 go test ./...` ``) so a tool-heavy turn
   leaves a readable trace of what the agent did. Omitted = built-in
-  default (`true`). Only the START of each call is recorded;
-  `tool_call_update` stays spinner-only.
+  default (`true`). By itself only the START of each call is recorded;
+  `show_tool_details` adds the rest.
+- **`defaults.show_tool_details`** — under each tool line, render the
+  tool call's `content` blocks (for a remote-exec tool: the host and the
+  full command) and, on the terminal `tool_call_update`, a
+  ``> `✓ <title>` ``/``> `✗ <title>` `` group with the result text.
+  Omitted = built-in default (`true`). Requires `show_tools`. Each
+  content block is bounded (12 lines / 800 chars, head and tail kept,
+  middle replaced by `… N lines elided …`) and rendered inside the tool
+  line's blockquote; non-terminal updates stay spinner-only.
 - **`agent.profile`** — reserved (today the relay only knows fir's
   `set_config_option` schema; multi-agent profile selection lands in a
   follow-up).
@@ -326,9 +335,11 @@ the config file.
   and redrive. `show_tools: false` restores the old window.
 - **Agent → Poe surface.** Agent-emitted attachments and thoughts
   (when `hide_thinking=true`) are not forwarded back to the Poe user;
-  `tool_call_update` is spinner-only. Beyond `AgentMessageChunk` text,
-  the SSE stream carries tool-call lines (`show_tools`) and the
-  transient plan checklist (`show_plans`).
+  non-terminal `tool_call_update` is spinner-only. Beyond
+  `AgentMessageChunk` text, the SSE stream carries tool-call lines
+  (`show_tools`), their bounded content/result detail
+  (`show_tool_details`) and the transient plan checklist
+  (`show_plans`).
 
 ## Tests
 

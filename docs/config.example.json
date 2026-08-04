@@ -5,7 +5,8 @@
     "thinking": "medium",
     "hide_thinking": true,
     "show_plans": true,
-    "show_tools": true
+    "show_tools": true,
+    "show_tool_details": true
   },
   "agent": {
     "profile": "fir"

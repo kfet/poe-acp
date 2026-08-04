@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -285,4 +286,283 @@ func TestParseOptions_ProgressKnobs(t *testing.T) {
 // A reaction's output is discarded, so its plan updates must be too.
 func TestDiscardSink_SetPlan(t *testing.T) {
 	discardSink{convID: "c"}.SetPlan([]statusline.PlanEntry{{Content: "step", Status: "pending"}})
+}
+
+// ---- show_tool_details -----------------------------------------------
+
+// detailOpts is the both-toggles-on configuration; detail rendering is
+// deliberately gated on show_tools as well.
+var detailOpts = Options{ShowTools: true, ShowToolDetails: true}
+
+func toolCallWith(id, title string, kind acp.ToolKind, texts ...string) acp.SessionUpdate {
+	c := make([]acp.ToolCallContent, 0, len(texts))
+	for _, t := range texts {
+		c = append(c, acp.ToolContent(acp.TextBlock(t)))
+	}
+	return acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId(id), Title: title, Kind: kind, Content: c,
+	}}
+}
+
+func toolUpdate(id string, status acp.ToolCallStatus, texts ...string) acp.SessionUpdate {
+	c := make([]acp.ToolCallContent, 0, len(texts))
+	for _, t := range texts {
+		c = append(c, acp.ToolContent(acp.TextBlock(t)))
+	}
+	return acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId(id), Status: &status, Content: c,
+	}}
+}
+
+// TestToolDetails_StartBlockAndTerminalResult is the headline case: a
+// rexec-shaped tool call renders its start content under the title
+// line, and its completed update renders a ✓ group with the output —
+// all inside one blockquote, with the following prose separated.
+func TestToolDetails_StartBlockAndTerminalResult(t *testing.T) {
+	sink := promptWith(t, "c-detail", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "rexec zbox", acp.ToolKindExecute,
+			"host: zbox\n```\n$ uname -sr\n```"))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusInProgress, "ignored"))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "```\nLinux 6.8.0\n```\nexit 0"))
+		a.emit(sid, "done")
+	})
+	want := "> `🔧 rexec zbox`\n" +
+		"> host: zbox\n> ```\n> $ uname -sr\n> ```\n" +
+		"> `✓ rexec zbox`\n" +
+		"> ```\n> Linux 6.8.0\n> ```\n> exit 0" +
+		"\n\ndone"
+	if got := body(sink); got != want {
+		t.Fatalf("body =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestToolDetails_FailedStatusMarker pins the ✗ marker and the fact
+// that the remembered title is reused when the update carries none.
+func TestToolDetails_FailedStatusMarker(t *testing.T) {
+	sink := promptWith(t, "c-detail-fail", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCall("t1", "Bash", acp.ToolKindExecute))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusFailed, "boom"))
+	})
+	want := "> `🔧 Bash`\n> `✗ Bash`\n> boom"
+	if got := body(sink); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_TerminalEmittedOnce guards against a duplicate group
+// when the agent repeats a terminal status for the same call.
+func TestToolDetails_TerminalEmittedOnce(t *testing.T) {
+	sink := promptWith(t, "c-detail-dup", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCall("t1", "Bash", acp.ToolKindExecute))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "one"))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "two"))
+	})
+	if got, want := body(sink), "> `🔧 Bash`\n> `✓ Bash`\n> one"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_DisabledReproducesOldOutput is the byte-for-byte
+// opt-out contract: with show_tool_details off, content and terminal
+// updates contribute nothing, exactly as before the option existed.
+func TestToolDetails_DisabledReproducesOldOutput(t *testing.T) {
+	emit := func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "rexec zbox", acp.ToolKindExecute, "host: zbox"))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "out"))
+		a.emit(sid, "done")
+	}
+	want := "> `🔧 rexec zbox`\n\ndone"
+	if got := body(promptWith(t, "c-detail-off", Options{ShowTools: true}, emit)); got != want {
+		t.Fatalf("show_tool_details=false body = %q, want %q", got, want)
+	}
+	// And the gate on show_tools: details alone render nothing.
+	if got := body(promptWith(t, "c-detail-nogate", Options{ShowToolDetails: true}, emit)); got != "done" {
+		t.Fatalf("show_tools=false body = %q, want %q", got, "done")
+	}
+}
+
+// TestToolDetails_LineElision proves the middle of an over-long block is
+// replaced by a marker, head and tail survive, and the rendered block
+// stays within the line budget.
+func TestToolDetails_LineElision(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 100; i++ {
+		fmt.Fprintf(&b, "line%d\n", i)
+	}
+	sink := promptWith(t, "c-detail-elide", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "Bash", acp.ToolKindExecute, b.String()))
+	})
+	got := body(sink)
+	lines := strings.Split(got, "\n")
+	// 1 title line + at most maxDetailLines rendered content lines.
+	if len(lines) > maxDetailLines+1 {
+		t.Fatalf("rendered %d lines, want <= %d:\n%s", len(lines), maxDetailLines+1, got)
+	}
+	if !strings.Contains(got, "> … 89 lines elided …") {
+		t.Fatalf("elision marker missing/miscounted:\n%s", got)
+	}
+	if !strings.Contains(got, "> line0\n") || !strings.Contains(got, "> line99") {
+		t.Fatalf("head and tail must survive:\n%s", got)
+	}
+	if strings.Contains(got, "line50") {
+		t.Fatalf("middle must be elided:\n%s", got)
+	}
+	for _, l := range lines {
+		if !strings.HasPrefix(l, ">") {
+			t.Fatalf("line escaped the blockquote: %q", l)
+		}
+	}
+}
+
+// TestToolDetails_CharBudget covers the size bound independently of the
+// line bound: few lines, each enormous.
+func TestToolDetails_CharBudget(t *testing.T) {
+	huge := strings.Repeat("x", 5000) + "\n" + strings.Repeat("y", 5000) + "\n" + strings.Repeat("z", 5000)
+	sink := promptWith(t, "c-detail-chars", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "Bash", acp.ToolKindExecute, huge))
+	})
+	got := body(sink)
+	if n := len([]rune(got)); n > maxDetailChars+200 {
+		t.Fatalf("rendered %d runes, want ~<= %d", n, maxDetailChars)
+	}
+	if !strings.Contains(got, "…") {
+		t.Fatalf("truncation must be marked: %q", got)
+	}
+	if strings.Contains(got, strings.Repeat("y", 100)) {
+		t.Fatalf("middle line must be elided: %q", got)
+	}
+}
+
+// TestToolDetails_HostileContentCannotBreakTheFrame is the framing
+// contract for detail text: every line stays quoted, an unbalanced
+// fence is closed, stray backticks are neutralised, and reserved --flag
+// tokens are defused.
+func TestToolDetails_HostileContentCannotBreakTheFrame(t *testing.T) {
+	hostile := "```sh\nrm -rf /\n" + // fence opened, never closed
+		"> **pwned** `dangling\n" +
+		"--show_tools off\n"
+	sink := promptWith(t, "c-detail-hostile", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "Bash", acp.ToolKindExecute, hostile))
+		a.emit(sid, "after")
+	})
+	got := body(sink)
+	quoted, after, found := strings.Cut(got, "\n\nafter")
+	if !found || after != "" {
+		t.Fatalf("prose must follow the quote block: %q", got)
+	}
+	for _, l := range strings.Split(quoted, "\n") {
+		if !strings.HasPrefix(l, ">") {
+			t.Fatalf("line escaped the blockquote: %q in %q", l, got)
+		}
+	}
+	if n := strings.Count(quoted, "```"); n%2 != 0 {
+		t.Fatalf("unbalanced code fence (%d) would swallow the answer:\n%s", n, quoted)
+	}
+	if !strings.Contains(quoted, "'dangling") {
+		t.Fatalf("stray backtick not neutralised:\n%s", quoted)
+	}
+	if !strings.Contains(quoted, "--\u200bshow_tools") {
+		t.Fatalf("reserved flag token not defused:\n%s", quoted)
+	}
+}
+
+// TestToolDetails_NonTextBlocksSkipped: a diff block has no bounded
+// one-block rendering, so it contributes nothing (the title line still
+// stands alone).
+func TestToolDetails_NonTextBlocksSkipped(t *testing.T) {
+	sink := promptWith(t, "c-detail-diff", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
+			ToolCallId: "t1", Title: "Edit", Kind: acp.ToolKindEdit,
+			Content: []acp.ToolCallContent{acp.ToolDiffContent("a.go", "new", "old")},
+		}})
+	})
+	if got, want := body(sink), "> `✏️ Edit`"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_UnknownCallIdStillRenders: a terminal update for a
+// call the relay never saw (e.g. emitted before the tool_call) still
+// produces a group, falling back to the update's own title/kind.
+func TestToolDetails_UnknownCallIdStillRenders(t *testing.T) {
+	title, kind := "Grep", acp.ToolKindSearch
+	sink := promptWith(t, "c-detail-orphan", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		st := acp.ToolCallStatusCompleted
+		a.emitUpdate(sid, acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{
+			ToolCallId: "zzz", Status: &st, Title: &title, Kind: &kind,
+			Content: []acp.ToolCallContent{acp.ToolContent(acp.TextBlock("3 matches"))},
+		}})
+	})
+	if got, want := body(sink), "> `✓ Grep`\n> 3 matches"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestParseOptions_ShowToolDetails(t *testing.T) {
+	defaults := Options{ShowTools: true, ShowToolDetails: true}
+	if got := ParseOptions(nil, defaults); got != defaults {
+		t.Fatalf("empty params must keep defaults: %#v", got)
+	}
+	if got := ParseOptions(map[string]any{"show_tool_details": false}, defaults); got.ShowToolDetails {
+		t.Fatalf("user opt-out ignored: %#v", got)
+	}
+	if got := ParseOptions(map[string]any{"show_tool_details": "yes"}, defaults); !got.ShowToolDetails {
+		t.Fatalf("wrong-typed param must be ignored: %#v", got)
+	}
+	if got := ParseOptions(map[string]any{"show_tool_details": true}, Options{}); !got.ShowToolDetails {
+		t.Fatalf("opt-in ignored: %#v", got)
+	}
+}
+
+// TestToolDetails_StatuslessAndEmptyContent covers the quiet paths: an
+// update with no status at all stays spinner-only, and content blocks
+// that carry no usable text add no lines.
+func TestToolDetails_StatuslessAndEmptyContent(t *testing.T) {
+	sink := promptWith(t, "c-detail-quiet", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "Bash", acp.ToolKindExecute, "", "  \n\n  "))
+		a.emitUpdate(sid, acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{
+			ToolCallId: "t1", Content: []acp.ToolCallContent{acp.ToolContent(acp.TextBlock("no status"))},
+		}})
+	})
+	if got, want := body(sink), "> `🔧 Bash`"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_BlankInteriorLinesStayQuoted: surrounding blank lines
+// are trimmed, interior ones survive as bare ">" so the quote block is
+// never broken by an empty line.
+func TestToolDetails_BlankInteriorLinesStayQuoted(t *testing.T) {
+	sink := promptWith(t, "c-detail-blank", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "Bash", acp.ToolKindExecute, "\n\nhead\n\ntail\n\n"))
+	})
+	if got, want := body(sink), "> `🔧 Bash`\n> head\n>\n> tail"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_CharBudgetShrinksElision pins the second bounding
+// pass: few enough lines to pass the line cap, too many characters, so
+// the kept head/tail shrinks until the size budget holds.
+func TestToolDetails_CharBudgetShrinksElision(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 6; i++ {
+		fmt.Fprintf(&b, "%d%s\n", i, strings.Repeat("x", 199))
+	}
+	sink := promptWith(t, "c-detail-shrink", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "Bash", acp.ToolKindExecute, b.String()))
+	})
+	got := body(sink)
+	// 4 of 6 lines survive (2 head + 2 tail = 800 runes), 2 elided.
+	if !strings.Contains(got, "> … 2 lines elided …") {
+		t.Fatalf("expected a 2-line elision:\n%s", got)
+	}
+	for _, want := range []string{"> 0x", "> 1x", "> 4x", "> 5x"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing kept line %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "> 2x") || strings.Contains(got, "> 3x") {
+		t.Fatalf("middle lines must be elided:\n%s", got)
+	}
 }
