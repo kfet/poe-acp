@@ -206,7 +206,10 @@ keep working.
     "hide_thinking": true,
     "show_plans": true,
     "show_tools": true,
-    "show_tool_details": true
+    "show_tool_details": true,
+    "coalesce_ms": 0,
+    "coalesce_grid": true,
+    "spinner_animate": true
   },
   "agent": {
     "profile": "fir"
@@ -249,6 +252,38 @@ keep working.
   content block is bounded (12 lines / 800 chars, head and tail kept,
   middle replaced by `… N lines elided …`) and rendered inside the tool
   line's blockquote; non-terminal updates stay spinner-only.
+- **`defaults.coalesce_ms`** — outbound SSE flush coalescing, in
+  milliseconds. `0` (default) = today's behaviour: one `text` frame per
+  agent chunk. When `> 0` the relay buffers text and emits at most one
+  frame per period. This is a **battery** knob: on the phone leg the
+  radio's energy is dominated by how often the modem wakes, not by
+  bytes, and a frame every 20–100ms is the worst case — too frequent
+  for LTE/5G cDRX micro-sleep (which needs ~100–320ms of quiet), too
+  slow to be an efficient bulk transfer. Coalescing here is monotone:
+  Poe cannot relay frames it was never given. The relay→Poe hop is
+  wired, so nothing is traded away. `3000` is the recommended first
+  rollout value. The opening ~30 chunks (or first 1.5s) of every turn
+  still stream 1:1 so the answer starts instantly and Poe's cold-start
+  drop is never reintroduced, and a paragraph break in a non-trivial
+  buffer flushes early because paragraph-at-a-time reads better than
+  token jitter.
+- **`defaults.coalesce_grid`** — align flushes to absolute wall-clock
+  instants (multiples of `coalesce_ms` since the epoch) instead of a
+  per-stream timer. Omitted = built-in default (`true`). This matters
+  the moment you run more than one bot: four streams each coalescing on
+  their own 3s timer produce a wake roughly every 750ms and cDRX still
+  never engages. The wall clock is shared state needing no coordination
+  protocol, so every stream on every host lands in the same wake
+  window. Only has effect when `coalesce_ms > 0`.
+- **`defaults.spinner_animate`** — animate the keepalive spinner's
+  dots. Omitted = built-in default (`true` = today's behaviour). The
+  animation changes the frame payload every tick, which by construction
+  defeats the relay's identical-frame dedupe (and any coalescing Poe's
+  own servers might do). Set to `false` and the keepalive collapses to
+  genuine state changes only — plan changed, tool started, new content
+  — plus a liveness floor (`2 ×` the stall threshold, min 10s) that
+  re-sends an identical frame purely so Poe does not
+  content-starvation-drop a long tool call.
 - **`agent.profile`** — reserved (today the relay only knows fir's
   `set_config_option` schema; multi-agent profile selection lands in a
   follow-up).
@@ -333,6 +368,12 @@ the config file.
   it flips the disconnect gate (below) early: a client drop after it is
   treated as a user Stop, not as a pre-output transport drop to absorb
   and redrive. `show_tools: false` restores the old window.
+- **Frame accounting.** Every turn logs one
+  `FRAMESTATS conv=… text_frames=… replace_frames=… bytes_out=… dur=…`
+  line. Frames-per-turn is a direct proxy for the phone's radio wakeups,
+  so the before/after ratio when enabling `coalesce_ms` IS the
+  radio-wake ratio. A synthetic 2000-chunk / 60s answer goes from 2003
+  frames to 54 (37×) at `coalesce_ms: 3000` with a static spinner.
 - **Agent → Poe surface.** Agent-emitted attachments and thoughts
   (when `hide_thinking=true`) are not forwarded back to the Poe user;
   non-terminal `tool_call_update` is spinner-only. Beyond
