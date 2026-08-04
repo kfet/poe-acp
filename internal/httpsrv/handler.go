@@ -609,12 +609,17 @@ type orderedWriter struct {
 	// buffered chunk can never be overtaken and the turn's final visible
 	// text is byte-identical to the un-coalesced stream.
 	pending strings.Builder
-	// chunks counts text chunks seen this turn; with turnStart it bounds
-	// the eager first-flush window (see eagerFlushChunks).
+	// chunks counts text chunks seen this turn; with eagerStart it
+	// bounds the eager first-flush window (see eagerFlushChunks).
 	chunks int
-	// turnStart is when this writer was created — the origin of the
-	// eager first-flush window.
-	turnStart time.Time
+	// eagerStart is when the FIRST chunk of the turn arrived — the
+	// origin of the eager first-flush window. Deliberately NOT the
+	// writer's construction time: time-to-first-token for an agent bot
+	// (session resume, model latency, a tool call before any prose)
+	// routinely exceeds the whole window, so anchoring at query arrival
+	// would leave the window already expired when chunk #1 lands and
+	// every real turn would get zero eager frames.
+	eagerStart time.Time
 
 	// lastHB is the body of the most recent heartbeat frame actually
 	// written, and lastHBAt when it went out. An identical body is
@@ -721,14 +726,25 @@ func (o *orderedWriter) flush() error {
 // shouldFlushLocked decides whether the just-buffered text must go out
 // now rather than waiting for the grid tick. Caller holds mu.
 //
-//   - Eager first flush: the opening chunks of a turn stream 1:1 so the
-//     cold-start content-starvation window stays closed (see
-//     eagerFlushChunks) and the answer still *feels* immediate.
-//   - Paragraph boundary: a non-trivial buffer ending a paragraph is
-//     worth one extra wake because it reads far better than token
-//     jitter (see paragraphFlushMin).
+//   - First chunk of the turn: ALWAYS written straight through,
+//     unconditionally. Poe drops a new-conversation connection that sees
+//     only the preamble + `meta` and no content event, and with the
+//     heartbeat disabled (-heartbeat-interval 0, a supported config) the
+//     spinner's tick #0 is not there to close that window. Flushing
+//     chunk #1 makes the cold-start guarantee independent of the
+//     heartbeat entirely, which is the property worth having.
+//   - Eager first flush: the opening chunks stream 1:1 so the answer
+//     still starts instantly (see eagerFlushChunks). The window is
+//     measured from the FIRST CHUNK, not from query arrival — see
+//     eagerStart.
+//   - Paragraph boundary: a non-trivial buffer holding a paragraph
+//     break is worth one extra wake because it reads far better than
+//     token jitter (see paragraphFlushMin).
 func (o *orderedWriter) shouldFlushLocked() bool {
-	if o.chunks <= eagerFlushChunks && time.Since(o.turnStart) < eagerFlushWindow {
+	if o.chunks == 1 {
+		return true
+	}
+	if o.chunks <= eagerFlushChunks && time.Since(o.eagerStart) < eagerFlushWindow {
 		return true
 	}
 	return o.pending.Len() > paragraphFlushMin && strings.Contains(o.pending.String(), "\n\n")
@@ -759,6 +775,11 @@ func (o *orderedWriter) userText(s string) error {
 	if o.coalesce > 0 {
 		o.pending.WriteString(s)
 		o.chunks++
+		if o.chunks == 1 {
+			// Latch the eager window's origin on real content, not on
+			// query arrival (see eagerStart).
+			o.eagerStart = time.Now()
+		}
 		flushNow := o.shouldFlushLocked()
 		o.mu.Unlock()
 		if flushNow {
@@ -1120,10 +1141,9 @@ func hbDedupeFloor(stall time.Duration) time.Duration {
 func newSinkOpts(w *poeproto.SSEWriter, opts sinkOpts) *sink {
 	s := &sink{
 		o: &orderedWriter{
-			w:         w,
-			coalesce:  opts.coalesce,
-			turnStart: time.Now(),
-			hbFloor:   hbDedupeFloor(opts.stall),
+			w:        w,
+			coalesce: opts.coalesce,
+			hbFloor:  hbDedupeFloor(opts.stall),
 		},
 		stall:         opts.stall,
 		hbDone:        make(chan struct{}),
