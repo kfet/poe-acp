@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -149,5 +150,55 @@ func TestLoad_PoeMCP(t *testing.T) {
 	}
 	if !cfg.PoeMCP {
 		t.Errorf("poe_mcp: %v", cfg.PoeMCP)
+	}
+}
+
+// TestDefaults_Stream pins the nil-means-default resolution of the
+// stream-shaping knobs. A zero Defaults MUST resolve to today's
+// behaviour — no coalescing, animated spinner — so an existing config
+// file changes nothing.
+func TestDefaults_Stream(t *testing.T) {
+	t.Parallel()
+	zero := Defaults{}.Stream()
+	if zero.CoalesceInterval != 0 {
+		t.Errorf("zero config enabled coalescing: %s", zero.CoalesceInterval)
+	}
+	if !zero.CoalesceGrid || !zero.SpinnerAnimate {
+		t.Errorf("zero config = %+v, want grid+animate defaults", zero)
+	}
+
+	on := Defaults{CoalesceMs: 3000}.Stream()
+	if on.CoalesceInterval != 3*time.Second || !on.CoalesceGrid {
+		t.Errorf("coalesce_ms=3000 → %+v", on)
+	}
+
+	off := Defaults{
+		CoalesceMs:     1000,
+		CoalesceGrid:   boolPtr(false),
+		SpinnerAnimate: boolPtr(false),
+	}.Stream()
+	if off.CoalesceInterval != time.Second || off.CoalesceGrid || off.SpinnerAnimate {
+		t.Errorf("explicit opt-outs → %+v", off)
+	}
+}
+
+func TestLoad_StreamKnobs(t *testing.T) {
+	t.Parallel()
+	p := writeFile(t, `{"defaults":{"coalesce_ms":3000,"coalesce_grid":false,"spinner_animate":false}}`)
+	cfg, ok, err := Load(p)
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	s := cfg.Defaults.Stream()
+	if s.CoalesceInterval != 3*time.Second || s.CoalesceGrid || s.SpinnerAnimate {
+		t.Fatalf("resolved %+v", s)
+	}
+}
+
+func TestValidate_NegativeCoalesceMs(t *testing.T) {
+	t.Parallel()
+	err := Config{Defaults: Defaults{CoalesceMs: -1}}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "coalesce_ms") {
+		t.Fatalf("want a coalesce_ms error, got %v", err)
 	}
 }
