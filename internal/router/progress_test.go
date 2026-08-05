@@ -731,3 +731,47 @@ func TestToolDetails_DisabledUnaffectedByDedupe(t *testing.T) {
 		t.Fatalf("show_tool_details=false body = %q, want %q", got, want)
 	}
 }
+
+// TestToolDetails_OrphanTerminalRendersOnce: a terminal update for a
+// call whose tool_call never arrived is still gated once-only. Without
+// the gate the echo would render a SECOND group directly under the
+// first — and being "adjacent" to itself, as a bare unlabelled marker.
+func TestToolDetails_OrphanTerminalRendersOnce(t *testing.T) {
+	sink := promptWith(t, "c-orphan-echo", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolUpdate("zzz", acp.ToolCallStatusCompleted, "3 matches"))
+		a.emitUpdate(sid, toolUpdate("zzz", acp.ToolCallStatusCompleted, "3 matches"))
+	})
+	if got, want := body(sink), "> `✓ tool`\n> 3 matches"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_FailedAfterSilentSuccess: suppression records nothing
+// — not even "terminal seen" — so a failure that follows a silent
+// success for the same call is still loud. Suppressing output must
+// never be able to swallow a failure.
+func TestToolDetails_FailedAfterSilentSuccess(t *testing.T) {
+	sink := promptWith(t, "c-silent-then-fail", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCall("t1", "Bash", acp.ToolKindExecute))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusFailed, "boom"))
+	})
+	if got, want := body(sink), "> `🔧 Bash`\n> `✗`\n> boom"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_ResultOnLaterUpdateStillLands: same reason — a
+// completed update carrying no content does not consume the call's one
+// terminal group, so the result arriving on a second update renders.
+func TestToolDetails_ResultOnLaterUpdateStillLands(t *testing.T) {
+	sink := promptWith(t, "c-late-result", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCall("t1", "Bash", acp.ToolKindExecute))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "out"))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "out"))
+	})
+	if got, want := body(sink), "> `🔧 Bash`\n> `✓`\n> out"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
