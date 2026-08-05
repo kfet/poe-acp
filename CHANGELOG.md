@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-08-05
+
 ### Changed
 
 - **Tool detail rendering no longer repeats itself.** With `show_tools` +
