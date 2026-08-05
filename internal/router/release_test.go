@@ -280,3 +280,30 @@ func TestRouter_PromptRecoveryBounded(t *testing.T) {
 		t.Fatalf("prompt attempts = %d, want exactly 2 (original + one bounded retry)", got)
 	}
 }
+
+// TestRouter_QueueIdleWhenPromptReturns pins the release ordering inside
+// runOneTurn: the turn is marked no-longer-in-flight BEFORE the caller
+// is released, so a gcOnce (or any idle() check) racing a just-returned
+// Prompt cannot see a phantom in-flight turn and skip the session.
+func TestRouter_QueueIdleWhenPromptReturns(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	r, err := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	st := r.sessions["c1"]
+	r.mu.Unlock()
+	if st == nil {
+		t.Fatal("session missing after Prompt")
+	}
+	if !st.queue.idle() {
+		t.Fatal("queue still in flight after Prompt returned: eviction would be skipped")
+	}
+}
