@@ -31,9 +31,10 @@ investigate a bug, ship a release, anything open-ended.
 2. **Write a brief**: goal, repo/branch, constraints, definition of done, what
    to report back. Specify the outcome, not the keystrokes — the agent knows
    how to use its own tools.
-3. **Consider a different model** for the agent than the one you are running,
-   especially for review, second opinions, or when your own first attempt
-   stalled.
+3. **Let the agent run on its own config.** It brings its own provider, model
+   and advisor. When the task needs a stronger or different mind — review,
+   second opinions, a stall — say so in the brief and tell it to escalate to
+   its advisor, rather than forcing a model on it. See spend, below.
 4. **Launch it detached**, so a dead turn kills only your reporting, never the
    work. Put its output somewhere you can read later.
 5. **Steer it.** This is the part that earns the delegation. Check in, read what
@@ -46,6 +47,53 @@ investigate a bug, ship a release, anything open-ended.
 7. **Verify before you claim success.** Read the final output *and* the real
    artifact — binary, test run, deployed service. An agent saying "done" is a
    claim, not evidence.
+
+## Spending is a deliberate choice, never a default
+
+Paid credit is a genuinely useful resource and it is **finite and shared**.
+Spending it is fine. Spending it *by accident* is not.
+
+Before you launch an agent, make the choice out loud — one line — on three axes:
+
+- **Provider.** Which pool pays for this, and is that the right pool? A flat
+  subscription is free at the margin; reach for it first. Metered pools
+  (per-token API keys, Poe points) are for when you actually need something
+  the subscription cannot give you.
+- **Tier.** Never hand an open-ended, multi-turn, autonomous task to a
+  top-tier reasoning model (`-pro`, `-max`, and friends). Those cost dollars
+  *per turn* and an unattended agent will happily take fifty of them. They
+  are for a single, tightly-framed question — not for a work loop.
+- **Blast radius.** Long-running + unattended + metered + top tier is the
+  failure mode. Break at least one of those four.
+
+**Do not force a model on the agent you spawn.** Launch it on its own
+default — the agent you spawn has its own provider and its own configured
+advisor, and that configuration is deliberate. When the task genuinely needs
+a stronger or different mind — adversarial review, a second opinion, an
+architectural call, a stall — say so *in the brief*: tell it to **escalate to
+its advisor** (`aside` with `escalate=true`) for that specific judgement.
+That gets you the model diversity you were after, scoped to the question that
+needs it, and priced accordingly — instead of paying premium rates for the
+agent's every `ls`.
+
+Override the model only when you have a concrete reason the default cannot
+work, and say what that reason is.
+
+**Precedent:** wanting a non-Claude adversarial reviewer, a relay spawned a
+top-tier `-pro` model as the *whole reviewer agent* and left it unattended on
+a poll loop for ~30 minutes. It burned ~$15 and drained the account to
+`402 insufficient_quota` before finishing. The cross-family instinct was
+right; buying it by the turn, for every turn, was not.
+
+Practical rules:
+
+- **Check in early** on anything metered — first check-in within a few
+  minutes, not after a 25-poll `wait`. An agent that is looping is burning.
+- If a provider key is missing, do **not** silently fall through to the most
+  expensive available one. Say what is missing and choose consciously.
+- **Say what you are spending.** When you do launch on a metered provider,
+  tell the user in the same message: provider, model, why not the default.
+  One line. If you cannot justify it in one line, it is the wrong choice.
 
 ## Notes
 
