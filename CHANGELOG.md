@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.50.1] - 2026-08-05
+
+### Changed
+
+- **`delegate` skill: spend is now an explicit, deliberate decision.** New
+  "Spending is a deliberate choice, never a default" section: pick the
+  provider pool consciously (flat subscription first, metered pools only for
+  what they uniquely offer), never hand an open-ended autonomous task to a
+  top-tier `-pro`/`-max` model, and watch the blast radius of
+  long-running + unattended + metered + top tier. Step 3 now says to launch
+  spawned agents on **their own** provider/model/advisor config and, when the
+  task needs a stronger mind, to instruct them in the brief to escalate to
+  their advisor — instead of forcing an expensive model on the whole agent.
+  Also: check in early on metered runs, never silently fall through to the
+  priciest available key, and state provider/model/why in chat when spending.
+
 ## [0.50.0] - 2026-08-05
 
 ### Added
