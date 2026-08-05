@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Tool detail rendering no longer repeats itself.** With `show_tools` +
+  `show_tool_details` a single tool call used to render the same text up to
+  three times. Three unconditional reductions: the terminal `✓`/`✗` marker
+  drops its label when it is adjacent to its own start line (parallel calls or
+  intervening text keep the full label); content blocks already shown at start
+  time are not repeated in the result group; and a `completed` call with
+  nothing left to say emits nothing at all. `failed` always renders. A
+  synthetic tool-heavy turn shrank from 1694 to 915 body bytes (-46%), paid on
+  every `replace_response` keepalive.
+
+### Fixed
+
+- A terminal `tool_call_update` for a call whose `tool_call` never arrived is
+  now gated once-only, like any other call — an echoed update no longer
+  renders a second result group.
+- Session eviction no longer races a just-finished turn: `Prompt` returning
+  now guarantees the queue reports idle, so `gcOnce` cannot skip an
+  evictable session (`finishInFlight` moved ahead of the caller's release).
+
 ## [0.50.1] - 2026-08-05
 
 ### Changed
