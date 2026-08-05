@@ -54,6 +54,35 @@ type toolState struct {
 	title string
 	kind  acp.ToolKind
 	done  bool // terminal group already emitted
+	// seen holds the rendered form of every content block already
+	// emitted for THIS call, so the terminal update can drop blocks
+	// that merely repeat the start block (a remote-exec tool echoes
+	// the command in both). Keyed per call: two different calls that
+	// happen to render identically both keep their content.
+	seen map[string]struct{}
+}
+
+// markSeen records rendered blocks as already emitted for this call.
+func (st *toolState) markSeen(blocks []string) {
+	if st.seen == nil {
+		st.seen = make(map[string]struct{}, len(blocks))
+	}
+	for _, b := range blocks {
+		st.seen[b] = struct{}{}
+	}
+}
+
+// dropSeen returns blocks minus any whose rendered form was already
+// emitted for this call.
+func (st *toolState) dropSeen(blocks []string) []string {
+	out := blocks[:0:0]
+	for _, b := range blocks {
+		if _, dup := st.seen[b]; dup {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // newToolStates allocates the per-turn correlation map, or nil when
@@ -76,19 +105,39 @@ func (td *turnDef) rememberTool(id acp.ToolCallId, title string, kind acp.ToolKi
 // emitToolDetail appends a tool call's content blocks as continuation
 // lines of the blockquote emitTools opened. Called immediately after
 // emitToolLine, so chunkMode/first are already correct and no separator
-// beyond a single newline is needed.
-func emitToolDetail(td *turnDef, content []acp.ToolCallContent) {
-	lines := detailLines(content)
-	if len(lines) == 0 {
+// beyond a single newline is needed. Every block it renders is recorded
+// on the call's toolState so the terminal update can skip repeats.
+func emitToolDetail(td *turnDef, id acp.ToolCallId, content []acp.ToolCallContent) {
+	blocks := detailBlocks(content)
+	if len(blocks) == 0 {
 		return
 	}
-	_ = td.sink.Text(poeproto.EscapeReservedFlags("\n" + strings.Join(lines, "\n")))
+	if st := td.tools[id]; st != nil {
+		st.markSeen(blocks)
+	}
+	_ = td.sink.Text(poeproto.EscapeReservedFlags("\n" + strings.Join(blocks, "\n")))
 }
 
-// emitToolResult renders the completion of a tool call: a status marker
-// with the remembered title, followed by the update's content. Only
-// TERMINAL statuses (completed/failed) produce output — everything else
-// stays spinner-only, exactly as before this option existed.
+// emitToolResult renders the completion of a tool call: a status marker,
+// the remembered title when it is not obvious from context, and the
+// update's content. Only TERMINAL statuses (completed/failed) produce
+// output — everything else stays spinner-only, exactly as before this
+// option existed.
+//
+// Three reductions apply, all unconditional:
+//
+//   - Adjacency. When this call's own start line was the most recent
+//     durable tool write and nothing landed in between, the label is
+//     dropped: the marker sits directly under the line it completes, so
+//     repeating the title says nothing. Parallel calls are routine, so
+//     ANY intervening write (another tool's line or group, message or
+//     thought text) restores the full label — an unlabelled marker must
+//     never be ambiguous.
+//   - Content dedupe. Blocks already rendered at start time for THIS
+//     call are dropped (see toolState.seen).
+//   - Silent success. A `completed` update with nothing left to render
+//     emits nothing at all: the start line already recorded the call.
+//     `failed` ALWAYS renders — failures must be loud.
 func emitToolResult(td *turnDef, first *bool, chunkMode *chunkKind, u *acp.SessionToolCallUpdate) {
 	if u.Status == nil {
 		return
@@ -106,7 +155,8 @@ func emitToolResult(td *turnDef, first *bool, chunkMode *chunkKind, u *acp.Sessi
 		title string
 		kind  acp.ToolKind
 	)
-	if st := td.tools[u.ToolCallId]; st != nil {
+	st := td.tools[u.ToolCallId]
+	if st != nil {
 		if st.done {
 			// A tool call may report terminal state more than once
 			// (status echoed on a later content update). One group.
@@ -121,27 +171,48 @@ func emitToolResult(td *turnDef, first *bool, chunkMode *chunkKind, u *acp.Sessi
 	if u.Kind != nil && *u.Kind != "" {
 		kind = *u.Kind
 	}
-	label := toolLineLabel(title, kind)
+
+	blocks := detailBlocks(u.Content)
+	if st != nil {
+		blocks = st.dropSeen(blocks)
+	}
+	if *u.Status == acp.ToolCallStatusCompleted && len(blocks) == 0 {
+		// Silent success: the start line stands as the whole record.
+		// Nothing is written, so the stream position (chunkMode, the
+		// adjacency memory, the blockquote framing) is left untouched.
+		return
+	}
+
+	// Read the adjacency memory BEFORE openToolBlock mutates chunkMode.
+	head := "> `" + marker + "`"
+	if !td.toolAdjacent(u.ToolCallId, *chunkMode) {
+		head = "> `" + marker + " " + strings.ReplaceAll(toolLineLabel(title, kind), "`", "'") + "`"
+	}
 
 	prefix := openToolBlock(td, first, chunkMode)
-	out := prefix + "> `" + marker + " " + strings.ReplaceAll(label, "`", "'") + "`"
-	if lines := detailLines(u.Content); len(lines) > 0 {
-		out += "\n" + strings.Join(lines, "\n")
+	out := prefix + head
+	if len(blocks) > 0 {
+		out += "\n" + strings.Join(blocks, "\n")
 	}
+	td.markToolWrite(u.ToolCallId)
 	_ = td.sink.Text(poeproto.EscapeReservedFlags(out))
 }
 
-// detailLines renders the text content blocks of a tool call into
-// blockquote-prefixed, bounded, framing-safe lines. Non-text variants
-// (diff, terminal, images) are skipped: they have no compact one-block
-// rendering that survives the bounding rules.
-func detailLines(content []acp.ToolCallContent) []string {
+// detailBlocks renders the text content blocks of a tool call, one
+// joined blockquote-prefixed string per block: bounded, framing-safe.
+// Blocks stay separate (rather than one flat line list) because dedupe
+// is per block. Non-text variants (diff, terminal, images) are skipped:
+// they have no compact one-block rendering that survives the bounding
+// rules.
+func detailBlocks(content []acp.ToolCallContent) []string {
 	var out []string
 	for _, c := range content {
 		if c.Content == nil || c.Content.Content.Text == nil {
 			continue
 		}
-		out = append(out, quoteDetailBlock(c.Content.Content.Text.Text)...)
+		if lines := quoteDetailBlock(c.Content.Content.Text.Text); len(lines) > 0 {
+			out = append(out, strings.Join(lines, "\n"))
+		}
 	}
 	return out
 }
