@@ -317,7 +317,9 @@ func toolUpdate(id string, status acp.ToolCallStatus, texts ...string) acp.Sessi
 // TestToolDetails_StartBlockAndTerminalResult is the headline case: a
 // rexec-shaped tool call renders its start content under the title
 // line, and its completed update renders a ✓ group with the output —
-// all inside one blockquote, with the following prose separated.
+// all inside one blockquote, with the following prose separated. The
+// terminal marker carries NO label: it sits directly under the start
+// line of the same call.
 func TestToolDetails_StartBlockAndTerminalResult(t *testing.T) {
 	sink := promptWith(t, "c-detail", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
 		a.emitUpdate(sid, toolCallWith("t1", "rexec zbox", acp.ToolKindExecute,
@@ -328,7 +330,7 @@ func TestToolDetails_StartBlockAndTerminalResult(t *testing.T) {
 	})
 	want := "> `🔧 rexec zbox`\n" +
 		"> host: zbox\n> ```\n> $ uname -sr\n> ```\n" +
-		"> `✓ rexec zbox`\n" +
+		"> `✓`\n" +
 		"> ```\n> Linux 6.8.0\n> ```\n> exit 0" +
 		"\n\ndone"
 	if got := body(sink); got != want {
@@ -336,14 +338,16 @@ func TestToolDetails_StartBlockAndTerminalResult(t *testing.T) {
 	}
 }
 
-// TestToolDetails_FailedStatusMarker pins the ✗ marker and the fact
-// that the remembered title is reused when the update carries none.
+// TestToolDetails_FailedStatusMarker pins the ✗ marker and the error
+// content. The label is dropped because the group is adjacent to its
+// own start line (see TestToolDetails_LabelKeptWhenInterleaved for the
+// remembered-title path).
 func TestToolDetails_FailedStatusMarker(t *testing.T) {
 	sink := promptWith(t, "c-detail-fail", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
 		a.emitUpdate(sid, toolCall("t1", "Bash", acp.ToolKindExecute))
 		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusFailed, "boom"))
 	})
-	want := "> `🔧 Bash`\n> `✗ Bash`\n> boom"
+	want := "> `🔧 Bash`\n> `✗`\n> boom"
 	if got := body(sink); got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
@@ -357,7 +361,7 @@ func TestToolDetails_TerminalEmittedOnce(t *testing.T) {
 		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "one"))
 		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "two"))
 	})
-	if got, want := body(sink), "> `🔧 Bash`\n> `✓ Bash`\n> one"; got != want {
+	if got, want := body(sink), "> `🔧 Bash`\n> `✓`\n> one"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
 }
@@ -564,5 +568,166 @@ func TestToolDetails_CharBudgetShrinksElision(t *testing.T) {
 	}
 	if strings.Contains(got, "> 2x") || strings.Contains(got, "> 3x") {
 		t.Fatalf("middle lines must be elided:\n%s", got)
+	}
+}
+
+// ---- redundancy removal ----------------------------------------------
+//
+// Three unconditional reductions: the terminal label is dropped when the
+// group is adjacent to its own start line, content already rendered at
+// start time is not repeated, and a completed call with nothing left to
+// say emits nothing at all.
+
+// TestToolDetails_LabelKeptWhenInterleaved covers parallel tool calls —
+// the routine case. Two calls start back to back, then both complete:
+// neither terminal group is adjacent to its own start line, so both
+// carry the remembered label, and the second's label is required to
+// tell the two groups apart.
+func TestToolDetails_LabelKeptWhenInterleaved(t *testing.T) {
+	sink := promptWith(t, "c-parallel", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCall("t1", "Read a.go", acp.ToolKindRead))
+		a.emitUpdate(sid, toolCall("t2", "Read b.go", acp.ToolKindRead))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "aaa"))
+		a.emitUpdate(sid, toolUpdate("t2", acp.ToolCallStatusCompleted, "bbb"))
+	})
+	want := "> `📖 Read a.go`\n> `📖 Read b.go`\n" +
+		"> `✓ Read a.go`\n> aaa\n" +
+		"> `✓ Read b.go`\n> bbb"
+	if got := body(sink); got != want {
+		t.Fatalf("body =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestToolDetails_LabelKeptAfterMessageText: prose (or a thought)
+// between the start line and the terminal update also breaks adjacency
+// — the marker is no longer under the line it completes, so it must
+// name its call. It also opens a fresh blockquote block.
+func TestToolDetails_LabelKeptAfterMessageText(t *testing.T) {
+	sink := promptWith(t, "c-adj-text", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCall("t1", "Bash", acp.ToolKindExecute))
+		a.emit(sid, "meanwhile ")
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "out"))
+	})
+	want := "> `🔧 Bash`\n\nmeanwhile \n\n> `✓ Bash`\n> out"
+	if got := body(sink); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_LabelDroppedAfterOwnSilentSibling: a suppressed
+// (silent-success) group writes nothing, so it does NOT break the
+// adjacency of a later call whose start line is still the last write.
+func TestToolDetails_LabelDroppedAfterOwnSilentSibling(t *testing.T) {
+	sink := promptWith(t, "c-adj-silent", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCall("t1", "Read a.go", acp.ToolKindRead))
+		a.emitUpdate(sid, toolCall("t2", "Read b.go", acp.ToolKindRead))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted)) // silent
+		a.emitUpdate(sid, toolUpdate("t2", acp.ToolCallStatusCompleted, "bbb"))
+	})
+	want := "> `📖 Read a.go`\n> `📖 Read b.go`\n> `✓`\n> bbb"
+	if got := body(sink); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_ContentDedupe: the block the agent already showed at
+// start time is not repeated in the terminal group; genuinely new
+// blocks still render.
+func TestToolDetails_ContentDedupe(t *testing.T) {
+	sink := promptWith(t, "c-dedupe", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "rexec rn", acp.ToolKindExecute, "$ uname -sr"))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "$ uname -sr", "Linux 6.8.0"))
+	})
+	want := "> `🔧 rexec rn`\n> $ uname -sr\n> `✓`\n> Linux 6.8.0"
+	if got := body(sink); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_DedupeIsPerCall: two calls whose content renders
+// identically must not silence each other. Dedupe is keyed by
+// ToolCallId, never global.
+func TestToolDetails_DedupeIsPerCall(t *testing.T) {
+	sink := promptWith(t, "c-dedupe-percall", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "Bash a", acp.ToolKindExecute, "$ date"))
+		a.emitUpdate(sid, toolCall("t2", "Bash b", acp.ToolKindExecute))
+		a.emitUpdate(sid, toolUpdate("t2", acp.ToolCallStatusCompleted, "$ date"))
+	})
+	want := "> `🔧 Bash a`\n> $ date\n> `🔧 Bash b`\n> `✓`\n> $ date"
+	if got := body(sink); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_SilentSuccess: a completed update with nothing new to
+// say emits NOTHING — no marker line, no blank line, and the blockquote
+// framing survives (the next tool line joins the same quote block, and
+// following prose is still separated by one blank line).
+func TestToolDetails_SilentSuccess(t *testing.T) {
+	sink := promptWith(t, "c-silent", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "Read a.go", acp.ToolKindRead, "package main"))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "package main"))
+		a.emitUpdate(sid, toolCall("t2", "Grep", acp.ToolKindSearch))
+		a.emitUpdate(sid, toolUpdate("t2", acp.ToolCallStatusCompleted))
+		a.emit(sid, "done")
+	})
+	want := "> `📖 Read a.go`\n> package main\n> `🔍 Grep`\n\ndone"
+	if got := body(sink); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_SilentSuccessThenTextIsNotSeparatedTwice guards the
+// framing edge: suppression must leave chunkMode alone, so the prose
+// that follows gets exactly one blank-line separator.
+func TestToolDetails_SilentSuccessOpensNoBlock(t *testing.T) {
+	sink := promptWith(t, "c-silent-first", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		// Terminal update with no preceding tool line at all: nothing to
+		// render, so the turn must not open a blockquote out of nowhere.
+		a.emitUpdate(sid, toolUpdate("zzz", acp.ToolCallStatusCompleted))
+		a.emit(sid, "just prose")
+	})
+	if got, want := body(sink), "just prose"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+	sink.mu.Lock()
+	first := sink.firstCalled
+	sink.mu.Unlock()
+	if !first {
+		t.Fatal("FirstChunk must still fire for the prose")
+	}
+}
+
+// TestToolDetails_FailedAlwaysRenders is the deliberate asymmetry: a
+// failure renders even when dedupe leaves nothing to show. The marker
+// alone is the signal, and it is never suppressed.
+func TestToolDetails_FailedAlwaysRenders(t *testing.T) {
+	sink := promptWith(t, "c-fail-loud", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "Bash", acp.ToolKindExecute, "$ false"))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusFailed, "$ false"))
+		a.emitUpdate(sid, toolCall("t2", "Bash", acp.ToolKindExecute))
+		a.emitUpdate(sid, toolUpdate("t2", acp.ToolCallStatusFailed))
+	})
+	want := "> `🔧 Bash`\n> $ false\n> `✗`\n> `🔧 Bash`\n> `✗`"
+	if got := body(sink); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolDetails_DisabledUnaffectedByDedupe re-pins the opt-out path
+// byte for byte against a turn that the reductions WOULD have changed:
+// with show_tool_details off the body is the tool lines and the prose,
+// exactly as before this change.
+func TestToolDetails_DisabledUnaffectedByDedupe(t *testing.T) {
+	emit := func(a *fakeAgent, sid acp.SessionId) {
+		a.emitUpdate(sid, toolCallWith("t1", "rexec rn", acp.ToolKindExecute, "$ uname -sr"))
+		a.emitUpdate(sid, toolCallWith("t2", "Read a.go", acp.ToolKindRead, "package main"))
+		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "$ uname -sr", "Linux"))
+		a.emitUpdate(sid, toolUpdate("t2", acp.ToolCallStatusFailed, "boom"))
+		a.emit(sid, "done")
+	}
+	want := "> `🔧 rexec rn`\n> `📖 Read a.go`\n\ndone"
+	if got := body(promptWith(t, "c-dedupe-off", Options{ShowTools: true}, emit)); got != want {
+		t.Fatalf("show_tool_details=false body = %q, want %q", got, want)
 	}
 }

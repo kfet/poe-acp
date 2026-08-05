@@ -566,6 +566,15 @@ type turnDef struct {
 	// emitted. Non-nil only when detail rendering is on; the map lives
 	// and dies with the turn.
 	tools map[acp.ToolCallId]*toolState
+	// lastTool / lastToolOK remember which tool call produced the most
+	// recent DURABLE tool write (start line or terminal group). A
+	// terminal update for that same call, with nothing written since,
+	// renders its marker without a label — the line it completes is
+	// directly above. Any other write clears the adjacency: either it
+	// is a different tool (lastTool changes) or it is message/thought
+	// text (chunkMode leaves chunkTool).
+	lastTool   acp.ToolCallId
+	lastToolOK bool
 	// scanner extracts poe-attach directives from message chunks; nil
 	// when output attachments are disabled.
 	scanner *attachScanner
@@ -599,6 +608,20 @@ func (td *turnDef) flushMessage() {
 	if td.scanner != nil {
 		td.scanner.Flush()
 	}
+}
+
+// markToolWrite records that a durable tool write for id just landed.
+func (td *turnDef) markToolWrite(id acp.ToolCallId) {
+	td.lastTool, td.lastToolOK = id, true
+}
+
+// toolAdjacent reports whether the last thing written to the body was a
+// durable tool write for this same call. Both halves matter: chunkMode
+// still being chunkTool rules out intervening message/thought text, and
+// lastTool matching rules out another tool call's line or group — the
+// agent batches independent calls routinely.
+func (td *turnDef) toolAdjacent(id acp.ToolCallId, mode chunkKind) bool {
+	return mode == chunkTool && td.lastToolOK && td.lastTool == id
 }
 
 // chunkKind classifies the most recent stream chunk written to the sink.
@@ -782,9 +805,10 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 		td.sink.ToolActivity(toolActivityLabel(u.ToolCall.Title, u.ToolCall.Kind))
 		if td.showTools {
 			emitToolLine(td, first, chunkMode, u.ToolCall.Title, u.ToolCall.Kind)
+			td.markToolWrite(u.ToolCall.ToolCallId)
 			if td.showToolDetails {
 				td.rememberTool(u.ToolCall.ToolCallId, u.ToolCall.Title, u.ToolCall.Kind)
-				emitToolDetail(td, u.ToolCall.Content)
+				emitToolDetail(td, u.ToolCall.ToolCallId, u.ToolCall.Content)
 			}
 		}
 		return
