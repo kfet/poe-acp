@@ -62,3 +62,15 @@ move to a CHANGELOG `[Unreleased]` entry when picked up.
   description which overlap: "Login with Anthropic (Login with Anthropic
   via OAuth)". `OfferLogin()` already avoids it (name only); align
   `list()`.
+
+## Promote stream shaping to built-in defaults (review 2026-08-12)
+
+All four production bots run 0.50.1 with `coalesce_ms: 3000`, `coalesce_grid:
+true`, `spinner_animate: false` and `--heartbeat-interval 3s`, while the shipped
+defaults are still off (`coalesce_ms: 0`, `spinner_animate: true`, heartbeat
+1.5s). If a week of real use holds up, move the winning values into
+`Defaults.Stream()` (`internal/config/config.go`) and the `-heartbeat-interval`
+default (`cmd/poe-acp/main.go`), and update `docs/config.example.json`, README
+and CHANGELOG. Evidence: `FRAMESTATS` lines in each bot's log. If 3000ms reads
+as laggy, try 1500 (still ~20x fewer frames) before abandoning. See
+`docs/stream-coalescing.md`.
