@@ -151,20 +151,24 @@ func emitToolResult(td *turnDef, first *bool, chunkMode *chunkKind, u *acp.Sessi
 	default:
 		return
 	}
-	var (
-		title string
-		kind  acp.ToolKind
-	)
 	st := td.tools[u.ToolCallId]
-	if st != nil {
-		if st.done {
-			// A tool call may report terminal state more than once
-			// (status echoed on a later content update). One group.
-			return
-		}
-		st.done = true
-		title, kind = st.title, st.kind
+	if st == nil {
+		// A terminal update for a call whose tool_call never arrived
+		// (or arrived after it). Materialise the state anyway so the
+		// once-only gate and the content dedupe are uniform: an echoed
+		// terminal update for an unknown id must not render twice —
+		// and the second render would be adjacent to the FIRST GROUP,
+		// which is exactly the ambiguous bare marker rule (1) exists
+		// to prevent.
+		st = &toolState{}
+		td.tools[u.ToolCallId] = st
 	}
+	if st.done {
+		// A tool call may report terminal state more than once
+		// (status echoed on a later content update). One group.
+		return
+	}
+	title, kind := st.title, st.kind
 	if u.Title != nil && *u.Title != "" {
 		title = *u.Title
 	}
@@ -172,16 +176,17 @@ func emitToolResult(td *turnDef, first *bool, chunkMode *chunkKind, u *acp.Sessi
 		kind = *u.Kind
 	}
 
-	blocks := detailBlocks(u.Content)
-	if st != nil {
-		blocks = st.dropSeen(blocks)
-	}
+	blocks := st.dropSeen(detailBlocks(u.Content))
 	if *u.Status == acp.ToolCallStatusCompleted && len(blocks) == 0 {
 		// Silent success: the start line stands as the whole record.
-		// Nothing is written, so the stream position (chunkMode, the
-		// adjacency memory, the blockquote framing) is left untouched.
+		// Nothing is written, so NOTHING is recorded either — not the
+		// stream position (chunkMode, the adjacency memory, the
+		// blockquote framing) and not `done`. Leaving `done` clear is
+		// what keeps a later `failed` for the same call loud, and lets
+		// a result that arrives on a second update still land.
 		return
 	}
+	st.done = true
 
 	// Read the adjacency memory BEFORE openToolBlock mutates chunkMode.
 	head := "> `" + marker + "`"
