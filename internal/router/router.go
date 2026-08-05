@@ -500,8 +500,9 @@ func (sq *sessionQueue) popOrWait(stop <-chan struct{}) *turnReq {
 	}
 }
 
-// finishInFlight marks the runner as idle again. Called by runTurns
-// after every turn (success, error, or skipped-too-old).
+// finishInFlight marks the runner as idle again. Called by runOneTurn
+// after every turn (success, error, or skipped-too-old), BEFORE the
+// waiting caller is released.
 func (sq *sessionQueue) finishInFlight() {
 	sq.mu.Lock()
 	sq.inFlight = false
@@ -1367,7 +1368,6 @@ func (r *Router) runTurns(st *sessionState) {
 			return
 		}
 		r.runOneTurn(st, req)
-		st.queue.finishInFlight()
 	}
 }
 
@@ -1376,7 +1376,13 @@ func (r *Router) runTurns(st *sessionState) {
 // Agent.Prompt, endTurn ack, sink finalisation. Closes req.done at
 // the end.
 func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
+	// Defers run LIFO, so the caller is released LAST: touch, then mark
+	// the queue idle, then close(done). Marking idle before the caller
+	// wakes matters — Prompt returning must mean the session is
+	// immediately evictable, or a gcOnce racing a just-finished turn
+	// sees inFlight and skips it.
 	defer close(req.done)
+	defer st.queue.finishInFlight()
 	defer r.touch(st.convID)
 
 	// Liveness safeguard: reactions older than reactionMaxAge are
