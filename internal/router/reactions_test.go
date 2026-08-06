@@ -398,15 +398,19 @@ func TestRouter_ReportReactionFireAndForget(t *testing.T) {
 	}
 }
 
-// TestSessionQueue_StopDrainsPending: stop() closes pending reqs'
-// done channels with shed=true.
+// TestSessionQueue_StopDrainsPending: stop() detaches pending reqs and
+// finalizeShed closes their done channels with shed=true.
 func TestSessionQueue_StopDrainsPending(t *testing.T) {
 	sq := newSessionQueue()
 	req := &turnReq{kind: turnReaction, done: make(chan struct{})}
 	if !sq.push(req) {
 		t.Fatal("push failed")
 	}
-	sq.stop()
+	pending, inFlight := sq.stop()
+	if inFlight {
+		t.Fatal("nothing was in flight")
+	}
+	finalizeShed(pending)
 	select {
 	case <-req.done:
 	case <-time.After(time.Second):
