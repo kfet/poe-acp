@@ -1,0 +1,1 @@
+/opt/homebrew/bin/poe-acp --http-addr 127.0.0.1:8347 --poe-path /poe-acp --agent-cmd "fir --mode acp" --heartbeat-interval 3s --introduction "fir over ACP — one Poe conv = one ACP session. Send !help for commands (!login, !model, !status, !new)."

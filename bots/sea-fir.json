@@ -1,0 +1,35 @@
+{
+  "name": "sea-fir",
+  "host": "rn",
+  "platform": "linux/amd64",
+  "supervisor": "systemd-user",
+  "unit": "poe-acp-sea-fir",
+  "binary": "~/.local/bin/poe-acp",
+  "agent": { "cmd": "fir --mode acp", "kind": "fir" },
+  "fir": { "exts": ["github.com/kfet/fir-exts"] },
+  "server": {
+    "http_addr": "127.0.0.1:8347",
+    "poe_path": "/sea-fir",
+    "config_path": "~/.config/poe-acp/bot-sea-fir/config.json",
+    "heartbeat_interval": "3s",
+    "session_ttl": "10m",
+    "introduction": "sea-fir — fir over ACP on sea-racknerd. Send !help for commands (!login, !model, !status, !new). Any provider; default opus-4-8/low."
+  },
+  "systemd": {
+    "restart": "on-failure",
+    "restart_sec": "2s"
+  },
+  "config": {
+    "bot_name": "sea-fir",
+    "defaults": {
+      "model": "anthropic/claude-opus-5",
+      "thinking": "medium",
+      "hide_thinking": false,
+      "coalesce_ms": 3000,
+      "coalesce_grid": true,
+      "spinner_animate": false
+    },
+    "poe_mcp": true
+  },
+  "credentials": { "env_file": "~/.config/poe-acp/bot-sea-fir/env" }
+}

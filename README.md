@@ -41,6 +41,41 @@ Point your Poe bot at `https://<host>/poe` (with any reverse proxy or
 
 ## Deployment
 
+### Fleet: bot specs + converge (the sanctioned path)
+
+For the personal bot fleet, **a bot IS a dist spec**: one declarative JSON
+file under `bots/<name>.json` fully describes a bot — host, supervisor,
+server flags, relay config, agent, fir extensions, credential *references*
+(never contents). `dist.lock` at the repo root pins the fleet-wide target
+versions: poe-acp, fir (released from `kfet/fir-dist`), and each fir
+extension repo by git rev.
+
+**`scripts/converge.sh` is the only sanctioned way to touch a host.**
+
+```bash
+scripts/converge.sh <bot>            # dry run (default): diff of what would change
+scripts/converge.sh <bot> --apply    # make the host match bots/<bot>.json + dist.lock
+scripts/converge.sh --tot            # resolve latest-of-everything ONCE into dist.lock
+```
+
+Converge checks/fixes, in order: poe-acp binary version, fir version,
+fir extension revs, rendered `config.json`, rendered systemd unit or
+launchd plist, then recycles the service and verifies it comes back.
+Every overwrite leaves a `.bak-<timestamp>` next to the file. A second
+run reports "already converged" and does nothing.
+
+`tot` is a **verb, not a state** — no host is ever "rolling". `--tot`
+resolves the latest releases once, rewrites `dist.lock`, and stops; you
+review the diff, commit, then converge each bot from the recorded lock.
+Resolution never happens on a host, and `--tot` never converges.
+
+For testing without ssh: `--target-root DIR` applies against a local
+fake host root; `scripts/converge.sh render <bot> <config|execstart|unit|plist>`
+renders any artefact to stdout. Offline tests: `test/converge_render.sh`.
+
+The sections below describe what converge automates — still useful for
+one-off/manual deployments of new bots (write the spec first, though).
+
 ### Single bot behind Tailscale Funnel (recommended)
 
 The host just needs `tailscale funnel` enabled. The relay listens on a
@@ -400,6 +435,8 @@ go test ./...
   JSON, bearer auth pass/fail.
 - `test/smoke.sh` — black-box curl SSE smoke test for a running relay
   (no fir patching required).
+- `test/converge_render.sh` — offline golden-fixture + fake-target tests
+  for `scripts/converge.sh` (rendering, flag edge cases, idempotence).
 
 ## Live test log (2026-04-19)
 
@@ -425,6 +462,9 @@ context and is fine.
 
 ```
 poe-acp/
+  bots/                    one dist spec per fleet bot (bots/<name>.json)
+  dist.lock                fleet-wide pinned versions (poe-acp, fir, ext revs)
+  scripts/converge.sh      the only sanctioned way to touch a bot host
   cmd/poe-acp/             entry point + flag wiring
   docs/                    design doc + Poe protocol reference
   internal/command/        relay chat-commands: login, !help, !status, !model, …
