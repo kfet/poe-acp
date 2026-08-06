@@ -1,7 +1,12 @@
 // Package command implements the relay's chat-command surface: it
 // brokers interactive OAuth login (bridging Poe turns into fir's
 // _meta.auth.interactive two-call protocol) and the session-control
-// commands (!status, !models, !model, !new, !help).
+// commands (!status, !model, !new, !help).
+//
+// The user-facing surface is deliberately small: !help, !status,
+// !model [filter|id], !new, !login [provider|cancel]. Older spellings
+// (!models, !relay, !bot, !cancel-login, !whoami, !reset) still work as
+// undocumented aliases so nothing a user has learned ever breaks.
 //
 // Each Poe conversation can have at most one in-flight login. The first
 // login command (e.g. "!login anthropic") calls fir's authenticate to
@@ -37,7 +42,7 @@ type Authenticator interface {
 }
 
 // Controller is the per-conversation session-control surface used by the
-// non-auth commands (!status, !models, !model, !new). *router.Router
+// non-auth commands (!status, !model, !new). *router.Router
 // satisfies it. Optional: if nil, those commands report unavailable.
 // (router never imports command — the dependency edge is one-way:
 // command → router.)
@@ -63,7 +68,18 @@ var passthroughAllow = map[string]bool{
 	"session":   true,
 	"changelog": true,
 	"mcp":       true,
+	"skills":    true,
 }
+
+// Deliberately NOT allowlisted, and not an oversight:
+//
+//   - resume, continue — the relay owns the conversation→session mapping.
+//     Letting the agent switch its own session underneath the relay would
+//     desync that mapping (the relay would keep prompting into a session
+//     the agent has moved on from). !new is the supported way to change
+//     session state. Do not "fix" this by adding them here.
+//   - name, share, export — side-effecting or account/artefact-scoped
+//     operations that make no sense driven from a Poe chat turn.
 
 // Broker tracks per-conversation pending logins.
 type Broker struct {
@@ -75,7 +91,7 @@ type Broker struct {
 }
 
 // SetController wires the session-control surface (the router) used by
-// !status/!models/!model/!new. Call once at startup, after construction,
+// !status/!model/!new. Call once at startup, after construction,
 // to break the broker↔router construction cycle. Safe before any turns.
 func (b *Broker) SetController(c Controller) { b.ctrl = c }
 
@@ -183,6 +199,17 @@ func isLoginBody(body string) bool {
 		body == "cancel-login"
 }
 
+// isCancelLoginBody reports whether a sigil-stripped body aborts an
+// in-flight login: the documented `login cancel`, or the undocumented
+// `cancel-login` alias kept for backwards compatibility.
+func isCancelLoginBody(body string) bool {
+	if body == "cancel-login" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(body, "login ")
+	return ok && strings.TrimSpace(rest) == "cancel"
+}
+
 // IsLoginCommand reports whether text is a login/logins/cancel-login
 // command under any accepted sigil (/, !, .). Trims leading whitespace
 // so users can paste the command after a thought.
@@ -241,7 +268,8 @@ type Outcome struct {
 //
 //  1. If the conversation has a pending login, treat any non-command
 //     text as the pasted redirect URL.
-//  2. Otherwise interpret /login [provider], /logins, /cancel-login.
+//  2. Otherwise interpret !login [provider|cancel] (and the older
+//     !logins / !cancel-login spellings).
 //
 // Returns (nil, nil) if the turn is not auth-related and should be
 // forwarded to the normal prompt path.
@@ -257,7 +285,7 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 
 	// Pasted redirect URL for an in-flight login wins over command parsing.
 	if entry, ok := b.peek(convID); ok {
-		if hasSigil && body == "cancel-login" {
+		if hasSigil && isCancelLoginBody(body) {
 			return b.cancel(ctx, convID, entry)
 		}
 		return b.complete(ctx, convID, entry, t)
@@ -268,7 +296,7 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 	}
 
 	switch {
-	case body == "cancel-login":
+	case isCancelLoginBody(body):
 		return &Outcome{Text: "No login in progress."}, nil
 	case body == "login" || body == "logins":
 		return b.list(), nil
@@ -277,10 +305,12 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 		rest := strings.TrimSpace(strings.TrimPrefix(body, "login"))
 		return b.start(ctx, convID, rest)
 	case body == "relay" || body == "bot":
-		return b.relay(convID), nil
+		// Undocumented aliases: !relay folded into !status.
+		return b.status(convID), nil
 	case body == "status" || body == "whoami":
 		return b.status(convID), nil
 	case body == "models" || strings.HasPrefix(body, "models "):
+		// Undocumented alias: !models folded into !model.
 		return b.models(strings.TrimSpace(strings.TrimPrefix(body, "models"))), nil
 	case body == "model" || strings.HasPrefix(body, "model "):
 		return b.model(convID, strings.TrimSpace(strings.TrimPrefix(body, "model"))), nil
@@ -324,15 +354,12 @@ func (b *Broker) help() *Outcome {
 	sb.WriteString("Available commands:\n\n")
 	sb.WriteString("- `" + s + "help` — show this message\n")
 	if b.ctrl != nil {
-		sb.WriteString("- `" + s + "status` — current model, thinking, session\n")
-		sb.WriteString("- `" + s + "relay` — relay version, uptime, sessions\n")
-		sb.WriteString("- `" + s + "models [filter]` — list available models\n")
-		sb.WriteString("- `" + s + "model <id>` — switch model for this chat\n")
+		sb.WriteString("- `" + s + "status` — model, session and relay info\n")
+		sb.WriteString("- `" + s + "model [filter|id]` — list/filter models, or switch\n")
 		sb.WriteString("- `" + s + "new` — start a fresh session (clears context)\n")
 	}
-	sb.WriteString("- `" + s + "login` — list providers you can connect\n")
-	sb.WriteString("- `" + s + "login <provider>` — connect a provider (e.g. `" + s + "login anthropic`)\n")
-	sb.WriteString("- `" + s + "cancel-login` — abort a login in progress\n")
+	sb.WriteString("- `" + s + "login [provider|cancel]` — connect a provider (e.g. `" + s +
+		"login anthropic`), or abort a login in progress\n")
 	if pt := b.passthroughCommands(); len(pt) > 0 {
 		sb.WriteString("\nAgent commands:\n\n")
 		for _, c := range pt {
@@ -346,42 +373,17 @@ func (b *Broker) help() *Outcome {
 	return &Outcome{Text: sb.String()}
 }
 
-// relay renders relay-process realtime info (version, uptime, sessions).
-func (b *Broker) relay(convID string) *Outcome {
-	if b.ctrl == nil {
-		return &Outcome{Text: "Relay info is unavailable."}
-	}
-	ri := b.ctrl.RelayInfo(convID)
-	var sb strings.Builder
-	sb.WriteString("**Relay**\n\n")
-	if ri.Version != "" {
-		fmt.Fprintf(&sb, "- version: `%s`\n", ri.Version)
-	}
-	if ri.Uptime != "" {
-		fmt.Fprintf(&sb, "- uptime: %s\n", ri.Uptime)
-	}
-	if ri.AgentCmd != "" {
-		fmt.Fprintf(&sb, "- agent: `%s`\n", ri.AgentCmd)
-	}
-	if ri.EffectiveModel != "" {
-		fmt.Fprintf(&sb, "- model: `%s`\n", ri.EffectiveModel)
-	}
-	fmt.Fprintf(&sb, "- models available: %d\n", ri.ModelsAvailable)
-	fmt.Fprintf(&sb, "- active conversations: %d\n", ri.ActiveSessions)
-	sess := "none yet (fresh on next message)"
-	if ri.SessionID != "" {
-		sess = "`" + ri.SessionID + "`"
-	}
-	fmt.Fprintf(&sb, "- this session: %s\n", sess)
-	return &Outcome{Text: sb.String()}
-}
-
-// status renders the current model / thinking / session snapshot.
+// status renders one compact snapshot of everything the user might ask
+// about: the conversation's model / thinking / session (the old !status)
+// plus the relay process's version / uptime / sessions (the old !relay).
+// Rendered as a short bullet list — it has to read well on a phone, so
+// no tables and no wide lines; conversation state first, relay after.
 func (b *Broker) status(convID string) *Outcome {
 	if b.ctrl == nil {
 		return &Outcome{Text: "Session control is unavailable."}
 	}
 	st := b.ctrl.StatusFor(convID)
+	ri := b.ctrl.RelayInfo(convID)
 	var sb strings.Builder
 	sb.WriteString("**Status**\n\n")
 	fmt.Fprintf(&sb, "- model: `%s`", st.EffectiveModel)
@@ -392,19 +394,35 @@ func (b *Broker) status(convID string) *Outcome {
 	if st.Thinking != "" {
 		fmt.Fprintf(&sb, "- thinking: %s\n", st.Thinking)
 	}
-	fmt.Fprintf(&sb, "- models available: %d\n", st.ModelsAvailable)
 	sess := "none yet (fresh on next message)"
 	if st.HasSession {
 		sess = "active"
 	}
+	if ri.SessionID != "" {
+		sess += " `" + ri.SessionID + "`"
+	}
 	fmt.Fprintf(&sb, "- session: %s\n", sess)
+	fmt.Fprintf(&sb, "- models available: %d\n", st.ModelsAvailable)
+	if ri.Version != "" {
+		fmt.Fprintf(&sb, "- relay: `%s`\n", ri.Version)
+	}
+	if ri.Uptime != "" {
+		fmt.Fprintf(&sb, "- uptime: %s\n", ri.Uptime)
+	}
+	if ri.AgentCmd != "" {
+		fmt.Fprintf(&sb, "- agent: `%s`\n", ri.AgentCmd)
+	}
+	fmt.Fprintf(&sb, "- active conversations: %d\n", ri.ActiveSessions)
 	return &Outcome{Text: sb.String()}
 }
 
-// modelsListCap bounds how many models !models prints in one message.
+// modelsListCap bounds how many models a model listing prints in one
+// message.
 const modelsListCap = 40
 
 // models lists available model ids, optionally filtered by substring.
+// It backs bare `!model`, `!model <filter>` and the undocumented
+// `!models [filter]` alias.
 func (b *Broker) models(filter string) *Outcome {
 	if b.ctrl == nil {
 		return &Outcome{Text: "Session control is unavailable."}
@@ -422,13 +440,13 @@ func (b *Broker) models(filter string) *Outcome {
 	}
 	var sb strings.Builder
 	if filter == "" {
-		fmt.Fprintf(&sb, "%d models available (current: `%s`). `%smodel <id>` to switch, `%smodels <filter>` to narrow:\n\n",
+		fmt.Fprintf(&sb, "%d models available (current: `%s`). `%smodel <id>` to switch, `%smodel <filter>` to narrow:\n\n",
 			len(all), current, DisplaySigil, DisplaySigil)
 	} else {
 		fmt.Fprintf(&sb, "%d model(s) match %q (current: `%s`):\n\n", len(matched), filter, current)
 	}
 	if len(matched) == 0 {
-		fmt.Fprintf(&sb, "(none match %q — try `%smodels` for the full list)\n", filter, DisplaySigil)
+		fmt.Fprintf(&sb, "(none match %q — try `%smodel` for the full list)\n", filter, DisplaySigil)
 		return &Outcome{Text: sb.String()}
 	}
 	for i, m := range matched {
@@ -445,18 +463,36 @@ func (b *Broker) models(filter string) *Outcome {
 	return &Outcome{Text: sb.String()}
 }
 
-// model switches the sticky model for the conversation.
-func (b *Broker) model(convID, id string) *Outcome {
+// model implements `!model [filter|id]`:
+//
+//	no arg          → list every available model
+//	arg == model id → switch this chat to it
+//	anything else   → treat the arg as a list filter
+//
+// Exact-id match wins over the filter reading, so a model id that also
+// happens to be a substring of other ids still switches. A filter that
+// narrows to exactly one model deliberately does NOT auto-switch —
+// silently changing model off an approximate match would be surprising.
+func (b *Broker) model(convID, arg string) *Outcome {
 	if b.ctrl == nil {
 		return &Outcome{Text: "Session control is unavailable."}
 	}
-	if id == "" {
-		st := b.ctrl.StatusFor(convID)
-		return &Outcome{Text: fmt.Sprintf("Current model: `%s`. Use `%smodel <id>` to switch, `%smodels` to list.",
-			st.EffectiveModel, DisplaySigil, DisplaySigil)}
+	if arg == "" {
+		return b.models("")
 	}
+	all, _ := b.ctrl.AvailableModels()
+	for _, m := range all {
+		if m.ID == arg {
+			return b.setModel(convID, arg)
+		}
+	}
+	return b.models(arg)
+}
+
+// setModel switches the sticky model for the conversation.
+func (b *Broker) setModel(convID, id string) *Outcome {
 	if err := b.ctrl.SetModelOverride(convID, id); err != nil {
-		return &Outcome{Text: fmt.Sprintf("❌ %v. Use `%smodels` to see available ids.", err, DisplaySigil)}
+		return &Outcome{Text: fmt.Sprintf("❌ %v. Use `%smodel` to see available ids.", err, DisplaySigil)}
 	}
 	return &Outcome{Text: fmt.Sprintf("✅ Model set to `%s` for this chat — applies from your next message.", id)}
 }
@@ -503,7 +539,7 @@ func (b *Broker) start(ctx context.Context, convID, provider string) (*Outcome, 
 	b.mu.Lock()
 	if existing, ok := b.pending[convID]; ok {
 		b.mu.Unlock()
-		return &Outcome{Text: fmt.Sprintf("A login is already in progress (%s). Paste the redirect URL or send `%scancel-login`.", existing.methodID, DisplaySigil)}, nil
+		return &Outcome{Text: fmt.Sprintf("A login is already in progress (%s). Paste the redirect URL or send `%slogin cancel`.", existing.methodID, DisplaySigil)}, nil
 	}
 	b.mu.Unlock()
 
@@ -539,7 +575,7 @@ func (b *Broker) start(ctx context.Context, convID, provider string) (*Outcome, 
 // complete submits the pasted redirect URL.
 func (b *Broker) complete(ctx context.Context, convID string, entry pendingEntry, redirect string) (*Outcome, error) {
 	if redirect == "" {
-		return &Outcome{Text: fmt.Sprintf("Empty paste — send the redirect URL or `%scancel-login`.", DisplaySigil)}, nil
+		return &Outcome{Text: fmt.Sprintf("Empty paste — send the redirect URL or `%slogin cancel`.", DisplaySigil)}, nil
 	}
 	res, err := b.a.Authenticate(ctx, entry.methodID, entry.authID, redirect, false)
 	// Always drop the pending entry — a failed paste means the user must
