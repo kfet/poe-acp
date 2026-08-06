@@ -388,9 +388,15 @@ func TestHelp_ListsCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"!help", "!login", "!login <provider>", "!cancel-login"} {
+	for _, want := range []string{"!help", "!login [provider|cancel]"} {
 		if !strings.Contains(out.Text, want) {
 			t.Fatalf("help output missing %q: %s", want, out.Text)
+		}
+	}
+	// The consolidated forms replaced these in the listing; they still work.
+	for _, gone := range []string{"!cancel-login", "!models", "!relay"} {
+		if strings.Contains(out.Text, gone) {
+			t.Fatalf("help should not advertise %q: %s", gone, out.Text)
 		}
 	}
 }
@@ -473,20 +479,39 @@ func hb(b *Broker, text string) string {
 }
 
 func TestStatus(t *testing.T) {
-	b := withCtrl(&fakeCtrl{status: router.SessionStatus{
-		EffectiveModel: "anthropic/x", OverrideModel: "anthropic/x",
-		Thinking: "low", HasSession: true, ModelsAvailable: 7,
-	}})
+	b := withCtrl(&fakeCtrl{
+		status: router.SessionStatus{
+			EffectiveModel: "anthropic/x", OverrideModel: "anthropic/x",
+			Thinking: "low", HasSession: true, ModelsAvailable: 7,
+		},
+		relayInfo: router.RelayInfo{
+			Version: "9.9.9", Uptime: "3h2m1s", AgentCmd: "fir --mode acp",
+			ActiveSessions: 4, SessionID: "sess-abc",
+		},
+	})
 	got := hb(b, "!status")
+	// Conversation state...
 	for _, w := range []string{"anthropic/x", "low", "7", "active", "!model"} {
 		if !strings.Contains(got, w) {
 			t.Fatalf("status missing %q: %s", w, got)
 		}
 	}
-	// whoami alias + no-session wording.
+	// ...plus the relay info folded in from the former !relay.
+	for _, w := range []string{"9.9.9", "3h2m1s", "fir --mode acp", "sess-abc", "active conversations: 4"} {
+		if !strings.Contains(got, w) {
+			t.Fatalf("status missing relay info %q: %s", w, got)
+		}
+	}
+	// whoami alias + no-session wording + empty relay fields omitted.
 	b2 := withCtrl(&fakeCtrl{status: router.SessionStatus{EffectiveModel: "m", ModelsAvailable: 1}})
-	if g := hb(b2, "!whoami"); !strings.Contains(g, "fresh on next message") {
+	g := hb(b2, "!whoami")
+	if !strings.Contains(g, "fresh on next message") {
 		t.Fatalf("whoami no-session: %s", g)
+	}
+	for _, bad := range []string{"relay:", "uptime:", "agent:"} {
+		if strings.Contains(g, bad) {
+			t.Fatalf("status should omit empty relay field %q:\n%s", bad, g)
+		}
 	}
 }
 
@@ -521,19 +546,42 @@ func TestModelsCap(t *testing.T) {
 }
 
 func TestModelCommand(t *testing.T) {
-	c := &fakeCtrl{models: []client.ModelInfo{{ID: "p/m"}}, current: "p/m", status: router.SessionStatus{EffectiveModel: "p/m"}}
+	models := []client.ModelInfo{{ID: "p/m"}, {ID: "p/other"}, {ID: "q/m"}}
+	c := &fakeCtrl{models: models, current: "p/m", status: router.SessionStatus{EffectiveModel: "p/m"}}
 	b := withCtrl(c)
-	// no arg → show current
-	if g := hb(b, "!model"); !strings.Contains(g, "p/m") {
-		t.Fatalf("model no-arg: %s", g)
+	// no arg → full listing (the old !models behaviour)
+	g := hb(b, "!model")
+	if !strings.Contains(g, "3 models available") || !strings.Contains(g, "p/other") {
+		t.Fatalf("model no-arg should list: %s", g)
 	}
-	// valid set
-	if g := hb(b, "!model p/m"); !strings.Contains(g, "✅") || c.lastSet != [2]string{"c1", "p/m"} {
+	// exact id → switch
+	if g := hb(b, "!model q/m"); !strings.Contains(g, "✅") || c.lastSet != [2]string{"c1", "q/m"} {
 		t.Fatalf("model set: %s last=%v", g, c.lastSet)
 	}
-	// error from controller
-	c.setErr = errors.New("unknown model \"bad\"")
-	if g := hb(b, "!model bad"); !strings.Contains(g, "❌") || !strings.Contains(g, "unknown model") {
+	// non-id arg → filter listing, no switch
+	c.lastSet = [2]string{}
+	g = hb(b, "!model p/")
+	if !strings.Contains(g, "p/m") || !strings.Contains(g, "p/other") || strings.Contains(g, "q/m") {
+		t.Fatalf("model filter: %s", g)
+	}
+	if c.lastSet != [2]string{} {
+		t.Fatalf("filter must not switch model, got %v", c.lastSet)
+	}
+	// filter matching exactly one model still lists, never auto-switches
+	g = hb(b, "!model other")
+	if !strings.Contains(g, "p/other") || strings.Contains(g, "✅") {
+		t.Fatalf("single-match filter must list, not switch: %s", g)
+	}
+	if c.lastSet != [2]string{} {
+		t.Fatalf("single-match filter must not switch, got %v", c.lastSet)
+	}
+	// no match → none-match hint
+	if g := hb(b, "!model zzz"); !strings.Contains(g, "none match") {
+		t.Fatalf("model no-match: %s", g)
+	}
+	// error from controller on an exact-id switch
+	c.setErr = errors.New("unknown model \"p/m\"")
+	if g := hb(b, "!model p/m"); !strings.Contains(g, "❌") || !strings.Contains(g, "unknown model") {
 		t.Fatalf("model err: %s", g)
 	}
 }
@@ -560,13 +608,19 @@ func TestSessionCommands_NoController(t *testing.T) {
 
 func TestHelp_DynamicWithController(t *testing.T) {
 	withCmds := hb(withCtrl(&fakeCtrl{}), "!help")
-	for _, w := range []string{"!status", "!models", "!model", "!new", "!login"} {
+	for _, w := range []string{"!status", "!model [filter|id]", "!new", "!login [provider|cancel]"} {
 		if !strings.Contains(withCmds, w) {
 			t.Fatalf("help (ctrl) missing %q: %s", w, withCmds)
 		}
 	}
+	// Consolidated-away spellings must not be advertised.
+	for _, w := range []string{"!models", "!relay", "!cancel-login"} {
+		if strings.Contains(withCmds, w) {
+			t.Fatalf("help (ctrl) should not list %q: %s", w, withCmds)
+		}
+	}
 	noCmds := hb(New(newFake()), "!help")
-	if strings.Contains(noCmds, "!status") || strings.Contains(noCmds, "!models") {
+	if strings.Contains(noCmds, "!status") || strings.Contains(noCmds, "!model") {
 		t.Fatalf("help (no ctrl) should omit session cmds: %s", noCmds)
 	}
 	if !strings.Contains(noCmds, "!login") {
@@ -610,6 +664,22 @@ func TestPassthrough(t *testing.T) {
 	if r, ok := b.Passthrough("!mcp reload"); !ok || r != "/mcp reload" {
 		t.Fatalf("mcp reload: %q %v", r, ok)
 	}
+	// skills: allowlisted + advertised (fir's ACP mode has advertised
+	// /skills since v0.26.0) -> forwarded.
+	c.agentCmds = []client.CommandInfo{{Name: "skills", Description: "List skills"}}
+	if r, ok := b.Passthrough("!skills"); !ok || r != "/skills" {
+		t.Fatalf("skills: %q %v", r, ok)
+	}
+	// Deliberately denied even when the agent advertises them: resume and
+	// continue would desync the relay's conv→session mapping.
+	c.agentCmds = []client.CommandInfo{
+		{Name: "resume"}, {Name: "continue"}, {Name: "name"}, {Name: "share"}, {Name: "export"},
+	}
+	for _, cmd := range []string{"!resume", "!continue x", "!name foo", "!export"} {
+		if _, ok := b.Passthrough(cmd); ok {
+			t.Fatalf("%s must not be passed through", cmd)
+		}
+	}
 	c.agentCmds = []client.CommandInfo{{Name: "reload", Description: "Reload"}, {Name: "share"}}
 	// allowlisted but agent does NOT advertise it
 	if _, ok := b.Passthrough("!compact"); ok {
@@ -649,7 +719,9 @@ func TestHelp_ListsAgentCommands(t *testing.T) {
 	}
 }
 
-func TestRelayCommand(t *testing.T) {
+// TestRelayAlias: !relay / !bot are undocumented aliases for !status
+// (which now renders the relay block too).
+func TestRelayAlias(t *testing.T) {
 	// No controller wired -> unavailable.
 	bNo := New(newFake())
 	if out, err := bNo.Handle(context.Background(), "c", "!relay"); err != nil || out == nil ||
@@ -658,20 +730,23 @@ func TestRelayCommand(t *testing.T) {
 	}
 
 	// Fully populated info, including a live session id and override model.
-	b := withCtrl(&fakeCtrl{relayInfo: router.RelayInfo{
-		Version:         "9.9.9",
-		Uptime:          "3h2m1s",
-		AgentCmd:        "fir --mode acp",
-		ModelsAvailable: 7,
-		ActiveSessions:  4,
-		SessionID:       "sess-abc",
-		EffectiveModel:  "opus",
-	}})
+	b := withCtrl(&fakeCtrl{
+		status: router.SessionStatus{EffectiveModel: "opus", HasSession: true, ModelsAvailable: 7},
+		relayInfo: router.RelayInfo{
+			Version:         "9.9.9",
+			Uptime:          "3h2m1s",
+			AgentCmd:        "fir --mode acp",
+			ModelsAvailable: 7,
+			ActiveSessions:  4,
+			SessionID:       "sess-abc",
+			EffectiveModel:  "opus",
+		},
+	})
 	out, err := b.Handle(context.Background(), "c", "!relay")
 	if err != nil || out == nil {
 		t.Fatalf("relay: out=%+v err=%v", out, err)
 	}
-	for _, want := range []string{"**Relay**", "9.9.9", "3h2m1s", "fir --mode acp",
+	for _, want := range []string{"**Status**", "9.9.9", "3h2m1s", "fir --mode acp",
 		"opus", "models available: 7", "active conversations: 4", "sess-abc"} {
 		if !strings.Contains(out.Text, want) {
 			t.Fatalf("relay output missing %q:\n%s", want, out.Text)
@@ -687,7 +762,7 @@ func TestRelayCommand(t *testing.T) {
 	if !strings.Contains(out2.Text, "none yet") {
 		t.Fatalf("bot output missing fresh-session line:\n%s", out2.Text)
 	}
-	for _, bad := range []string{"version:", "uptime:", "agent:", "model:"} {
+	for _, bad := range []string{"relay:", "uptime:", "agent:"} {
 		if strings.Contains(out2.Text, bad) {
 			t.Fatalf("bot output should omit empty field %q:\n%s", bad, out2.Text)
 		}
@@ -700,8 +775,44 @@ func TestRelayCommand(t *testing.T) {
 		}
 	}
 
-	// help lists !relay when a controller is wired.
-	if h := b.help(); !strings.Contains(h.Text, "relay` — relay version") {
-		t.Fatalf("help missing relay line:\n%s", h.Text)
+	// help must not advertise the alias.
+	if h := b.help(); strings.Contains(h.Text, "relay`") {
+		t.Fatalf("help should not list !relay:\n%s", h.Text)
+	}
+}
+
+// TestLoginCancel: `!login cancel` is the documented spelling for
+// aborting an in-flight login; `!cancel-login` remains as an alias.
+func TestLoginCancel(t *testing.T) {
+	// With a pending login.
+	f := newFake()
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
+	b := New(f)
+	_, _ = b.Handle(context.Background(), "c1", "!login anthropic")
+	if !b.HasPending("c1") {
+		t.Fatal("precondition: expected pending login")
+	}
+	f.res = client.AuthResult{State: "cancelled"}
+	out, _ := b.Handle(context.Background(), "c1", "!login cancel")
+	if !strings.Contains(out.Text, "cancelled") {
+		t.Fatalf("login cancel: %q", out.Text)
+	}
+	if b.HasPending("c1") {
+		t.Fatal("pending should be cleared after !login cancel")
+	}
+	if last := f.calls[len(f.calls)-1]; !last.cancel {
+		t.Error("expected cancel call to the agent")
+	}
+
+	// Without a pending login (extra whitespace tolerated).
+	if g := hb(New(newFake()), "!login  cancel"); !strings.Contains(g, "No login in progress") {
+		t.Fatalf("login cancel without pending: %q", g)
+	}
+
+	// Recognised as a command / login command.
+	for _, c := range []string{"!login cancel", "/login cancel", ".login cancel"} {
+		if !IsCommand(c) || !IsLoginCommand(c) {
+			t.Fatalf("%q should be a login command", c)
+		}
 	}
 }
