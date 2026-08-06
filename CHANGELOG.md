@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Bot-as-dist-spec + converge.** Each fleet bot is now fully described by
+  one declarative spec, `bots/<name>.json` (host, supervisor, server flags,
+  relay config, agent, fir extension repos, credential references — never
+  secrets). `dist.lock` pins the fleet-wide targets: poe-acp version, fir
+  version (released from `kfet/fir-dist`), and fir extension repos by git
+  rev. `scripts/converge.sh <bot>` is **the only sanctioned way to touch a
+  host**: dry-run by default with a full diff, `--apply` to act, idempotent,
+  `.bak-<timestamp>` backups, correct supervisor recycle per platform
+  (systemd restart; launchd `bootout` + `bootstrap` when the plist changed —
+  never `kickstart -k`, which re-runs the cached job definition).
+  `scripts/converge.sh --tot` makes "tot" a verb: resolve latest-of-
+  everything ONCE (git ls-remote, no host involvement), rewrite `dist.lock`,
+  show what moved, stop — commit and converge are separate, deliberate steps.
+  Offline test suite in `test/converge_render.sh` (golden renders for all
+  four bots, boolean-flag edge cases, fake-target apply/idempotence via
+  `--target-root`). The `deploy`/`update`/`custom-bots` skills now route
+  fleet changes through converge.
+
 ## [0.51.0] - 2026-08-05
 
 ### Changed
