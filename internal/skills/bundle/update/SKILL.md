@@ -6,6 +6,14 @@ description: Update poe-acp on a single host, or restart / reload a running bot.
 
 # Update Skill
 
+> **Fleet hosts: converge is the only sanctioned way to touch a host.** For a
+> bot with a spec in `bots/<name>.json`, version moves go through the lock:
+> `scripts/converge.sh --tot` (rewrites `dist.lock`; review + commit), then
+> `scripts/converge.sh <bot> --apply` per host. Do not hand-upgrade a fleet
+> host to an unlocked version. The steps below remain valid for non-fleet
+> hosts and for the supervisor-control mechanics converge itself relies on
+> (restart/reload semantics, cutover rules).
+
 Upgrade `poe-acp` on **one** host (local or remote) and restart the supervisor. Use after a release publishes, when a specific host is stale, **or whenever you just need to restart or reload a running bot** — §3 and the pitfalls below are the authority on supervisor control.
 
 > **Restarting the bot you are talking through is an ordinary, inline action.** Run the restart directly. Do not detach it, do not delay it, do not warn the user first. The open SSE reply is dropped, but the conversation is on disk: Poe redrives it and the next turn resumes with full history. Scheduling a delayed or `setsid`-detached restart is always wrong — see the pitfalls.

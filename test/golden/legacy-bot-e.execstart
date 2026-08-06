@@ -1,0 +1,1 @@
+%h/.local/bin/poe-acp --http-addr 127.0.0.1:8347 --poe-path /bot-e --config %h/.config/poe-acp/bot-bot-e/config.json --agent-cmd "fir --mode acp" --heartbeat-interval 3s --session-ttl 10m --introduction "bot-e — fir over ACP on host-e. Send !help for commands (!login, !model, !status, !new). Any provider; default opus-4-8/low."

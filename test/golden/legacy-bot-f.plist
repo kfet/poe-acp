@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.kfet.poe-acp</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; . "$HOME/.config/poe-acp/env"; set +a; exec /opt/homebrew/bin/poe-acp --http-addr 127.0.0.1:8347 --poe-path /poe-acp --agent-cmd "fir --mode acp" --heartbeat-interval 3s --introduction "fir over ACP — one Poe conv = one ACP session. Send !help for commands (!login, !model, !status, !new)."</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/Users/kfet/go/bin:/Users/kfet/.nvm/versions/node/v22.14.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/kfet/Library/Logs/poe-acp.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/kfet/Library/Logs/poe-acp.err.log</string>
+</dict>
+</plist>

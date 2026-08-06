@@ -1,0 +1,34 @@
+{
+  "name": "bot-c",
+  "host": "host-d",
+  "platform": "linux/arm64",
+  "supervisor": "systemd-user",
+  "unit": "poe-acp-bot-c",
+  "binary": "~/.local/bin/poe-acp",
+  "agent": { "cmd": "fir --mode acp", "kind": "fir" },
+  "fir": { "exts": ["github.com/kfet/fir-exts"] },
+  "server": {
+    "http_addr": "127.0.0.1:8347",
+    "poe_path": "/bot-c",
+    "config_path": "~/.config/poe-acp/bot-bot-c/config.json",
+    "heartbeat_interval": "3s",
+    "session_ttl": "10m",
+    "enable_mcp_attach": true,
+    "introduction": "bot-c — fir over ACP on host-d (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-5."
+  },
+  "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+  },
+  "config": {
+    "bot_name": "bot-c",
+    "defaults": {
+      "model": "anthropic/claude-opus-5",
+      "thinking": "medium",
+      "hide_thinking": false,
+      "coalesce_ms": 3000,
+      "coalesce_grid": true,
+      "spinner_animate": false
+    }
+  },
+  "credentials": { "env_file": "~/.config/poe-acp/bot-bot-c/env" }
+}
