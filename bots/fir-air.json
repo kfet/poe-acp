@@ -1,0 +1,38 @@
+{
+  "name": "fir-air",
+  "host": "airm1",
+  "platform": "darwin/arm64",
+  "supervisor": "launchd",
+  "unit": "dev.kfet.poe-acp",
+  "binary": "/opt/homebrew/bin/poe-acp",
+  "agent": { "cmd": "fir --mode acp", "kind": "fir" },
+  "fir": {
+    "exts": ["github.com/kfet/fir-exts"],
+    "extra_packages": ["github.com/anthropics/claude-plugins-official"]
+  },
+  "server": {
+    "http_addr": "127.0.0.1:8347",
+    "poe_path": "/poe-acp",
+    "heartbeat_interval": "3s",
+    "introduction": "fir over ACP — one Poe conv = one ACP session. Send !help for commands (!login, !model, !status, !new)."
+  },
+  "launchd": {
+    "plist": "~/Library/LaunchAgents/dev.kfet.poe-acp.plist",
+    "path_env": "/Users/kfet/go/bin:/Users/kfet/.nvm/versions/node/v22.14.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+    "log_out": "/Users/kfet/Library/Logs/poe-acp.out.log",
+    "log_err": "/Users/kfet/Library/Logs/poe-acp.err.log"
+  },
+  "config": {
+    "bot_name": "fir-air",
+    "defaults": {
+      "model": "anthropic/claude-opus-5",
+      "thinking": "medium",
+      "hide_thinking": false,
+      "coalesce_ms": 3000,
+      "coalesce_grid": true,
+      "spinner_animate": false
+    },
+    "agent": { "profile": "fir" }
+  },
+  "credentials": { "env_file": "~/.config/poe-acp/env" }
+}

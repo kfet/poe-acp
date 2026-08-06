@@ -6,6 +6,15 @@ description: Create or update custom Poe server bots with separate poe-acp confi
 
 # Custom Poe Bots
 
+> **Fleet bots: converge is the only sanctioned way to touch a host.** When
+> creating a bot that should be part of the managed fleet, write its
+> declarative spec `bots/<name>.json` in the poe-acp repo (see existing specs
+> for the schema) and let `scripts/converge.sh <bot> --apply` render the
+> config and unit/plist from it. Hand-editing config/unit files on a
+> spec-managed host causes drift that the next converge will revert. The
+> manual layout below is the reference for what converge renders, and for
+> one-off bots outside the fleet.
+
 Use when the user wants another Poe Server Bot on an existing poe-acp host: model-specific bots, test bots, friend/client bots, or any bot needing separate credentials.
 
 One Poe bot = one `poe-acp` process with its own Poe access key, config dir, loopback port, Funnel prefix, supervisor unit, and usually its own fir config/state root via `--agent-dir`.

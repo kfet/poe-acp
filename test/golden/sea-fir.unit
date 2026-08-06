@@ -1,0 +1,14 @@
+[Unit]
+Description=poe-acp (sea-fir)
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/poe-acp/bot-sea-fir/env
+Type=notify
+ExecStart=%h/.local/bin/poe-acp --http-addr 127.0.0.1:8347 --poe-path /sea-fir --config %h/.config/poe-acp/bot-sea-fir/config.json --agent-cmd "fir --mode acp" --heartbeat-interval 3s --session-ttl 10m --introduction "sea-fir — fir over ACP on sea-racknerd. Send !help for commands (!login, !model, !status, !new). Any provider; default opus-4-8/low."
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target

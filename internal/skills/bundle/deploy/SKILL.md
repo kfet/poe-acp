@@ -6,6 +6,13 @@ description: Deploy poe-acp to a remote host behind Tailscale Funnel, start it a
 
 # Deploy Skill
 
+> **Fleet hosts: converge is the only sanctioned way to touch a host.** If the
+> target bot has a spec in `bots/<name>.json`, do NOT hand-deploy: run
+> `scripts/converge.sh <bot>` (dry-run), review the diff, then `--apply`.
+> Versions come from `dist.lock` (use `scripts/converge.sh --tot` to advance
+> it). The manual steps below are for bootstrapping a NEW bot — after which
+> you write its `bots/<name>.json` spec so converge owns it from then on.
+
 Deploy `poe-acp` to a remote host fronted by `tailscale funnel`. The relay listens on loopback; funnel terminates TLS and forwards.
 
 **Agent process model.** Each relay *worker* spawns **one long-lived ACP agent process** (`fir --mode acp`, `claude-code --acp`, ...) that is shared by every conversation on that worker. A Poe conversation maps to an ACP **session** inside that process, and to its own cwd — **not** to its own process. Consequence: replacing the agent binary on disk changes nothing for running conversations. To pick up a new agent binary you must cycle the worker (`systemctl --user reload` / SIGHUP graceful worker swap), which forks a new worker with a fresh agent; conversations still pinned to a draining older worker keep the old agent binary until that worker exits.
