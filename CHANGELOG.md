@@ -22,6 +22,27 @@
   `--target-root`). The `deploy`/`update`/`custom-bots` skills now route
   fleet changes through converge.
 
+- **`!skills` passthrough.** `skills` joins the agent-command allowlist, so
+  `!skills` now reaches fir's `/skills` (advertised by fir's ACP mode since
+  v0.26.0) and shows up in `!help`'s "Agent commands" section. `resume` and
+  `continue` remain deliberately denied — the relay owns the
+  conversation→session mapping and letting the agent switch sessions
+  underneath it would desync that state; the code says so, in place.
+
+### Changed
+
+- **Chat command surface consolidated to five commands.** `!help`,
+  `!status`, `!model [filter|id]`, `!new`, `!login [provider|cancel]` is now
+  the whole documented surface. `!model` with no argument lists models, an
+  argument that exactly matches an available model id switches to it, and
+  anything else narrows the list (a filter that matches exactly one model
+  still just lists it — no surprise switches). `!login cancel` aborts a
+  login in progress. `!status` now renders the relay block (version, uptime,
+  agent, active conversations) alongside model/session state, in one compact
+  phone-friendly list. Every older spelling — `!models`, `!relay`, `!bot`,
+  `!cancel-login`, `!whoami`, `!reset` — still works as an undocumented
+  alias, so nothing anyone has already learned breaks.
+
 ## [0.51.0] - 2026-08-05
 
 ### Changed
