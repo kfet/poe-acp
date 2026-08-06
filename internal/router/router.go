@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -1571,7 +1572,13 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 		return
 	}
 
-	r.setActiveTurn(st.convID, sink, st.cwd)
+	// Bind this turn's identity to the sink BEFORE it goes live, so the
+	// sink's owner can cancel exactly this turn (and nothing after it).
+	token := turnTokenSeq.Add(1)
+	if tt, ok := sink.(TurnTokener); ok {
+		tt.SetTurnToken(token)
+	}
+	r.setActiveTurn(st.convID, sink, st.cwd, token)
 	defer r.clearActiveTurn(st.convID)
 
 	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, blocks)
@@ -2323,7 +2330,11 @@ func flattenTranscript(q []Turn) string {
 	return b.String()
 }
 
-// Cancel asks the agent to cancel the current prompt for a conv.
+// Cancel asks the agent to cancel the current prompt for a conv,
+// whatever turn that happens to be. Blunt by design: it is the
+// operator/administrative entry point (and the last-resort path for
+// callers that hold no turn token). A caller that owns a specific turn
+// must use CancelTurn instead — see the race it closes there.
 func (r *Router) Cancel(ctx context.Context, convID string) error {
 	r.mu.Lock()
 	st, ok := r.sessions[convID]
@@ -2333,6 +2344,52 @@ func (r *Router) Cancel(ctx context.Context, convID string) error {
 	}
 	return r.cfg.Agent.Cancel(ctx, st.sessionID)
 }
+
+// CancelTurn cancels the conversation's in-flight prompt ONLY IF the live
+// turn is the one identified by token (handed to the turn's sink via
+// TurnTokener before Agent.Prompt). Turns are serialised per conversation,
+// so a plain session-scoped Cancel issued by turn N's owner can land on
+// turn N+1 if it fires in the window where N has just finished and N+1 has
+// started — the HTTP handler's disconnect watcher does exactly that. The
+// token check under activeMu makes the cancel turn-scoped: a stale token
+// is a no-op.
+//
+// Residual window: the token is compared under activeMu but the
+// session/cancel RPC is issued after releasing it (never hold a lock
+// across a wire write). A turn ending in those few instructions could
+// still be followed by a mis-aimed cancel; the pathological seconds-wide
+// window the watcher had is gone.
+func (r *Router) CancelTurn(ctx context.Context, convID string, token uint64) error {
+	if token == 0 {
+		return nil // caller never had a turn token; nothing it owns is live
+	}
+	r.mu.Lock()
+	st, ok := r.sessions[convID]
+	r.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	r.activeMu.Lock()
+	at, live := r.active[convID]
+	r.activeMu.Unlock()
+	if !live || at.token != token {
+		kitlog.Debugf("CancelTurn conv=%s: token %d is not the live turn (live=%v); ignoring",
+			convID, token, live)
+		return nil
+	}
+	return r.cfg.Agent.Cancel(ctx, st.sessionID)
+}
+
+// turnTokenSeq issues process-unique, monotonically increasing turn
+// tokens. Zero is never issued so it can mean "no turn".
+var turnTokenSeq atomic.Uint64
+
+// TurnTokener is implemented by sinks that want to know which turn they
+// are bound to. The router calls SetTurnToken exactly once per turn, just
+// before Agent.Prompt, so the sink's owner can later prove ownership to
+// CancelTurn. Optional: sinks that do not implement it simply cannot
+// cancel their own turn.
+type TurnTokener interface{ SetTurnToken(uint64) }
 
 // AvailableModels returns the agent's available models and current id.
 // Satisfies command.Controller.
@@ -2835,15 +2892,17 @@ func (r *Router) Debug() []DebugInfo {
 }
 
 // activeTurn is the live sink + working dir for a conversation's
-// in-flight turn, used by the MCP attach relay.
+// in-flight turn, used by the MCP attach relay. token identifies WHICH
+// turn is live so an external canceller can prove it owns it (CancelTurn).
 type activeTurn struct {
-	sink ChunkSink
-	cwd  string
+	sink  ChunkSink
+	cwd   string
+	token uint64
 }
 
-func (r *Router) setActiveTurn(convID string, sink ChunkSink, cwd string) {
+func (r *Router) setActiveTurn(convID string, sink ChunkSink, cwd string, token uint64) {
 	r.activeMu.Lock()
-	r.active[convID] = activeTurn{sink: sink, cwd: cwd}
+	r.active[convID] = activeTurn{sink: sink, cwd: cwd, token: token}
 	r.activeMu.Unlock()
 }
 
