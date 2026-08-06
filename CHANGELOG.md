@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-08-06
+
 ### Added
 
 - **Bot-as-dist-spec + converge.** Each fleet bot is now fully described by
