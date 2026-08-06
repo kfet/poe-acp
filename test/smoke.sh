@@ -17,6 +17,10 @@ KEY="${POEACP_ACCESS_KEY:?POEACP_ACCESS_KEY required}"
 
 conv="smoke-$(date +%s)"
 msg="${1:-Say the word \"pong\" and stop.}"
+# JSON-encode the message (quotes, backslashes, newlines) instead of pasting
+# it raw into the body — the default message contains quotes, and an
+# unescaped one made the relay reject the whole request as malformed JSON.
+msg_json=$(printf '%s' "$msg" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 
 echo "--- /healthz ---" >&2
 curl -fsS "http://${ADDR}/healthz" >&2
@@ -36,7 +40,7 @@ body=$(cat <<JSON
   "conversation_id": "${conv}",
   "user_id": "smoke-user",
   "message_id": "msg-1",
-  "query": [{"role": "user", "content": "${msg}"}]
+  "query": [{"role": "user", "content": ${msg_json}}]
 }
 JSON
 )
