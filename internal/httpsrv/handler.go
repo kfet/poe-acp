@@ -43,7 +43,7 @@ type Config struct {
 	// Settings.ParameterControls is used as-is.
 	ParameterControlsProvider func() *poeproto.ParameterControls
 	// Commands, if set, intercepts relay chat-commands (login family,
-	// !help, !status, !models, !model, !new — any of the sigils /, !, .)
+	// !help, !status, !model, !new — any of the sigils /, !, .)
 	// and pasted redirect URLs from in-flight logins before they reach
 	// the router. Optional; nil disables the command surface.
 	Commands CommandHandler
@@ -317,7 +317,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	}
 
 	// Command intercept: relay-owned chat commands (login family, !help,
-	// !status/!models/!model/!new — any accepted sigil) and pasted
+	// !status/!model/!new — any accepted sigil) and pasted
 	// redirect URLs for an in-flight login are handled out-of-band, never
 	// reaching the agent. Allowlisted agent commands (e.g. !reload) are
 	// instead rewritten to their slash form and forwarded through the
