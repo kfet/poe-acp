@@ -281,6 +281,13 @@ type Router struct {
 	// reactionLogMu serialises appends to the reactions ledger so
 	// concurrent reaction events never interleave a partial line.
 	reactionLogMu sync.Mutex
+
+	// evictDrainGrace / endTurnAckTimeout are the teardown bounds (see the
+	// default* consts). Per-Router fields rather than package vars so a test
+	// can tighten them without racing another test's still-running session
+	// goroutines; set once in New and never written afterwards.
+	evictDrainGrace   time.Duration
+	endTurnAckTimeout time.Duration
 }
 
 // sessionState tracks one conv_id.
@@ -429,10 +436,16 @@ type sessionQueue struct {
 	inFlight bool
 	stopped  bool
 	notify   chan struct{} // buffered cap 1; signals "queue non-empty or stopped"
+	// idleCh is signalled (non-blocking, cap 1) by finishInFlight so an
+	// evicting caller can wait for the in-flight turn to unwind without
+	// polling. Only waitIdle consumes it; a stale signal left over from a
+	// previous turn is harmless because waitIdle re-checks idle() on every
+	// wake.
+	idleCh chan struct{}
 }
 
 func newSessionQueue() *sessionQueue {
-	return &sessionQueue{notify: make(chan struct{}, 1)}
+	return &sessionQueue{notify: make(chan struct{}, 1), idleCh: make(chan struct{}, 1)}
 }
 
 // push appends req. On overflow it sheds the oldest reaction in the
@@ -507,6 +520,12 @@ func (sq *sessionQueue) finishInFlight() {
 	sq.mu.Lock()
 	sq.inFlight = false
 	sq.mu.Unlock()
+	// Wake any evicting caller parked in waitIdle. Non-blocking: the
+	// channel is a level-ish signal, not a queue of events.
+	select {
+	case sq.idleCh <- struct{}{}:
+	default:
+	}
 }
 
 // idle reports whether the queue is empty AND no turn is currently in
@@ -517,20 +536,61 @@ func (sq *sessionQueue) idle() bool {
 	return !sq.inFlight && len(sq.q) == 0
 }
 
-// stop marks the queue closed and drains any pending reqs, closing
-// their done channels with shed=true. Called by gcOnce on eviction.
-// idle() must be true before calling stop — gcOnce enforces this.
-func (sq *sessionQueue) stop() {
-	sq.mu.Lock()
-	sq.stopped = true
-	pending := sq.q
-	sq.q = nil
-	sq.mu.Unlock()
-	for _, r := range pending {
-		r.shed = true
-		close(r.done)
+// waitIdle blocks until no turn is in flight or d elapses, reporting
+// whether the queue went idle. Used by the eviction path to keep an
+// evicted session's drain/run goroutines alive just long enough for the
+// in-flight turn to unwind (so it can still get its endTurn ack and
+// finalise its sink) without ever waiting unbounded.
+func (sq *sessionQueue) waitIdle(d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	for {
+		if sq.idle() {
+			return true
+		}
+		select {
+		case <-sq.idleCh:
+		case <-t.C:
+			return sq.idle()
+		}
 	}
 }
+
+// stop marks the queue closed and detaches any pending reqs, returning
+// them plus whether a turn is still in flight. The caller owns
+// finalising the returned reqs (finalizeShed) — deliberately NOT done
+// here, because stop is called with Router.mu held and a sink write must
+// never happen under the router lock.
+func (sq *sessionQueue) stop() (pending []*turnReq, inFlight bool) {
+	sq.mu.Lock()
+	sq.stopped = true
+	pending, sq.q = sq.q, nil
+	inFlight = sq.inFlight
+	sq.mu.Unlock()
+	return pending, inFlight
+}
+
+// finalizeShed closes out turns that were shed by stop(): a user turn
+// gets a real, user-visible terminal event so the caller's HTTP response
+// carries a reason instead of the handler's empty-answer backstop, then
+// done is closed to release the submitter. Reactions use a discardSink,
+// so this is a no-op body for them. Must be called WITHOUT Router.mu held.
+func finalizeShed(reqs []*turnReq) {
+	for _, req := range reqs {
+		req.shed = true
+		if req.kind == turnUser {
+			_ = req.sink.Error("relay: session was reset before this turn ran — please send it again", "user_caused_error")
+			_ = req.sink.Done()
+			req.err = errTurnShed
+		}
+		close(req.done)
+	}
+}
+
+// errTurnShed is the error a shed user turn reports to its submitter. The
+// sink has already been finalised by finalizeShed, so submitTurn must not
+// write to it again.
+var errTurnShed = errors.New("turn shed: session was reset")
 
 // chunkMsg is a message on the session-lifetime chunkCh. Exactly one
 // field is meaningful per message kind:
@@ -667,7 +727,8 @@ func New(cfg Config) (*Router, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "convs"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir state: %w", err)
 	}
-	r := &Router{cfg: cfg, sessions: make(map[string]*sessionState), overrides: make(map[string]string), active: make(map[string]activeTurn)}
+	r := &Router{cfg: cfg, sessions: make(map[string]*sessionState), overrides: make(map[string]string), active: make(map[string]activeTurn),
+		evictDrainGrace: defaultEvictDrainGrace, endTurnAckTimeout: defaultEndTurnAckTimeout}
 	if cfg.AccessKey != "" {
 		r.uploader = poeupload.New(cfg.AccessKey, cfg.UploadEndpoint, cfg.HTTPClient)
 	}
@@ -1226,6 +1287,20 @@ func (r *Router) recoverAndReplay(ctx context.Context, convID, userID string, qu
 // current entry for convID) and stops its goroutines. Whoever wins the
 // map delete owns the channel closes, so this never double-closes against
 // gcOnce (which only evicts idle sessions).
+//
+// Eviction is safe MID-TURN. Unlike gcOnce/ResetSession, the callers here
+// (transcript divergence in getOrCreate, recoverAndReplay) cannot gate on
+// idle(): the user edited/deleted an earlier message, or the agent lost the
+// session, and the rebuild has to happen regardless. So:
+//
+//   - queued turns are detached and finalised with a real terminal event
+//     (finalizeShed) — never left to the handler's empty-answer backstop;
+//   - if a turn is still in flight, the drain/run goroutines are NOT torn
+//     down here. Tearing them down would strand the runner on its endTurn
+//     ack and park the submitter with an un-finalised sink. Instead the
+//     agent-side prompt is cancelled and teardown is deferred to a
+//     goroutine that waits (bounded) for the turn to unwind. The caller
+//     returns immediately — the new session does not wait on the old turn.
 func (r *Router) evictSession(convID string, st *sessionState) {
 	r.mu.Lock()
 	cur, ok := r.sessions[convID]
@@ -1237,9 +1312,45 @@ func (r *Router) evictSession(convID string, st *sessionState) {
 	if !deleted {
 		return
 	}
+	pending, inFlight := st.queue.stop()
+	finalizeShed(pending)
+	if inFlight {
+		go r.teardownEvicted(st)
+		return
+	}
 	close(st.drainStop)
 	close(st.runStop)
-	st.queue.stop()
+}
+
+// defaultEvictDrainGrace bounds how long an evicted session's goroutines are
+// kept alive waiting for its in-flight turn to unwind after session/cancel.
+const defaultEvictDrainGrace = 60 * time.Second
+
+// defaultEndTurnAckTimeout bounds the runner's wait for the drain goroutine's
+// end-of-turn ack. The ack is normally instantaneous (drainChunks does no
+// IO); this only ever fires if the drain goroutine has been lost, which must
+// degrade to "finalise the sink late" rather than "park forever".
+const defaultEndTurnAckTimeout = 30 * time.Second
+
+// teardownEvicted cancels the in-flight turn of an already-detached session
+// and tears the session's goroutines down once the turn has unwound (or the
+// grace window expires). Runs on its own goroutine: the evicting caller is
+// serving a NEW turn and must not wait on the old one.
+func (r *Router) teardownEvicted(st *sessionState) {
+	cctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	if err := r.cfg.Agent.Cancel(cctx, st.sessionID); err != nil {
+		kitlog.Debugf("teardownEvicted conv=%s sid=%s: cancel: %v", st.convID, string(st.sessionID), err)
+	}
+	cancel()
+	if !st.queue.waitIdle(r.evictDrainGrace) {
+		// The agent ignored session/cancel. Tear down anyway — the runner's
+		// own waits are bounded and drainStop-guarded, so it will finalise
+		// its sink as soon as Prompt returns instead of parking forever.
+		log.Printf("router: evicted session conv=%s sid=%s still had a turn in flight after %s; forcing teardown",
+			st.convID, string(st.sessionID), r.evictDrainGrace)
+	}
+	close(st.drainStop)
+	close(st.runStop)
 }
 
 // ReportReaction queues an out-of-band reaction turn. Returns as soon
@@ -1437,7 +1548,8 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 		st.pendingSystemPromptInline = false
 	}
 
-	st.chunkCh <- chunkMsg{beginTurn: &turnDef{
+	select {
+	case st.chunkCh <- chunkMsg{beginTurn: &turnDef{
 		sink:            sink,
 		hideThinking:    req.opts.HideThinking,
 		showPlans:       req.opts.ShowPlans,
@@ -1446,7 +1558,18 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 		tools:           newToolStates(req.opts),
 		scanner:         r.newAttachScanner(sink, st.cwd),
 		escaper:         &flagEscaper{},
-	}}
+	}}:
+	case <-st.drainStop:
+		// The session was torn down before this turn could start: the drain
+		// goroutine is gone, so nothing this turn streams would ever reach
+		// the sink. Finalise with a real terminal event instead of blocking
+		// on a channel nobody reads.
+		log.Printf("router: conv=%s: turn dropped, session torn down before it started", st.convID)
+		_ = sink.Error("relay: session was reset before this turn ran — please send it again", "user_caused_error")
+		_ = sink.Done()
+		req.err = errTurnShed
+		return
+	}
 
 	r.setActiveTurn(st.convID, sink, st.cwd)
 	defer r.clearActiveTurn(st.convID)
@@ -1456,9 +1579,27 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	// endTurn ack: drain processes every chunk emitted before
 	// Agent.Prompt returned, then closes endDone. Only after that do
 	// we touch the sink with terminal events.
+	//
+	// Every wait here is bounded. A session evicted mid-turn (drainStop
+	// closed) has no drain goroutine left to ack, and an agent that floods
+	// chunks after teardown could fill chunkCh — either would park this
+	// goroutine, and with it the submitter and its HTTP response, forever.
+	// On both escapes we fall through to sink finalisation below: a
+	// user-visible outcome always beats a hang.
 	endDone := make(chan struct{})
-	st.chunkCh <- chunkMsg{endTurn: endDone}
-	<-endDone
+	select {
+	case st.chunkCh <- chunkMsg{endTurn: endDone}:
+		select {
+		case <-endDone:
+		case <-st.drainStop:
+			kitlog.Debugf("runOneTurn conv=%s: session torn down before end-of-turn ack", st.convID)
+		case <-time.After(r.endTurnAckTimeout):
+			log.Printf("router: conv=%s: end-of-turn ack timed out after %s; finalising anyway",
+				st.convID, r.endTurnAckTimeout)
+		}
+	case <-st.drainStop:
+		kitlog.Debugf("runOneTurn conv=%s: session torn down, skipping end-of-turn ack", st.convID)
+	}
 
 	if err != nil {
 		// Recoverable: the agent no longer holds this session (released or
@@ -2333,6 +2474,7 @@ func (r *Router) ResetSession(convID string) error {
 	}
 	close(st.drainStop)
 	close(st.runStop)
+	// Idle by the check above, so there is nothing pending to finalise.
 	st.queue.stop()
 	delete(r.sessions, convID)
 	return nil

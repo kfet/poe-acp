@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Mid-turn session eviction no longer wedges the conversation.** Editing or
+  deleting an earlier Poe message while a reply was streaming (and the
+  session-not-found recovery path) evicted the live session without checking
+  for an in-flight turn: the drain goroutine died, the runner parked forever
+  on its end-of-turn ack, and any queued follow-up was shed with its SSE
+  stream finalised only by the handler's empty-answer backstop. Eviction is
+  now safe mid-turn — queued turns are finalised with a real message, the
+  in-flight turn gets `session/cancel` and teardown is deferred until it
+  unwinds (bounded by a 60s grace, then forced), and every wait on that path
+  is bounded and logged.
+
 ### Documentation
 
 - Document the **Caddy-fronted SSE keep-alive reuse** failure and its fix. Bots fronted by Caddy (or any pooling TLS proxy) instead of `tailscale funnel` can fail a turn with aiohttp `TransferEncodingError: Not enough data to satisfy transfer length header` when Poe reuses a stale keep-alive socket; fix is `header Connection close` on the site block so Poe reconnects per turn (~10ms/turn TLS-resume cost, SSE streams unaffected). Added to the deploy skill Pitfalls and the design-doc Deployment section. Funnel-fronted bots are not affected.
