@@ -52,7 +52,7 @@ func TestAttachActive_NoActiveTurn(t *testing.T) {
 
 func TestAttachActive_MissingPath(t *testing.T) {
 	r := mkRouterWithUploader(t, true)
-	r.setActiveTurn("c", &captureSink{}, t.TempDir())
+	r.setActiveTurn("c", &captureSink{}, t.TempDir(), 1)
 	if err := r.AttachActive("c", "", "", false); err == nil {
 		t.Fatal("want error for empty path")
 	}
@@ -63,7 +63,7 @@ func TestAttachActive_UploadError(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "f.txt")
 	os.WriteFile(fp, []byte("x"), 0o644)
-	r.setActiveTurn("c", &captureSink{}, dir)
+	r.setActiveTurn("c", &captureSink{}, dir, 1)
 	if err := r.AttachActive("c", "f.txt", "", false); err == nil {
 		t.Fatal("want upload error")
 	}
@@ -74,7 +74,7 @@ func TestAttachActive_Success_RelativePath(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "doc.md"), []byte("hi"), 0o644)
 	sink := &captureSink{}
-	r.setActiveTurn("c", sink, dir)
+	r.setActiveTurn("c", sink, dir, 1)
 	if err := r.AttachActive("c", "doc.md", "", false); err != nil {
 		t.Fatalf("AttachActive: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestAttachActive_Inline_AbsolutePath(t *testing.T) {
 	fp := filepath.Join(dir, "c.png")
 	os.WriteFile(fp, []byte("x"), 0o644)
 	sink := &captureSink{}
-	r.setActiveTurn("c", sink, dir)
+	r.setActiveTurn("c", sink, dir, 1)
 	if err := r.AttachActive("c", fp, "Chart", true); err != nil {
 		t.Fatalf("AttachActive: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestAttachActive_SinkFileError(t *testing.T) {
 	r := mkRouterWithUploader(t, true)
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
-	r.setActiveTurn("c", errFileSink2{&captureSink{}}, dir)
+	r.setActiveTurn("c", errFileSink2{&captureSink{}}, dir, 1)
 	if err := r.AttachActive("c", "f.txt", "n", false); err == nil {
 		t.Fatal("want error when sink.File fails")
 	}

@@ -15,6 +15,13 @@
   unwinds (bounded by a 60s grace, then forced), and every wait on that path
   is bounded and logged.
 
+- **Cancel is now turn-scoped.** A client disconnect for turn N could issue
+  `session/cancel` in the window where N had just ended and N+1 had started,
+  killing the follow-up. The router hands each turn a token to its sink and
+  the handler cancels via `Router.CancelTurn`, which no-ops unless the token
+  is still the live turn. `Router.Cancel` (session-scoped) is unchanged for
+  other callers.
+
 ### Documentation
 
 - Document the **Caddy-fronted SSE keep-alive reuse** failure and its fix. Bots fronted by Caddy (or any pooling TLS proxy) instead of `tailscale funnel` can fail a turn with aiohttp `TransferEncodingError: Not enough data to satisfy transfer length header` when Poe reuses a stale keep-alive socket; fix is `header Connection close` on the site block so Poe reconnects per turn (~10ms/turn TLS-resume cost, SSE streams unaffected). Added to the deploy skill Pitfalls and the design-doc Deployment section. Funnel-fronted bots are not affected.
