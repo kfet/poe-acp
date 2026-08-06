@@ -2,6 +2,7 @@ package httpsrv
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kfet/poe-acp/internal/router"
@@ -39,7 +40,19 @@ type answerRecorder struct {
 	inner router.ChunkSink
 	mu    sync.Mutex
 	calls []recCall
+	// token is the router's id for the turn this recorder is bound to,
+	// set once via SetTurnToken just before Agent.Prompt. The disconnect
+	// watcher passes it to Router.CancelTurn so a late-firing watcher can
+	// only ever cancel ITS OWN turn, never the follow-up that replaced it.
+	// Zero until the turn actually starts (still queued, or never ran).
+	token atomic.Uint64
 }
+
+// SetTurnToken implements router.TurnTokener.
+func (a *answerRecorder) SetTurnToken(t uint64) { a.token.Store(t) }
+
+// turnToken returns the bound turn id, or 0 if the turn never started.
+func (a *answerRecorder) turnToken() uint64 { return a.token.Load() }
 
 func (a *answerRecorder) record(c recCall) {
 	a.mu.Lock()
