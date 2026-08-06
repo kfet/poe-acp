@@ -451,7 +451,10 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 			// realWritten then is the discriminator. (Re-reading it after
 			// the turn completes would be wrong — output lands by then.)
 			if s.realWritten() {
-				_ = h.cfg.Router.Cancel(context.Background(), req.ConversationID)
+				// Turn-scoped: cancel ONLY the turn this request owns. A
+				// session-scoped cancel here can land on the follow-up turn
+				// when the watcher fires just after ours ended.
+				_ = h.cfg.Router.CancelTurn(context.Background(), req.ConversationID, rec.turnToken())
 			} else {
 				absorbed.Store(true)
 			}
