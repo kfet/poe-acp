@@ -3,6 +3,7 @@ Description=poe-acp (bot-e)
 After=network-online.target
 
 [Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/poe-acp/bot-bot-e/env
 Type=notify
 ExecStart=%h/.local/bin/poe-acp --http-addr 127.0.0.1:8347 --poe-path /bot-e --config %h/.config/poe-acp/bot-bot-e/config.json --agent-cmd "fir --mode acp" --heartbeat-interval 3s --session-ttl 10m --introduction "bot-e — fir over ACP on host-e. Send !help for commands (!login, !model, !status, !new). Any provider; default opus-4-8/low."
