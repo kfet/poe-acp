@@ -17,7 +17,9 @@
     "introduction": "two-fir — fir over ACP on kopitwo (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-5."
   },
   "systemd": {
-    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s"
   },
   "config": {
     "bot_name": "two-fir",

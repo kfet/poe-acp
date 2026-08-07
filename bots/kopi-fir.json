@@ -17,7 +17,9 @@
     "introduction": "kopi-fir — fir over ACP on kopione (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-4-8."
   },
   "systemd": {
-    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s"
   },
   "config": {
     "bot_name": "kopi-fir",
