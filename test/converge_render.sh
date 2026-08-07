@@ -94,7 +94,10 @@ fi
 echo "== fake-target converge (dry-run, apply, idempotence)"
 fake="$tmpd/fakehost"
 mkdir -p "$fake/.local/bin"
-printf '#!/bin/sh\necho 0.51.0\n' >"$fake/.local/bin/poe-acp"
+# Track the lock rather than a hardcoded version: this asserts "already
+# converged is detected", not "the fleet is pinned to X".
+LOCKED_POE_ACP=$(jq -r .poe_acp "$ROOT/dist.lock")
+printf '#!/bin/sh\necho %s\n' "$LOCKED_POE_ACP" >"$fake/.local/bin/poe-acp"
 chmod +x "$fake/.local/bin/poe-acp"
 
 out=$("$CONVERGE" two-fir --target-root "$fake")
@@ -103,7 +106,7 @@ case "$out" in
   *) bad "expected DRY RUN banner"; echo "$out" ;;
 esac
 case "$out" in
-  *"poe-acp 0.51.0 ✓"*) ok "stub binary version matches lock" ;;
+  *"poe-acp $LOCKED_POE_ACP ✓"*) ok "stub binary version matches lock" ;;
   *) bad "expected poe-acp version ✓"; echo "$out" ;;
 esac
 [ ! -f "$fake/.config/poe-acp/bot-two-fir/config.json" ] \
