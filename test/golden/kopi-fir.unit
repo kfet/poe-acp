@@ -8,6 +8,8 @@ EnvironmentFile=%h/.config/poe-acp/bot-kopi-fir/env
 Type=notify
 ExecStart=%h/.local/bin/poe-acp --http-addr 127.0.0.1:8347 --poe-path /kopi-fir --config %h/.config/poe-acp/bot-kopi-fir/config.json --agent-cmd "fir --mode acp" --heartbeat-interval 3s --session-ttl 10m --enable-mcp-attach --introduction "kopi-fir — fir over ACP on kopione (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-4-8."
 ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
 
 [Install]
 WantedBy=default.target

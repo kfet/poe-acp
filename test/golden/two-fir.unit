@@ -8,6 +8,8 @@ EnvironmentFile=%h/.config/poe-acp/bot-two-fir/env
 Type=notify
 ExecStart=%h/.local/bin/poe-acp --http-addr 127.0.0.1:8347 --poe-path /two-fir --config %h/.config/poe-acp/bot-two-fir/config.json --agent-cmd "fir --mode acp" --heartbeat-interval 3s --session-ttl 10m --enable-mcp-attach --introduction "two-fir — fir over ACP on kopitwo (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-5."
 ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
 
 [Install]
 WantedBy=default.target
