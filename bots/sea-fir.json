@@ -16,6 +16,7 @@
     "introduction": "sea-fir — fir over ACP on sea-racknerd. Send !help for commands (!login, !model, !status, !new). Any provider; default opus-4-8/low."
   },
   "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
     "restart": "on-failure",
     "restart_sec": "2s"
   },
