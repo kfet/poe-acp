@@ -167,8 +167,16 @@ rsh() { # run a shell command on the target; stdin is forwarded
   if [ -n "$TARGET_ROOT" ]; then
     HOME="$TARGET_ROOT" bash -c "$1"
   else
+    # Force a LOGIN BASH on the far side. Two hazards otherwise:
+    #   - `ssh host cmd` runs the user's default shell non-interactively
+    #     and non-login, so on a zsh host ~/.local/bin is NOT on PATH and
+    #     a perfectly installed `fir` probes as "command not found".
+    #   - the command is written in bash, but would be interpreted by
+    #     whatever login shell the account happens to use.
+    # Single-quote the payload (POSIX-escaping embedded quotes) so the
+    # remote login shell hands it to bash verbatim. stdin still forwards.
     # shellcheck disable=SC2029  # remote-side expansion is intended
-    ssh "$HOST" "$1"
+    ssh "$HOST" "bash -lc '${1//\'/\'\\\'\'}'"
   fi
 }
 
