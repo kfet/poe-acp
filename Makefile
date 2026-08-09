@@ -42,7 +42,7 @@ else
 endif
 
 .PHONY: all _parallel build build-all install fmt tidy vet \
-        test test-race-cover test-cover open-coverage \
+        test test-race-cover test-cover test-scripts open-coverage \
         clean notices check-licenses publish deploy FORCE
 
 # Used as a prereq to force pattern-rule recipes to run every invocation
@@ -58,7 +58,7 @@ FORCE:
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _parallel
 
-_parallel: vet test-race-cover build build-all check-licenses
+_parallel: vet test-race-cover test-scripts build build-all check-licenses
 
 fmt:
 	@gofmt -s -w .
@@ -107,6 +107,11 @@ test-race-cover: | $(BINDIR)
 	$(call RUN,test (race+cover),\
 		go test -race -shuffle=on -cover ./... -coverprofile=$(BINDIR)/coverage.tmp.out \
 		&& $(COVGATE) -profile=$(BINDIR)/coverage.tmp.out -out=$(BINDIR)/coverage.out -ignore=.covignore -min=100)
+
+# Shell tooling under scripts/ (converge.sh) — black-box assertions against
+# fake target roots and stubbed supervisors. No network, no real host.
+test-scripts:
+	$(call RUN,test (scripts),./test/converge_render.sh)
 
 # Human-friendly per-function coverage summary (no gate).
 test-cover: | $(BINDIR)
