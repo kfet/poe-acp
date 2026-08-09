@@ -237,9 +237,71 @@ diff_artifact() {
 # ---------------------------------------------------------------------------
 GRACEFUL_MIN=0.36.0
 
+# Basename of the tracked binary (spec `.binary`). A supervisor's WORKERS are
+# forks of that same image, so it is what tells a worker apart from anything
+# else a poe-acp process may have spawned. Set per-bot in converge().
+PA_EXE=poe-acp
+
 ver_ge() { # <a> <b> — true if version a >= b
   [ -n "$1" ] || return 1
   [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
+}
+
+suptool() { # <supervisor> — the CLI that drives it
+  case "$1" in launchd) echo launchctl ;; *) echo systemctl ;; esac
+}
+
+# exe_name_snippet — remote shell defining `exe_name <pid>`: the BASENAME of
+# the image that pid is executing, empty if unknowable. /proc/<pid>/exe is the
+# in-memory inode (still correct after the on-disk binary moved on, and after
+# it was replaced or unlinked — hence stripping a " (deleted)" suffix). Where
+# there is no /proc (macOS) it falls back to `ps -o comm=`, which reports the
+# same basename.
+exe_name_snippet() {
+  cat <<'EOS'
+exe_name() {
+  _e=$(readlink "/proc/$1/exe" 2>/dev/null || true)
+  _e=${_e% (deleted)}
+  [ -n "$_e" ] || _e=$(ps -o comm= -p "$1" 2>/dev/null || true)
+  printf '%s\n' "${_e##*/}"
+}
+EOS
+}
+
+# workers_snippet — remote shell that fills `workers` with the child pids of
+# $pid that are RUNNING THE poe-acp IMAGE, i.e. its supervisor workers.
+#
+# The identity filter is load-bearing, not cosmetic. A pre-0.36.0 poe-acp is a
+# single process that spawns ACP agents (`fir --mode acp`) as its own direct
+# children; an unfiltered child list would read those agents as "workers" and
+# (a) select the graceful path against a supervisor that cannot swap, and
+# (b) let a freshly spawned agent pass as "the new worker" after a SIGHUP that
+# did nothing — reporting success while the OLD binary keeps serving. In the
+# >= 0.36.0 model agents hang off the WORKER, not off the tracked pid, so the
+# filter costs nothing on a healthy host.
+workers_snippet() {
+  cat <<'EOS'
+workers=''
+for _c in $(pgrep -P "$pid" 2>/dev/null || true); do
+  case "$(exe_name "$_c")" in
+    "$paname") workers="$workers $_c" ;;
+  esac
+done
+workers=${workers# }
+EOS
+}
+
+# running_version_snippet — remote shell that sets `ver` to the version of the
+# binary process $pid is EXECUTING (Linux only: it execs /proc/<pid>/exe, the
+# in-memory image, never the on-disk file). Guarded on the image basename:
+# never exec an unrelated process's image just because a pid was reported
+# wrong.
+running_version_snippet() {
+  cat <<'EOS'
+case "$(exe_name "$pid")" in
+  "$paname") ver=$("/proc/$pid/exe" --version 2>/dev/null | head -1 || true) ;;
+esac
+EOS
 }
 
 # probe_state <supervisor> <unit-or-label>
@@ -247,30 +309,22 @@ ver_ge() { # <a> <b> — true if version a >= b
 #   running     1 if the supervisor process is up
 #   pid         supervisor (tracked) pid, 0 if unknown
 #   version     version of the RUNNING supervisor binary; empty if unreadable
-#               (Linux-only: /proc/<pid>/exe executes the in-memory binary,
-#                which is the whole point — the on-disk one has moved on)
-#   worker-pids space-separated child pids of the supervisor (its workers);
-#               a non-empty list is itself proof of the >= 0.36.0 model
+#               (Linux-only — macOS has no /proc)
+#   worker-pids space-separated child pids of the supervisor that run the
+#               poe-acp image; a non-empty list is itself proof of the
+#               >= 0.36.0 master/worker model
 #   has_reload  1 if the loaded systemd unit defines ExecReload
-# running_version_snippet — remote shell that prints the version of the binary
-# the process $pid is EXECUTING (Linux only). /proc/<pid>/exe is the in-memory
-# inode, so it still reports the old version after the on-disk binary moved on
-# — which is exactly the question. Guarded on the link target's name: never
-# exec an unrelated process's image just because a pid was reported wrong.
-running_version_snippet() {
-  cat <<'EOS'
-exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
-case "${exe% (deleted)}" in
-  */poe-acp*) ver=$("/proc/$pid/exe" --version 2>/dev/null | head -1 || true) ;;
-esac
-EOS
-}
-
 probe_state() {
   local supervisor=$1 unit=$2 script
+  # A fake root has no supervisor unless the test stubs one; never probe the
+  # REAL local systemd/launchd from --target-root mode.
+  if [ -n "$TARGET_ROOT" ] && [ ! -x "$TARGET_ROOT/.local/bin/$(suptool "$supervisor")" ]; then
+    echo '0|0|||0'; return 0
+  fi
   case "$supervisor" in
     systemd-user)
-      script="u='$unit'
+      script="u='$unit'; paname='$PA_EXE'
+$(exe_name_snippet)
 $(cat <<'EOS'
 pid=$(systemctl --user show -p MainPID --value "$u" 2>/dev/null || echo 0)
 case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
@@ -282,8 +336,8 @@ EOS
 )
 if [ \"\$run\" = 1 ]; then
 $(running_version_snippet)
+$(workers_snippet)
 $(cat <<'EOS'
-  workers=$(ps -o pid= --ppid "$pid" 2>/dev/null | tr -s ' \n' ' ' | sed 's/^ //;s/ $//')
 fi
 hr=0; [ -n "$rel" ] && hr=1
 printf '%s|%s|%s|%s|%s\n' "$run" "$pid" "$ver" "$workers" "$hr"
@@ -293,9 +347,10 @@ EOS
     launchd)
       # macOS has no /proc, so the running version cannot be read out of the
       # live process. The worker-child list is the capability probe instead:
-      # only the >= 0.36.0 master/worker model forks children off the tracked
-      # pid, so its presence is proof the live supervisor can swap workers.
-      script="l='$unit'
+      # only the >= 0.36.0 master/worker model forks poe-acp children off the
+      # tracked pid, so their presence is proof the live supervisor can swap.
+      script="l='$unit'; paname='$PA_EXE'
+$(exe_name_snippet)
 $(cat <<'EOS'
 out=$(launchctl print gui/$(id -u)/"$l" 2>/dev/null || true)
 pid=$(printf '%s\n' "$out" | awk -F'= *' '/^[[:space:]]*pid =/{print $2; exit}')
@@ -303,7 +358,12 @@ case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
 run=0
 printf '%s\n' "$out" | grep -q 'state = running' && [ "$pid" -gt 0 ] && run=1
 workers=''
-[ "$run" = 1 ] && workers=$(pgrep -P "$pid" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+EOS
+)
+if [ \"\$run\" = 1 ]; then
+$(workers_snippet)
+$(cat <<'EOS'
+fi
 printf '%s|%s|%s|%s|%s\n' "$run" "$pid" '' "$workers" 1
 EOS
 )"
@@ -315,7 +375,8 @@ EOS
 # worker_version <pid> — version the given worker process is executing
 # (Linux/systemd hosts only; empty elsewhere or if unreadable).
 worker_version() {
-  rsh "pid='$1'; ver=''
+  rsh "pid='$1'; paname='$PA_EXE'; ver=''
+$(exe_name_snippet)
 $(running_version_snippet)
 printf '%s\n' \"\$ver\""
 }
@@ -368,6 +429,9 @@ converge() {
   host=$(jqs '.host')
   supervisor=$(jqs '.supervisor')
   binary=$(jqs '.binary')
+  # Workers are forks of this same image; its basename is how a worker is told
+  # apart from anything else a poe-acp process spawned (see workers_snippet).
+  PA_EXE=${binary##*/}
   HOST="$host"
 
   echo "== converge $bot (host=$host supervisor=$supervisor)$([ -n "$TARGET_ROOT" ] && echo " [fake root: $TARGET_ROOT]")"
@@ -529,8 +593,7 @@ converge() {
   # A fake root has no real service. Recycle/verify only runs there when the
   # test supplies a supervisor STUB in <root>/.local/bin — never against the
   # host's real systemd/launchd.
-  local suptool
-  case "$supervisor" in launchd) suptool=launchctl ;; *) suptool=systemctl ;; esac
+  local suptool; suptool=$(suptool "$supervisor")
   if [ -n "$TARGET_ROOT" ] && [ ! -x "$TARGET_ROOT/.local/bin/$suptool" ]; then
     echo "== $bot: applied to fake root; no $suptool stub, skipping recycle/verify"
     return 0
@@ -565,6 +628,18 @@ converge() {
     return 1
   }
 
+  # worker_still_child <worker-pid> — true if that pid is still one of the
+  # supervisor's poe-acp workers. A worker that dies on startup would
+  # otherwise look exactly like a completed swap.
+  worker_still_child() {
+    local st run pid ver workers hr
+    st=$(probe_state "$supervisor" "$sup_unit")
+    IFS='|' read -r run pid ver workers hr <<<"$st"
+    [ "$run" = 1 ] || return 1
+    case " $workers " in *" $1 "*) return 0 ;; esac
+    return 1
+  }
+
   if [ "$mech" = graceful ]; then
     case "$supervisor" in
       systemd-user) rsh "systemctl --user reload $unit" ;;
@@ -580,13 +655,12 @@ converge() {
       if [ -n "$wver" ]; then
         [ "$wver" = "$want_pa" ] \
           || die "$sup_unit: new worker $wpid_after runs $wver, wanted $want_pa"
-        note "$sup_unit: graceful worker swap (SIGHUP) ✓ (supervisor $pid_before held, worker → $wpid_after running $wver)"
-      else
-        note "$sup_unit: graceful worker swap (SIGHUP) ✓ (supervisor $pid_before held, worker → $wpid_after; version unreadable)"
       fi
-    else
-      note "$sup_unit: graceful worker swap (SIGHUP) ✓ (supervisor $pid_before held, worker → $wpid_after)"
     fi
+    sleep 1
+    worker_still_child "$wpid_after" \
+      || die "$sup_unit: new worker $wpid_after did not survive the swap"
+    note "$sup_unit: graceful worker swap (SIGHUP) ✓ (supervisor $pid_before held, worker → $wpid_after${wver:+ running $wver})"
   else
     case "$supervisor" in
       systemd-user)

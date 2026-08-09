@@ -12,7 +12,19 @@
   down, or it predates 0.36.0 — printing the chosen mechanism and the reason,
   in dry run too. After a swap it verifies the supervisor pid did NOT move and
   a NEW worker pid is running the target version, instead of trusting
-  `is-active`.
+  `is-active`. Child processes are matched against the poe-acp image
+  (`/proc/<pid>/exe`, falling back to `ps -o comm=`) before being counted as
+  workers: a pre-0.36.0 relay spawns its ACP agents as direct children, and an
+  unfiltered child list would both select the graceful path against a
+  supervisor that cannot swap and let a freshly spawned agent pass as "the new
+  worker" — reporting success while the old binary kept serving. The new
+  worker must also still be alive a moment after the swap.
+
+### Added
+
+- `make test-scripts` runs `test/converge_render.sh` (converge.sh's black-box
+  assertions against fake target roots and stubbed supervisors), and `make all`
+  now includes it, so the shell tooling is covered by CI too.
 
 ### Changed
 
