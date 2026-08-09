@@ -145,11 +145,14 @@ Added in poe-acp `v0.16.0`. Available on slack-acp too, with the same `disable_s
 
 ## Update an existing bot
 
-For model/thinking/default changes, edit only `~/.config/poe-acp/<bot>/config.json`; it is the relay source of truth. Do **not** bake model defaults into the launchd plist or `--agent-cmd`, and do not change the plist for config-only updates. On macOS, apply the change with:
+For model/thinking/default changes, edit only `~/.config/poe-acp/<bot>/config.json`; it is the relay source of truth. Do **not** bake model defaults into the launchd plist or `--agent-cmd`, and do not change the plist for config-only updates. A config-only change wants a **graceful worker swap**, not a restart — the running supervisor (≥ 0.36.0) forks a new worker on the new config and drains the old one, so no in-flight reply is dropped:
 
 ```bash
-launchctl kickstart -k gui/$UID/dev.<you>.poe-acp.<bot>
+launchctl kill SIGHUP gui/$UID/dev.<you>.poe-acp.<bot>       # macOS
+systemctl --user reload poe-acp-<bot>                        # Linux
 ```
+
+Only fall back to a hard restart (`launchctl kickstart -k gui/$UID/<label>` / `systemctl --user restart poe-acp-<bot>`) when the running supervisor is older than 0.36.0 or is stopped.
 
 Do not create delayed reloader jobs. Do not use `launchctl bootout` + `bootstrap` for an already-registered job unless you intentionally changed the plist itself; bootout/bootstrap has an async registration race that can leave the service stopped.
 

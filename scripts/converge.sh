@@ -12,6 +12,9 @@
 #                                              rewrite dist.lock; NEVER converges
 #   converge.sh render <bot> <artefact>        render one artefact to stdout
 #                                              artefact: config | execstart | unit | plist
+#   converge.sh plan-recycle <supervisor> <unit_changed> <running> <version> \
+#               <has_worker> <has_reload>      print the recycle mechanism that
+#                                              state selects (test hook)
 #
 # Conventions:
 #   - a spec.server key that is absent (or false/null) emits no flag at all;
@@ -165,7 +168,10 @@ TARGET_ROOT=""
 
 rsh() { # run a shell command on the target; stdin is forwarded
   if [ -n "$TARGET_ROOT" ]; then
-    HOME="$TARGET_ROOT" bash -c "$1"
+    # A real target is reached through a LOGIN shell, so ~/.local/bin is on
+    # PATH. Mirror that for the fake root — it is also how a test supplies
+    # stub `systemctl`/`launchctl`/`ps` binaries for the recycle path.
+    HOME="$TARGET_ROOT" PATH="$TARGET_ROOT/.local/bin:$PATH" bash -c "$1"
   else
     # Force a LOGIN BASH on the far side. Two hazards otherwise:
     #   - `ssh host cmd` runs the user's default shell non-interactively
@@ -207,6 +213,144 @@ diff_artifact() {
   fi
   rm -f "$have"
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# Recycle mechanism selection
+#
+# poe-acp >= 0.36.0 runs a master/worker supervisor: the tracked process S
+# binds the socket once and forks a worker. SIGHUP (systemd `reload` via
+# ExecReload, launchd `kill SIGHUP`) makes S fork a NEW worker on the new
+# binary and DRAIN the old one — S's pid never moves and no in-flight SSE
+# reply is dropped. A hard restart drops every stream on the host, so it is
+# used only when the graceful path is not available:
+#
+#   unit/plist changed          -> hard (systemd needs daemon-reload+restart,
+#                                  launchd needs bootout+bootstrap)
+#   supervisor not running      -> hard (nothing to signal)
+#   systemd unit has no ExecReload -> hard (reload would fail)
+#   running supervisor < 0.36.0 -> hard (first cutover onto the shim model)
+#   otherwise                   -> graceful worker swap (SIGHUP)
+#
+# The decision is made on the RUNNING supervisor, never the on-disk binary:
+# what matters is what the live process can do.
+# ---------------------------------------------------------------------------
+GRACEFUL_MIN=0.36.0
+
+ver_ge() { # <a> <b> — true if version a >= b
+  [ -n "$1" ] || return 1
+  [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
+}
+
+# probe_state <supervisor> <unit-or-label>
+# Prints one line: <running>|<pid>|<version>|<worker-pids>|<has_reload>
+#   running     1 if the supervisor process is up
+#   pid         supervisor (tracked) pid, 0 if unknown
+#   version     version of the RUNNING supervisor binary; empty if unreadable
+#               (Linux-only: /proc/<pid>/exe executes the in-memory binary,
+#                which is the whole point — the on-disk one has moved on)
+#   worker-pids space-separated child pids of the supervisor (its workers);
+#               a non-empty list is itself proof of the >= 0.36.0 model
+#   has_reload  1 if the loaded systemd unit defines ExecReload
+# running_version_snippet — remote shell that prints the version of the binary
+# the process $pid is EXECUTING (Linux only). /proc/<pid>/exe is the in-memory
+# inode, so it still reports the old version after the on-disk binary moved on
+# — which is exactly the question. Guarded on the link target's name: never
+# exec an unrelated process's image just because a pid was reported wrong.
+running_version_snippet() {
+  cat <<'EOS'
+exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+case "${exe% (deleted)}" in
+  */poe-acp*) ver=$("/proc/$pid/exe" --version 2>/dev/null | head -1 || true) ;;
+esac
+EOS
+}
+
+probe_state() {
+  local supervisor=$1 unit=$2 script
+  case "$supervisor" in
+    systemd-user)
+      script="u='$unit'
+$(cat <<'EOS'
+pid=$(systemctl --user show -p MainPID --value "$u" 2>/dev/null || echo 0)
+case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+act=$(systemctl --user is-active "$u" 2>/dev/null || true)
+rel=$(systemctl --user show -p ExecReload --value "$u" 2>/dev/null || true)
+run=0; [ "$act" = active ] && [ "$pid" -gt 0 ] && run=1
+ver=''; workers=''
+EOS
+)
+if [ \"\$run\" = 1 ]; then
+$(running_version_snippet)
+$(cat <<'EOS'
+  workers=$(ps -o pid= --ppid "$pid" 2>/dev/null | tr -s ' \n' ' ' | sed 's/^ //;s/ $//')
+fi
+hr=0; [ -n "$rel" ] && hr=1
+printf '%s|%s|%s|%s|%s\n' "$run" "$pid" "$ver" "$workers" "$hr"
+EOS
+)"
+      ;;
+    launchd)
+      # macOS has no /proc, so the running version cannot be read out of the
+      # live process. The worker-child list is the capability probe instead:
+      # only the >= 0.36.0 master/worker model forks children off the tracked
+      # pid, so its presence is proof the live supervisor can swap workers.
+      script="l='$unit'
+$(cat <<'EOS'
+out=$(launchctl print gui/$(id -u)/"$l" 2>/dev/null || true)
+pid=$(printf '%s\n' "$out" | awk -F'= *' '/^[[:space:]]*pid =/{print $2; exit}')
+case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+run=0
+printf '%s\n' "$out" | grep -q 'state = running' && [ "$pid" -gt 0 ] && run=1
+workers=''
+[ "$run" = 1 ] && workers=$(pgrep -P "$pid" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
+printf '%s|%s|%s|%s|%s\n' "$run" "$pid" '' "$workers" 1
+EOS
+)"
+      ;;
+  esac
+  rsh "$script"
+}
+
+# worker_version <pid> — version the given worker process is executing
+# (Linux/systemd hosts only; empty elsewhere or if unreadable).
+worker_version() {
+  rsh "pid='$1'; ver=''
+$(running_version_snippet)
+printf '%s\n' \"\$ver\""
+}
+
+# recycle_plan <supervisor> <unit_changed> <running> <version> <has_worker> <has_reload>
+# Prints "<graceful|hard>|<reason>". Pure: no I/O, so it is unit-testable via
+# the `plan-recycle` subcommand.
+recycle_plan() {
+  local supervisor=$1 unit_changed=$2 running=$3 version=$4 has_worker=$5 has_reload=$6
+  if [ "$unit_changed" = 1 ]; then
+    echo "hard|unit changed"; return 0
+  fi
+  if [ "$running" != 1 ]; then
+    echo "hard|supervisor not running"; return 0
+  fi
+  if [ "$supervisor" = systemd-user ] && [ "$has_reload" != 1 ]; then
+    echo "hard|unit defines no ExecReload"; return 0
+  fi
+  if [ -n "$version" ]; then
+    ver_ge "$version" "$GRACEFUL_MIN" \
+      || { echo "hard|running supervisor $version < $GRACEFUL_MIN"; return 0; }
+    echo "graceful|running supervisor $version >= $GRACEFUL_MIN"; return 0
+  fi
+  if [ "$has_worker" = 1 ]; then
+    echo "graceful|running supervisor has a worker child (>= $GRACEFUL_MIN model)"; return 0
+  fi
+  echo "hard|running supervisor has no worker child (pre-$GRACEFUL_MIN model)"
+}
+
+mech_label() { # <supervisor> <mech>
+  case "$1:$2" in
+    *:graceful) echo "graceful worker swap (SIGHUP)" ;;
+    systemd-user:hard) echo "hard restart (daemon-reload + restart)" ;;
+    launchd:hard) echo "hard restart" ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -359,12 +503,36 @@ converge() {
     echo "== $bot: already converged, nothing to do"
     return 0
   fi
+
+  local unit label sup_unit
+  case "$supervisor" in
+    systemd-user) unit="$(jqs '.unit').service"; sup_unit="$unit" ;;
+    launchd)      label=$(jqs '.unit'); sup_unit="$label" ;;
+  esac
+
+  # Decide the recycle mechanism from what is RUNNING (not what is on disk),
+  # and say it out loud — in dry run too, so an operator knows up front
+  # whether the bot will blink.
+  local state run_before pid_before ver_before workers_before has_reload
+  local has_worker plan mech reason
+  state=$(probe_state "$supervisor" "$sup_unit")
+  IFS='|' read -r run_before pid_before ver_before workers_before has_reload <<<"$state"
+  has_worker=0; [ -n "$workers_before" ] && has_worker=1
+  plan=$(recycle_plan "$supervisor" "$unit_changed" "$run_before" "$ver_before" "$has_worker" "$has_reload")
+  mech=${plan%%|*}; reason=${plan#*|}
+  note "recycle: $(mech_label "$supervisor" "$mech") — $reason"
+
   if [ "$apply" != 1 ]; then
-    echo "== $bot: $changes change(s) pending (dry run; re-run with --apply)"
+    echo "== $bot: $changes change(s) pending, would $(mech_label "$supervisor" "$mech") (dry run; re-run with --apply)"
     return 0
   fi
-  if [ -n "$TARGET_ROOT" ]; then
-    echo "== $bot: applied to fake root; skipping service recycle/verify"
+  # A fake root has no real service. Recycle/verify only runs there when the
+  # test supplies a supervisor STUB in <root>/.local/bin — never against the
+  # host's real systemd/launchd.
+  local suptool
+  case "$supervisor" in launchd) suptool=launchctl ;; *) suptool=systemctl ;; esac
+  if [ -n "$TARGET_ROOT" ] && [ ! -x "$TARGET_ROOT/.local/bin/$suptool" ]; then
+    echo "== $bot: applied to fake root; no $suptool stub, skipping recycle/verify"
     return 0
   fi
   # verify_up <check-command> — services need a moment after (re)start
@@ -376,28 +544,82 @@ converge() {
     done
     return 1
   }
-  local unit label
-  case "$supervisor" in
-    systemd-user)
-      unit="$(jqs '.unit').service"
-      rsh "systemctl --user daemon-reload && systemctl --user restart $unit"
-      verify_up "systemctl --user is-active $unit" || die "$unit not active after restart"
-      note "$unit restarted, active ✓" ;;
-    launchd)
-      label=$(jqs '.unit')
-      if [ "$unit_changed" = 1 ]; then
-        # kickstart -k re-runs the CACHED job definition and ignores an
-        # edited plist. Plist changes require bootout + bootstrap.
-        rsh "launchctl bootout gui/\$(id -u)/$label 2>/dev/null || true"
-        rsh "launchctl bootstrap gui/\$(id -u) \"$(p_home "$unit_path")\""
-        note "$label booted out + bootstrapped (plist changed)"
-      else
-        rsh "launchctl kickstart -k gui/\$(id -u)/$label"
-        note "$label kickstarted"
+  # wait_new_worker — poll until the supervisor has a worker pid that was not
+  # running before the swap. Prints "<sup_pid>|<new_worker_pid>", empty if the
+  # swap never happened.
+  wait_new_worker() {
+    local i st run pid ver workers hr w
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      st=$(probe_state "$supervisor" "$sup_unit")
+      IFS='|' read -r run pid ver workers hr <<<"$st"
+      if [ "$run" = 1 ]; then
+        for w in $workers; do
+          case " $workers_before " in
+            *" $w "*) ;;
+            *) printf '%s|%s\n' "$pid" "$w"; return 0 ;;
+          esac
+        done
       fi
-      verify_up "launchctl print gui/\$(id -u)/$label | grep -q 'state = running'" \
-        || die "$label not running after recycle" ;;
-  esac
+      sleep 1
+    done
+    return 1
+  }
+
+  if [ "$mech" = graceful ]; then
+    case "$supervisor" in
+      systemd-user) rsh "systemctl --user reload $unit" ;;
+      launchd)      rsh "launchctl kill SIGHUP gui/\$(id -u)/$label" ;;
+    esac
+    local swapped pid_after wpid_after wver
+    swapped=$(wait_new_worker) || die "$sup_unit: no new worker appeared after SIGHUP — swap did not take"
+    pid_after=${swapped%%|*}; wpid_after=${swapped#*|}
+    [ "$pid_after" = "$pid_before" ] \
+      || die "$sup_unit: supervisor pid moved $pid_before → $pid_after during a graceful swap"
+    if [ "$supervisor" = systemd-user ]; then
+      wver=$(worker_version "$wpid_after")
+      if [ -n "$wver" ]; then
+        [ "$wver" = "$want_pa" ] \
+          || die "$sup_unit: new worker $wpid_after runs $wver, wanted $want_pa"
+        note "$sup_unit: graceful worker swap (SIGHUP) ✓ (supervisor $pid_before held, worker → $wpid_after running $wver)"
+      else
+        note "$sup_unit: graceful worker swap (SIGHUP) ✓ (supervisor $pid_before held, worker → $wpid_after; version unreadable)"
+      fi
+    else
+      note "$sup_unit: graceful worker swap (SIGHUP) ✓ (supervisor $pid_before held, worker → $wpid_after)"
+    fi
+  else
+    case "$supervisor" in
+      systemd-user)
+        if [ "$unit_changed" = 1 ]; then
+          rsh "systemctl --user daemon-reload && systemctl --user restart $unit"
+        else
+          rsh "systemctl --user restart $unit"
+        fi
+        verify_up "systemctl --user is-active $unit" || die "$unit not active after restart" ;;
+      launchd)
+        if [ "$unit_changed" = 1 ]; then
+          # kickstart -k re-runs the CACHED job definition and ignores an
+          # edited plist. Plist changes require bootout + bootstrap.
+          rsh "launchctl bootout gui/\$(id -u)/$label 2>/dev/null || true"
+          rsh "launchctl bootstrap gui/\$(id -u) \"$(p_home "$unit_path")\""
+        else
+          rsh "launchctl kickstart -k gui/\$(id -u)/$label"
+        fi
+        verify_up "launchctl print gui/\$(id -u)/$label | grep -q 'state = running'" \
+          || die "$label not running after recycle" ;;
+    esac
+    local state_after run_after pid_after ver_after workers_after hr_after
+    state_after=$(probe_state "$supervisor" "$sup_unit")
+    IFS='|' read -r run_after pid_after ver_after workers_after hr_after <<<"$state_after"
+    [ "$run_after" = 1 ] || die "$sup_unit not running after hard restart"
+    if [ "$run_before" = 1 ] && [ "$pid_after" = "$pid_before" ]; then
+      die "$sup_unit: supervisor pid $pid_before did not move across a hard restart"
+    fi
+    if [ -n "$ver_after" ] && [ "$ver_after" != "$want_pa" ]; then
+      die "$sup_unit: restarted supervisor runs $ver_after, wanted $want_pa"
+    fi
+    note "$sup_unit: $(mech_label "$supervisor" hard) ✓ ($reason; supervisor pid ${pid_before} → ${pid_after})"
+  fi
   cur=$(rsh "\"$(p_home "$binary")\" --version")
   [ "$cur" = "$want_pa" ] || die "post-recycle version check failed: $cur != $want_pa"
   echo "== $bot: converged ($changes change(s) applied)"
@@ -465,6 +687,9 @@ usage:
                                              rewrite dist.lock; NEVER converges
   converge.sh render <bot> <artefact>        render one artefact to stdout
                                              artefact: config | execstart | unit | plist
+  converge.sh plan-recycle <supervisor> <unit_changed> <running> <version> <has_worker> <has_reload>
+                                             print the recycle mechanism the above
+                                             state would select (test hook)
 EOF
   exit 1
 }
@@ -485,6 +710,10 @@ case "$1" in
       plist)     render_plist ;;
       *)         usage ;;
     esac ;;
+  plan-recycle)
+    # Test hook: exercise the mechanism-selection matrix without a host.
+    [ $# -eq 7 ] || usage
+    recycle_plan "$2" "$3" "$4" "$5" "$6" "$7" ;;
   -*) usage ;;
   *)
     BOT=$1; shift
