@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-08-09
+
 ### Fixed
 
 - **`converge.sh` no longer hard-restarts a host for a binary- or config-only
