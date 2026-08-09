@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-08-09
+
 ### Fixed
 
 - **Mid-turn session eviction no longer wedges the conversation.** Editing or
