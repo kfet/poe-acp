@@ -738,14 +738,16 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 // latest (or pinned) release, verify its sha256, and atomically replace
 // the running binary. With -restart-cmd set, it runs that command (via
 // `sh -c`) afterwards so a supervisor (systemd --user / launchd) picks up
-// the new binary — note this drops any in-flight conversation, which is
-// inherent to restarting the relay process.
+// the new binary. For a binary-only change prefer the GRACEFUL recycle —
+// "systemctl --user reload <unit>" / "launchctl kill SIGHUP gui/$UID/<label>"
+// — which makes the running supervisor fork a new worker and drain the old
+// one; a plain restart/kickstart drops every in-flight conversation.
 func runUpdate(args []string) int {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	check := fs.Bool("check", false, "report whether an update is available; do not install")
 	ver := fs.String("version", "", "install a specific version (e.g. v0.27.0); default: latest")
 	repo := fs.String("repo", selfupdate.DefaultRepo, "github owner/repo to update from")
-	restartCmd := fs.String("restart-cmd", "", "shell command to run after a successful update (e.g. \"systemctl --user restart poe-acp-sea-fir\")")
+	restartCmd := fs.String("restart-cmd", "", "shell command to run after a successful update; prefer a graceful worker swap (e.g. \"systemctl --user reload poe-acp-sea-fir\", \"launchctl kill SIGHUP gui/$UID/<label>\")")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -169,11 +169,22 @@ poe-acp update
 # Pin a specific version.
 poe-acp update -version v0.27.0
 
-# Update and restart the supervisor so the new binary goes live.
-# (This drops any in-flight conversation — inherent to restarting the relay.)
-poe-acp update -restart-cmd "systemctl --user restart poe-acp-sea-fir"   # systemd --user
-poe-acp update -restart-cmd "launchctl kickstart -k gui/$UID/<label>"     # launchd
+# Update and recycle the supervisor so the new binary goes live.
+# A binary-only change wants a GRACEFUL worker swap: the running supervisor
+# forks a new worker on the new binary and drains the old one, so no in-flight
+# conversation is dropped and the supervisor pid never moves.
+poe-acp update -restart-cmd "systemctl --user reload poe-acp-sea-fir"     # systemd --user
+poe-acp update -restart-cmd "launchctl kill SIGHUP gui/$UID/<label>"      # launchd
+
+# Hard restart (drops in-flight replies) — only when the RUNNING supervisor is
+# older than 0.36.0, is stopped, or the unit/plist itself changed:
+poe-acp update -restart-cmd "systemctl --user restart poe-acp-sea-fir"
+poe-acp update -restart-cmd "launchctl kickstart -k gui/$UID/<label>"
 ```
+
+On a fleet host, do not run this by hand: `scripts/converge.sh <bot> --apply`
+owns the upgrade and picks the graceful or hard path itself (and verifies the
+swap took).
 
 Self-update is refused when the binary lives under a package-manager path
 (Homebrew, linuxbrew, `/usr/bin`); use `brew upgrade poe-acp` there instead.

@@ -148,6 +148,135 @@ mkdir -p "$fake2"
 [ -f "$fake2/Library/LaunchAgents/dev.kfet.poe-acp.plist" ] \
   && ok "fir-air plist written" || bad "fir-air plist missing"
 
+echo "== recycle mechanism selection"
+plan() { "$CONVERGE" plan-recycle "$@"; }
+#            supervisor    unit_changed running version has_worker has_reload
+expect() { # <expected-mech> <label> <args...>
+  local want=$1 label=$2; shift 2
+  local got; got=$(plan "$@")
+  case "$got" in
+    "$want"|"$want|"*) ok "$label ($got)" ;;
+    *) bad "$label: wanted $want, got $got" ;;
+  esac
+}
+expect graceful "systemd: binary-only, running 0.53.0"  systemd-user 0 1 0.53.0 1 1
+expect graceful "systemd: exactly 0.36.0 qualifies"     systemd-user 0 1 0.36.0 1 1
+expect hard     "systemd: unit changed"                 systemd-user 1 1 0.53.0 1 1
+expect hard     "systemd: running 0.35.0 < 0.36.0"      systemd-user 0 1 0.35.0 1 1
+expect hard     "systemd: not running"                  systemd-user 0 0 ''     0 1
+expect hard     "systemd: no ExecReload"                systemd-user 0 1 0.53.0 1 0
+expect graceful "systemd: version unreadable, worker child present" systemd-user 0 1 '' 1 1
+expect hard     "systemd: version unreadable, no worker child"      systemd-user 0 1 '' 0 1
+expect graceful "launchd: worker child present"         launchd 0 1 ''     1 1
+expect hard     "launchd: plist changed"                launchd 1 1 ''     1 1
+expect hard     "launchd: no worker child (pre-0.36)"   launchd 0 1 ''     0 1
+expect hard     "launchd: not running"                  launchd 0 0 ''     0 1
+
+echo "== fake-target recycle (stubbed systemd: graceful swap vs hard restart)"
+# Stub systemd + ps so the whole recycle/verify path runs offline. The stub
+# supervisor pid never moves; each `reload` advances the worker pid, which is
+# exactly the signature converge verifies after a graceful swap.
+fake3="$tmpd/fakehost3"
+mkdir -p "$fake3/.local/bin" "$fake3/.stub"
+printf '%s\n' 999001 >"$fake3/.stub/worker"
+printf '%s\n' 999000 >"$fake3/.stub/sup"
+printf '#!/bin/sh\necho %s\n' "$LOCKED_POE_ACP" >"$fake3/.local/bin/poe-acp"
+cat >"$fake3/.local/bin/systemctl" <<'STUB'
+#!/bin/sh
+s="$HOME/.stub"
+echo "$*" >>"$s/log"
+case "$*" in
+  *"show -p MainPID"*)    cat "$s/sup" ;;
+  *"show -p ExecReload"*) echo "/bin/kill -HUP \$MAINPID" ;;
+  *is-active*)            echo active ;;
+  *daemon-reload*)        : ;;
+  *reload*)               expr "$(cat "$s/worker")" + 1 >"$s/worker" ;;
+  # A restart replaces BOTH processes: new supervisor, new worker.
+  *restart*)              expr "$(cat "$s/sup")" + 1 >"$s/sup"
+                          expr "$(cat "$s/worker")" + 1 >"$s/worker" ;;
+  *) ;;
+esac
+STUB
+# `ps -o pid= --ppid <supervisor>` — the supervisor's worker children.
+cat >"$fake3/.local/bin/ps" <<'STUB'
+#!/bin/sh
+cat "$HOME/.stub/worker"
+STUB
+chmod +x "$fake3/.local/bin/poe-acp" "$fake3/.local/bin/systemctl" "$fake3/.local/bin/ps"
+
+out=$("$CONVERGE" two-fir --target-root "$fake3")
+case "$out" in
+  *"would hard restart"*) ok "dry run previews the recycle mechanism (unit missing => hard)" ;;
+  *) bad "dry run must preview the mechanism"; echo "$out" ;;
+esac
+
+# First apply writes config+unit => unit changed => hard restart is mandatory.
+out=$("$CONVERGE" two-fir --target-root "$fake3" --apply)
+case "$out" in
+  *"hard restart (daemon-reload + restart) ✓"*) ok "unit change forces a hard restart" ;;
+  *) bad "expected hard restart on unit change"; echo "$out" ;;
+esac
+case "$out" in *"unit changed"*) ok "hard restart reason reported" ;; *) bad "expected reason 'unit changed'" ;; esac
+grep -q -- "--user daemon-reload" "$fake3/.stub/log" && ok "daemon-reload issued for a unit change" \
+  || bad "unit change must daemon-reload"
+grep -q -- "--user restart" "$fake3/.stub/log" && ok "restart issued" || bad "expected restart"
+case "$out" in
+  *"supervisor pid 999000 → 999001"*) ok "hard restart moved the supervisor pid" ;;
+  *) bad "expected the supervisor pid to move across a hard restart"; echo "$out" ;;
+esac
+
+# Binary-only change (config edited, unit untouched) => graceful worker swap.
+echo '{"x":0}' >"$fake3/.config/poe-acp/bot-two-fir/config.json"
+out=$("$CONVERGE" two-fir --target-root "$fake3")
+case "$out" in
+  *"would graceful worker swap (SIGHUP)"*) ok "dry run previews a graceful swap for a config-only change" ;;
+  *) bad "dry run must preview the graceful swap"; echo "$out" ;;
+esac
+: >"$fake3/.stub/log"
+wbefore=$(cat "$fake3/.stub/worker")
+echo '{"x":1}' >"$fake3/.config/poe-acp/bot-two-fir/config.json"
+out=$("$CONVERGE" two-fir --target-root "$fake3" --apply)
+case "$out" in
+  *"graceful worker swap (SIGHUP) ✓"*) ok "config-only change does a graceful swap" ;;
+  *) bad "expected graceful swap"; echo "$out" ;;
+esac
+grep -q -- "--user reload" "$fake3/.stub/log" && ok "reload issued" || bad "expected systemctl reload"
+grep -q -- "restart" "$fake3/.stub/log" && bad "graceful path must not restart" || ok "no restart on the graceful path"
+grep -q -- "daemon-reload" "$fake3/.stub/log" && bad "graceful path must not daemon-reload" \
+  || ok "no daemon-reload when the unit did not change"
+wafter=$(cat "$fake3/.stub/worker")
+[ "$wbefore" != "$wafter" ] && ok "worker pid moved ($wbefore → $wafter)" || bad "worker pid must move"
+case "$out" in
+  *"supervisor $(cat "$fake3/.stub/sup") held"*) ok "supervisor pid verified unmoved" ;;
+  *) bad "expected supervisor-held assertion"; echo "$out" ;;
+esac
+
+# A swap that does not take (worker pid frozen) must FAIL loudly.
+cat >"$fake3/.local/bin/systemctl" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *"show -p MainPID"*)    cat "$HOME/.stub/sup" ;;
+  *"show -p ExecReload"*) echo "/bin/kill -HUP \$MAINPID" ;;
+  *is-active*)            echo active ;;
+esac
+STUB
+chmod +x "$fake3/.local/bin/systemctl"
+echo '{"x":2}' >"$fake3/.config/poe-acp/bot-two-fir/config.json"
+if "$CONVERGE" two-fir --target-root "$fake3" --apply >/dev/null 2>&1; then
+  bad "a swap that never forks a new worker must fail"
+else
+  ok "no new worker after SIGHUP fails loudly"
+fi
+
+# Same for the hard path: a restart that leaves the supervisor pid frozen
+# means the service never actually came back on the new binary.
+rm -f "$fake3/.config/systemd/user/poe-acp-two-fir.service"
+if "$CONVERGE" two-fir --target-root "$fake3" --apply >/dev/null 2>&1; then
+  bad "a restart that does not move the supervisor pid must fail"
+else
+  ok "frozen supervisor pid after a hard restart fails loudly"
+fi
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]
