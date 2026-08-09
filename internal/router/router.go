@@ -557,6 +557,28 @@ func (sq *sessionQueue) waitIdle(d time.Duration) bool {
 	}
 }
 
+// stopIfIdle atomically checks idleness and, only if idle, marks the queue
+// closed — the one-step version of "idle() then stop()". Callers hold
+// Router.mu, but a submitter that already resolved its *sessionState calls
+// push WITHOUT it, so checking and closing in two separate sq.mu
+// acquisitions leaves a gap: a turn queued in that gap is detached with no
+// one left to close its done channel, parking submitTurn forever. Returns
+// ok=false (and detaches nothing) when a turn is queued or in flight.
+//
+// pending is always empty when ok is true — idle means the queue is empty —
+// so unlike stop this never obliges the caller to finalise a sink, and is
+// safe to call with Router.mu held. It is returned anyway so the two
+// teardown paths share one shape.
+func (sq *sessionQueue) stopIfIdle() (pending []*turnReq, ok bool) {
+	sq.mu.Lock()
+	defer sq.mu.Unlock()
+	if sq.inFlight || len(sq.q) > 0 {
+		return nil, false
+	}
+	sq.stopped = true
+	return nil, true
+}
+
 // stop marks the queue closed and detaches any pending reqs, returning
 // them plus whether a turn is still in flight. The caller owns
 // finalising the returned reqs (finalizeShed) — deliberately NOT done
@@ -2526,13 +2548,11 @@ func (r *Router) ResetSession(convID string) error {
 	if !ok {
 		return nil // nothing live; next turn is fresh anyway
 	}
-	if !st.queue.idle() {
+	if _, ok := st.queue.stopIfIdle(); !ok {
 		return ErrSessionBusy
 	}
 	close(st.drainStop)
 	close(st.runStop)
-	// Idle by the check above, so there is nothing pending to finalise.
-	st.queue.stop()
 	delete(r.sessions, convID)
 	return nil
 }
@@ -2754,15 +2774,22 @@ func (r *Router) gcOnce() {
 	var evicted []acp.SessionId
 	r.mu.Lock()
 	for id, st := range r.sessions {
-		if st.queue.idle() && st.lastUsedNs < cutoff {
-			close(st.drainStop) // stop the session-lifetime drain goroutine
-			close(st.runStop)
-			st.queue.stop()
-			if st.sessionID != "" {
-				evicted = append(evicted, st.sessionID)
-			}
-			delete(r.sessions, id)
+		if st.lastUsedNs >= cutoff {
+			continue
 		}
+		// Atomic idle-check-and-close: a turn submitted between a separate
+		// idle() and stop() would be detached with nobody left to release
+		// its submitter. stopIfIdle declines instead, leaving the session
+		// to the next sweep.
+		if _, ok := st.queue.stopIfIdle(); !ok {
+			continue
+		}
+		close(st.drainStop) // stop the session-lifetime drain goroutine
+		close(st.runStop)
+		if st.sessionID != "" {
+			evicted = append(evicted, st.sessionID)
+		}
+		delete(r.sessions, id)
 	}
 	r.mu.Unlock()
 
