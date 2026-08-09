@@ -2706,24 +2706,32 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 // (false).
 func (r *Router) install(convID string, st *sessionState) (*sessionState, bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if existing, ok := r.sessions[convID]; ok {
-		// Lost the race; the session we just created/resumed leaks on the
-		// agent side but that is cheap and rare. Stop the loser's drain
-		// and run goroutines so they don't run unchecked.
-		if st.drainStop != nil {
-			close(st.drainStop)
-		}
-		if st.runStop != nil {
-			close(st.runStop)
-		}
-		if st.queue != nil {
-			st.queue.stop()
-		}
-		return existing, false
+	existing, lost := r.sessions[convID]
+	if !lost {
+		r.sessions[convID] = st
+		r.mu.Unlock()
+		return st, true
 	}
-	r.sessions[convID] = st
-	return st, true
+	// Lost the race; the session we just created/resumed leaks on the
+	// agent side but that is cheap and rare. Stop the loser's drain
+	// and run goroutines so they don't run unchecked.
+	if st.drainStop != nil {
+		close(st.drainStop)
+	}
+	if st.runStop != nil {
+		close(st.runStop)
+	}
+	var pending []*turnReq
+	if st.queue != nil {
+		pending, _ = st.queue.stop()
+	}
+	r.mu.Unlock()
+	// The loser was never published in r.sessions, so no submitter can be
+	// holding it and pending is empty in practice — finalise it anyway
+	// rather than rest on that invariant, and do it outside r.mu because
+	// finalizeShed writes to sinks.
+	finalizeShed(pending)
+	return existing, false
 }
 
 func (r *Router) touch(convID string) {
