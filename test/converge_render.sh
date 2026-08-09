@@ -180,6 +180,7 @@ fake3="$tmpd/fakehost3"
 mkdir -p "$fake3/.local/bin" "$fake3/.stub"
 printf '%s\n' 999001 >"$fake3/.stub/worker"
 printf '%s\n' 999000 >"$fake3/.stub/sup"
+printf '%s\n' poe-acp >"$fake3/.stub/comm"
 printf '#!/bin/sh\necho %s\n' "$LOCKED_POE_ACP" >"$fake3/.local/bin/poe-acp"
 cat >"$fake3/.local/bin/systemctl" <<'STUB'
 #!/bin/sh
@@ -197,12 +198,19 @@ case "$*" in
   *) ;;
 esac
 STUB
-# `ps -o pid= --ppid <supervisor>` — the supervisor's worker children.
-cat >"$fake3/.local/bin/ps" <<'STUB'
+# `pgrep -P <supervisor>` — the tracked pid's children.
+cat >"$fake3/.local/bin/pgrep" <<'STUB'
 #!/bin/sh
 cat "$HOME/.stub/worker"
 STUB
-chmod +x "$fake3/.local/bin/poe-acp" "$fake3/.local/bin/systemctl" "$fake3/.local/bin/ps"
+# `ps -o comm= -p <pid>` — the image a pid is running. converge filters the
+# child list by this: only children running the poe-acp image are workers.
+cat >"$fake3/.local/bin/ps" <<'STUB'
+#!/bin/sh
+cat "$HOME/.stub/comm"
+STUB
+chmod +x "$fake3/.local/bin/poe-acp" "$fake3/.local/bin/systemctl" \
+         "$fake3/.local/bin/ps" "$fake3/.local/bin/pgrep"
 
 out=$("$CONVERGE" two-fir --target-root "$fake3")
 case "$out" in
@@ -250,6 +258,40 @@ case "$out" in
   *"supervisor $(cat "$fake3/.stub/sup") held"*) ok "supervisor pid verified unmoved" ;;
   *) bad "expected supervisor-held assertion"; echo "$out" ;;
 esac
+
+# A pre-0.36.0 host: the tracked process is a single relay whose children are
+# ACP AGENTS, not workers. Those must not be read as a swap capability.
+printf '%s\n' fir >"$fake3/.stub/comm"
+echo '{"x":9}' >"$fake3/.config/poe-acp/bot-two-fir/config.json"
+out=$("$CONVERGE" two-fir --target-root "$fake3")
+case "$out" in
+  *"would hard restart"*) ok "agent children are not workers (pre-0.36 => hard)" ;;
+  *) bad "non-poe-acp children must not select the graceful path"; echo "$out" ;;
+esac
+
+# ... and a new NON-worker child must not satisfy the post-swap verification:
+# a SIGHUP that only spawned an agent means the swap never took.
+printf '%s\n' poe-acp >"$fake3/.stub/comm"
+cat >"$fake3/.local/bin/systemctl" <<'STUB'
+#!/bin/sh
+s="$HOME/.stub"
+case "$*" in
+  *"show -p MainPID"*)    cat "$s/sup" ;;
+  *"show -p ExecReload"*) echo "/bin/kill -HUP \$MAINPID" ;;
+  *is-active*)            echo active ;;
+  # The reload spawns a child, but it is an agent, not a new worker.
+  *reload*)               expr "$(cat "$s/worker")" + 1 >"$s/worker"
+                          echo fir >"$s/comm" ;;
+esac
+STUB
+chmod +x "$fake3/.local/bin/systemctl"
+echo '{"x":10}' >"$fake3/.config/poe-acp/bot-two-fir/config.json"
+if "$CONVERGE" two-fir --target-root "$fake3" --apply >/dev/null 2>&1; then
+  bad "a new non-worker child must not pass as a completed swap"
+else
+  ok "new child that is not the poe-acp image fails the swap verification"
+fi
+printf '%s\n' poe-acp >"$fake3/.stub/comm"
 
 # A swap that does not take (worker pid frozen) must FAIL loudly.
 cat >"$fake3/.local/bin/systemctl" <<'STUB'
