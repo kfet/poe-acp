@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`converge.sh` no longer hard-restarts a host for a binary- or config-only
+  change.** It now probes the RUNNING supervisor (pid, `/proc/<pid>/exe
+  --version`, worker children, `ExecReload`) and does a graceful drained
+  worker swap (`systemctl --user reload` / `launchctl kill SIGHUP`), falling
+  back to a hard restart only when the unit/plist changed, the supervisor is
+  down, or it predates 0.36.0 — printing the chosen mechanism and the reason,
+  in dry run too. After a swap it verifies the supervisor pid did NOT move and
+  a NEW worker pid is running the target version, instead of trusting
+  `is-active`.
+
+### Changed
+
+- Docs that told operators to `restart`/`kickstart -k` for a binary- or
+  config-only change (README `Updating`, `poe-acp update -restart-cmd` help,
+  `update`/`deploy`/`custom-bots` skills) now recommend the graceful worker
+  swap, with the hard path reserved for its actual preconditions.
+
 ## [0.53.0] - 2026-08-09
 
 ### Fixed

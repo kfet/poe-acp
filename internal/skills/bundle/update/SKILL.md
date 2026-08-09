@@ -10,7 +10,11 @@ description: Update poe-acp on a single host, or restart / reload a running bot.
 > bot with a spec in `bots/<name>.json`, version moves go through the lock:
 > `scripts/converge.sh --tot` (rewrites `dist.lock`; review + commit), then
 > `scripts/converge.sh <bot> --apply` per host. Do not hand-upgrade a fleet
-> host to an unlocked version. The steps below remain valid for non-fleet
+> host to an unlocked version. Converge also picks the recycle mechanism for
+> you — graceful SIGHUP worker swap for a binary/config-only change on a
+> running ≥ 0.36.0 supervisor, hard restart only when the unit/plist changed,
+> the supervisor is down, or it predates the shim — and prints which and why.
+> The steps below remain valid for non-fleet
 > hosts and for the supervisor-control mechanics converge itself relies on
 > (restart/reload semantics, cutover rules).
 
@@ -57,8 +61,15 @@ If installed version already equals target, tell the user and stop unless they w
 **Brew + launchd (typical macOS):**
 ```bash
 brew update && brew upgrade poe-acp
-launchctl kickstart -k gui/$UID/<label>
+launchctl kill SIGHUP gui/$UID/<label>    # graceful worker swap (preferred)
+launchctl kickstart -k gui/$UID/<label>   # hard restart: only if the running
+                                          # supervisor is < 0.36.0 or stopped
 ```
+For a **binary- or config-only** change on a running ≥ 0.36.0 supervisor,
+`kill SIGHUP` is the correct command — `kickstart -k` drops every in-flight
+SSE reply for no reason. Reach for `kickstart -k` only for the first cutover
+onto 0.36.0, a stopped job, or a plist change (that one needs
+bootout + bootstrap).
 Find `<label>` in `~/Library/LaunchAgents/dev.*.poe-acp.plist` (e.g. `dev.<user>.poe-acp`). On remote, use `gui/$(id -u)/<label>` inside the ssh command.
 
 Never schedule a delayed reloader and never use `launchctl bootout` + `bootstrap` for a routine restart. `kickstart -k` stops and immediately relaunches the already-registered job without changing the plist or racing launchd registration.
@@ -72,14 +83,20 @@ Use plain `restart`/`kickstart -k` when mid-stream survival does not matter.
 **Brew + systemd (typical Linux):**
 ```bash
 brew update && brew upgrade poe-acp
-systemctl --user restart poe-acp
+systemctl --user reload poe-acp     # graceful worker swap (preferred)
+systemctl --user restart poe-acp    # hard restart: only if the running
+                                    # supervisor is < 0.36.0 or stopped
 ```
+`reload` is the right verb for a binary- or config-only change; `restart`
+drops in-flight replies. `daemon-reload` is only needed when the **unit file**
+itself changed — and a changed unit does require the hard path.
 
 **Direct deploy (`~/.local/bin`, hotfix):**
 From the repo:
 ```bash
 make deploy HOST=<host>
-ssh <host> 'systemctl --user restart poe-acp'   # or launchctl kickstart
+ssh <host> 'systemctl --user reload poe-acp'    # or launchctl kill SIGHUP
+# (restart / kickstart -k only when the running supervisor is < 0.36.0)
 ```
 
 If `brew upgrade` reports "already up-to-date" but the version still lags, the tap index is stale — re-run `brew update`. Persistent miss → fall back to `make deploy`.
@@ -91,6 +108,20 @@ poe-acp --version                       # must equal target
 systemctl --user is-active poe-acp      # → active   (Linux)
 launchctl print gui/$UID/<label> | grep state # → state = running  (macOS)
 ```
+
+After a **graceful swap**, `is-active` proves nothing — it was never not
+active. Verify the swap actually took, from the process tree:
+
+```bash
+pid=$(systemctl --user show -p MainPID --value poe-acp)   # must be UNCHANGED
+ps --ppid "$pid" -o pid=                                  # worker pid must have MOVED
+/proc/<new-worker-pid>/exe --version                      # must equal the target
+```
+
+`/proc/<pid>/exe` executes the in-memory image, so it reports what the process
+is *actually running* — the on-disk binary has already moved on. On macOS
+there is no `/proc`: check the label pid is unchanged and `pgrep -P <pid>`
+reports a new worker pid.
 
 If the host has a known public Funnel URL + access key, optional smoke:
 
@@ -109,13 +140,13 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 ## Pitfalls
 
 - **Stale tap** — `brew upgrade` is a no-op until `brew update` refreshes the tap.
-- **Missed restart** — replacing the binary on disk does not reload the running process. Always restart the supervisor.
+- **Missed recycle** — replacing the binary on disk does not reload the running process. Always recycle the supervisor: `systemctl --user reload` / `launchctl kill SIGHUP` for a binary/config-only change on a running ≥ 0.36.0 supervisor, a hard restart otherwise.
 - **Upgrading the *agent* binary (e.g. `fir update`) is the same trap** — each relay worker holds ONE long-lived agent process shared by all its conversations (a Poe conv is an ACP *session*, not a process). A new agent binary on disk is inert until the worker is cycled: `systemctl --user reload` / SIGHUP forks a new worker with a fresh agent, so **new** conversations get the new agent; conversations pinned to the draining old worker keep the old binary until it exits. Verify with the process tree (`ps --ppid <supervisor>`, then `readlink /proc/<agent-pid>/exe`), not with `<agent> --version` on disk.
 - **launchd label varies** — embeds the deploying user (`dev.<user>.poe-acp`). Read it from the plist, don't guess.
 - **Mixed install methods** — a host may have both `~/.local/bin/poe-acp` and a brew copy; the supervisor's `ExecStart` pins one. Upgrade whichever the unit/plist points at.
 - **In-flight turn interrupts briefly** — a plain `restart`/`kickstart -k` ends the open SSE response; Poe retries and the conversation redrives from transcript, so nothing is lost. Prefer the graceful SIGHUP worker swap (see §3) to preserve mid-stream replies; otherwise avoid hard-restarting during peak use if avoidable.
 - **Never detach or delay a restart** — no `setsid`, no `sleep N`, no one-shot timer unit, no background reloader. Beyond being unnecessary (previous pitfall), it does not even work: under systemd the unit's default `KillMode=control-group` tears down the whole **cgroup**, and `setsid` only escapes the process *group*, not the cgroup — a detached restart command sits inside its own blast radius. It appears to succeed only because `systemctl` hands the job to systemd over D-Bus before it is killed.
-- **Do not mutate launchd for config-only changes** — if only `config.json`, env, or the binary changed, restart with `launchctl kickstart -k gui/$UID/<label>`. Do not edit plist, create one-shot reloader jobs, or run bootout/bootstrap unless first installing/removing a service or intentionally changing the plist registration.
+- **Do not mutate launchd for config-only changes** — if only `config.json`, env, or the binary changed, recycle with `launchctl kill SIGHUP gui/$UID/<label>` (or `kickstart -k` when the running supervisor is < 0.36.0 or stopped). Do not edit plist, create one-shot reloader jobs, or run bootout/bootstrap unless first installing/removing a service or intentionally changing the plist registration.
 
 ## Checklist
 

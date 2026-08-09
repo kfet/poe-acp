@@ -148,6 +148,15 @@ In short: restart once to get onto the shim; reload forever after. The
 identical rule applies on launchd (`kickstart -k` once, then
 `launchctl kill SIGHUP`) — see the macOS section.
 
+On fleet hosts you do not apply this rule by hand: `scripts/converge.sh`
+picks the mechanism itself. It probes the **running** supervisor (pid,
+`/proc/<pid>/exe --version` on Linux, worker children, `ExecReload`) and
+does a graceful `reload`/`kill SIGHUP` for a binary- or config-only change,
+falling back to a hard restart only when the unit/plist changed, the
+supervisor is down, or it is still pre-0.36.0 — printing which and why. It
+then verifies the swap took (supervisor pid unmoved, a NEW worker pid
+running the new version) instead of trusting `is-active`.
+
 
 
 For prefix layout, swap the `ExecStart` to match:
