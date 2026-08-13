@@ -9,6 +9,7 @@ import (
 )
 
 func boolPtr(b bool) *bool { return &b }
+func intPtr(i int) *int    { return &i }
 
 func TestLoad_OpenError(t *testing.T) {
 	t.Parallel()
@@ -23,6 +24,9 @@ func TestLoad_OpenError(t *testing.T) {
 func TestBoolPtr(t *testing.T) {
 	if v := boolPtr(true); v == nil || !*v {
 		t.Fatal("boolPtr broken")
+	}
+	if v := intPtr(7); v == nil || *v != 7 {
+		t.Fatal("intPtr broken")
 	}
 }
 
@@ -154,44 +158,80 @@ func TestLoad_PoeMCP(t *testing.T) {
 }
 
 // TestDefaults_Stream pins the nil-means-default resolution of the
-// stream-shaping knobs. A zero Defaults MUST resolve to today's
-// behaviour — no coalescing, animated spinner — so an existing config
-// file changes nothing.
+// stream-shaping knobs. A zero Defaults MUST resolve to the
+// mobile-friendly shape — 3s grid coalescing, static spinner — and an
+// explicit `"coalesce_ms": 0` MUST still disable coalescing rather than
+// falling back to the default.
 func TestDefaults_Stream(t *testing.T) {
 	t.Parallel()
 	zero := Defaults{}.Stream()
-	if zero.CoalesceInterval != 0 {
-		t.Errorf("zero config enabled coalescing: %s", zero.CoalesceInterval)
+	if zero.CoalesceInterval != DefaultCoalesceMs*time.Millisecond {
+		t.Errorf("zero config coalesce = %s, want %dms", zero.CoalesceInterval, DefaultCoalesceMs)
 	}
-	if !zero.CoalesceGrid || !zero.SpinnerAnimate {
-		t.Errorf("zero config = %+v, want grid+animate defaults", zero)
+	if !zero.CoalesceGrid || zero.SpinnerAnimate {
+		t.Errorf("zero config = %+v, want grid on + spinner static", zero)
 	}
 
-	on := Defaults{CoalesceMs: 3000}.Stream()
+	// Explicit 0 = operator disabling coalescing; must NOT be treated as
+	// "unset" and overridden by DefaultCoalesceMs.
+	disabled := Defaults{CoalesceMs: intPtr(0)}.Stream()
+	if disabled.CoalesceInterval != 0 {
+		t.Errorf("explicit coalesce_ms=0 → %s, want disabled", disabled.CoalesceInterval)
+	}
+
+	on := Defaults{CoalesceMs: intPtr(3000)}.Stream()
 	if on.CoalesceInterval != 3*time.Second || !on.CoalesceGrid {
 		t.Errorf("coalesce_ms=3000 → %+v", on)
 	}
 
 	off := Defaults{
-		CoalesceMs:     1000,
+		CoalesceMs:     intPtr(1000),
 		CoalesceGrid:   boolPtr(false),
-		SpinnerAnimate: boolPtr(false),
+		SpinnerAnimate: boolPtr(true),
 	}.Stream()
-	if off.CoalesceInterval != time.Second || off.CoalesceGrid || off.SpinnerAnimate {
+	if off.CoalesceInterval != time.Second || off.CoalesceGrid || !off.SpinnerAnimate {
 		t.Errorf("explicit opt-outs → %+v", off)
 	}
 }
 
 func TestLoad_StreamKnobs(t *testing.T) {
 	t.Parallel()
-	p := writeFile(t, `{"defaults":{"coalesce_ms":3000,"coalesce_grid":false,"spinner_animate":false}}`)
+	p := writeFile(t, `{"defaults":{"coalesce_ms":3000,"coalesce_grid":false,"spinner_animate":true}}`)
 	cfg, ok, err := Load(p)
 	if err != nil || !ok {
 		t.Fatalf("load: ok=%v err=%v", ok, err)
 	}
 	s := cfg.Defaults.Stream()
-	if s.CoalesceInterval != 3*time.Second || s.CoalesceGrid || s.SpinnerAnimate {
+	if s.CoalesceInterval != 3*time.Second || s.CoalesceGrid || !s.SpinnerAnimate {
 		t.Fatalf("resolved %+v", s)
+	}
+}
+
+// TestLoad_CoalesceUnsetVsZero pins the tri-state: a config file that
+// omits coalesce_ms gets the built-in default, one that spells out 0
+// gets coalescing off.
+func TestLoad_CoalesceUnsetVsZero(t *testing.T) {
+	t.Parallel()
+	unset, ok, err := Load(writeFile(t, `{"defaults":{}}`))
+	if err != nil || !ok {
+		t.Fatalf("load unset: ok=%v err=%v", ok, err)
+	}
+	if unset.Defaults.CoalesceMs != nil {
+		t.Fatalf("omitted coalesce_ms parsed as %d, want nil", *unset.Defaults.CoalesceMs)
+	}
+	if got := unset.Defaults.Stream().CoalesceInterval; got != DefaultCoalesceMs*time.Millisecond {
+		t.Fatalf("omitted coalesce_ms → %s, want default", got)
+	}
+
+	zero, ok, err := Load(writeFile(t, `{"defaults":{"coalesce_ms":0}}`))
+	if err != nil || !ok {
+		t.Fatalf("load zero: ok=%v err=%v", ok, err)
+	}
+	if zero.Defaults.CoalesceMs == nil || *zero.Defaults.CoalesceMs != 0 {
+		t.Fatalf("explicit 0 parsed as %v, want pointer to 0", zero.Defaults.CoalesceMs)
+	}
+	if got := zero.Defaults.Stream().CoalesceInterval; got != 0 {
+		t.Fatalf("explicit coalesce_ms=0 → %s, want disabled", got)
 	}
 }
 
@@ -202,16 +242,16 @@ func TestValidate_CoalesceMsBounds(t *testing.T) {
 	// negative and silently degrades to "off" — a failure the operator
 	// would never see).
 	for _, ms := range []int{-1, MaxCoalesceMs + 1, 600_000} {
-		err := Config{Defaults: Defaults{CoalesceMs: ms}}.Validate()
+		err := Config{Defaults: Defaults{CoalesceMs: intPtr(ms)}}.Validate()
 		if err == nil || !strings.Contains(err.Error(), "coalesce_ms") {
 			t.Errorf("coalesce_ms=%d: want a coalesce_ms error, got %v", ms, err)
 		}
 	}
-	// In range, including both endpoints.
-	for _, ms := range []int{0, 1, 3000, MaxCoalesceMs} {
+	// In range, including both endpoints — plus unset.
+	for _, ms := range []*int{nil, intPtr(0), intPtr(1), intPtr(3000), intPtr(MaxCoalesceMs)} {
 		c := Config{Defaults: Defaults{CoalesceMs: ms}}
 		if err := c.Validate(); err != nil {
-			t.Errorf("coalesce_ms=%d: %v", ms, err)
+			t.Errorf("coalesce_ms=%v: %v", ms, err)
 		}
 	}
 }

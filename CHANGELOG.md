@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BEHAVIOUR CHANGE: mobile stream-shaping settings are now the built-in
+  defaults.** `defaults.coalesce_ms` defaults to `3000` (was `0` = off),
+  `defaults.spinner_animate` defaults to `false` (was `true`), and the
+  `--heartbeat-interval` flag defaults to `3s` (was `1500ms`) so keepalives
+  land inside the same wake window as text flushes. A deployment that never
+  set these keys will now coalesce outbound SSE text on a 3s wall-clock grid
+  and stop animating the spinner dots — measurably better on the Poe mobile
+  app (frames/turn is the phone's radio-wake count), at the cost of up to 3s
+  of extra mid-turn output latency. Restore the old behaviour with
+  `"coalesce_ms": 0`, `"spinner_animate": true` and `--heartbeat-interval
+  1500ms`. `defaults.coalesce_grid` stays `true`.
+- `defaults.coalesce_ms` is now a tri-state `*int`: unset = built-in default
+  (3000), explicit `0` = coalescing disabled. Previously a plain `int`, where
+  `0` and "unset" were indistinguishable.
+
 ## [0.54.0] - 2026-08-09
 
 ### Fixed
