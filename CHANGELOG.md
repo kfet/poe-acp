@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-08-13
+
 ### Changed
 
 - **BEHAVIOUR CHANGE: mobile stream-shaping settings are now the built-in
