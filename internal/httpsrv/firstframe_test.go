@@ -47,7 +47,7 @@ func (a *blockAgent) Prompt(_ context.Context, sid acp.SessionId, _ []acp.Conten
 // event) and no real *content* event within its tolerance window. The
 // first content event is a heartbeat-driven `replace_response` spinner
 // frame — which, on the buggy code, is not emitted until the heartbeat
-// ticker's FIRST tick at t = HeartbeatInterval (default 1500ms).
+// ticker's FIRST tick at t = HeartbeatInterval (default 3s).
 //
 // This test configures a measurable HeartbeatInterval (1s) and a
 // blocked agent (no agent output during the window), then asserts the

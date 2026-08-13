@@ -52,15 +52,20 @@ larger frames.
 ### Config (`internal/config/config.go`)
 
 Three knobs in the `defaults{}` block, alongside `show_plans` /
-`show_tools`, all defaulting to today's behaviour byte-for-byte:
+`show_tools`. They shipped in 0.50.0 defaulting to the pre-coalescing
+behaviour byte-for-byte; **since 0.55.0 the measured settings are the
+built-in defaults** (see CHANGELOG — behaviour change for deployments
+that never set them):
 
-- `coalesce_ms` (int, **default 0 = off**) — `config.go:98`
+- `coalesce_ms` (*int, **default 3000**; explicit `0` = off) — `config.go:99`
 - `coalesce_grid` (bool, **default true** when coalescing is on) — `config.go:107`
-- `spinner_animate` (bool, **default true** = today) — `config.go:114`
+- `spinner_animate` (bool, **default false** = static spinner) — `config.go:115`
 
-`Defaults.Stream()` (`config.go:150`) resolves the nil-means-default
-cases in one tested place; `Validate` rejects a negative `coalesce_ms`
-at boot (`config.go:205`) rather than silently disabling the feature.
+`Defaults.Stream()` (`config.go:168`) resolves the nil-means-default
+cases in one tested place; `coalesce_ms` is a `*int` so an explicit
+`0` (operator disabling the feature) is distinguishable from "unset"
+(built-in default). `Validate` rejects a negative `coalesce_ms` at boot
+(`config.go:233`) rather than silently disabling the feature.
 
 **No CLI flags.** The existing pattern for `defaults{}` knobs is
 config-only — `show_plans`, `show_tools`, `hide_thinking`,

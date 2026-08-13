@@ -94,8 +94,9 @@ type Defaults struct {
 	// too slow to be an efficient bulk transfer. Coalescing upstream is
 	// monotone — Poe cannot relay frames it was never given — and the
 	// relay→Poe hop is wired, so the buffering is energetically free.
-	// 0 (the default) preserves today's 1:1 chunk→frame behaviour.
-	CoalesceMs int `json:"coalesce_ms,omitempty"`
+	// nil means "use built-in default" (DefaultCoalesceMs = 3000); an
+	// explicit 0 disables coalescing and restores 1:1 chunk→frame.
+	CoalesceMs *int `json:"coalesce_ms,omitempty"`
 	// CoalesceGrid aligns flushes to absolute wall-clock instants
 	// (multiples of coalesce_ms since the epoch) rather than a
 	// per-stream timer. With several bots on several hosts, independent
@@ -109,8 +110,9 @@ type Defaults struct {
 	// heartbeat tick. Animation changes the payload every tick, which
 	// defeats the identical-frame dedupe (and any coalescing Poe itself
 	// might do) — turning it off collapses the keepalive down to genuine
-	// state changes plus a liveness floor. nil means "use built-in
-	// default" (currently true = today's behaviour).
+	// state changes plus a liveness floor, which is why it is off by
+	// default (see DefaultSpinnerAnimate). nil means "use built-in
+	// default" (currently false).
 	SpinnerAnimate *bool `json:"spinner_animate,omitempty"`
 	// ShowToolDetails renders each tool call's `content` blocks under
 	// its durable line, plus one group per COMPLETED/FAILED
@@ -121,6 +123,17 @@ type Defaults struct {
 	ShowToolDetails *bool `json:"show_tool_details,omitempty"`
 }
 
+// DefaultCoalesceMs is the built-in fallback for
+// `defaults.coalesce_ms`. Coalescing is ON by default at 3s: the
+// dominant client is the Poe mobile app, where frames-per-turn drives
+// radio wakeups — a 3s flush grid lets the modem's cDRX micro-sleep
+// actually engage between frames, and a week of production use across
+// four bots confirmed the app is markedly better with it. The relay→Poe
+// hop is wired and coalescing is monotone, so the buffering costs
+// nothing but output latency. An operator who wants 1:1 chunk→frame
+// must set an explicit `"coalesce_ms": 0`.
+const DefaultCoalesceMs = 3000
+
 // DefaultCoalesceGrid is the built-in fallback for
 // `defaults.coalesce_grid`. Grid alignment is the whole point of the
 // feature once coalescing is on (see Defaults.CoalesceGrid), so it is
@@ -128,9 +141,13 @@ type Defaults struct {
 const DefaultCoalesceGrid = true
 
 // DefaultSpinnerAnimate is the built-in fallback for
-// `defaults.spinner_animate`. True = today's behaviour, so a config
-// that says nothing keeps the animated spinner byte-for-byte.
-const DefaultSpinnerAnimate = true
+// `defaults.spinner_animate`. Off by default: an animated spinner
+// mutates the keepalive payload every heartbeat tick, defeating the
+// identical-frame dedupe and waking the phone's radio for no
+// information. A static spinner still proves liveness. An operator who
+// wants the dots to move must set an explicit
+// `"spinner_animate": true`.
+const DefaultSpinnerAnimate = false
 
 // Stream is the resolved outbound stream-shaping configuration handed
 // to the HTTP layer. It exists so the nil-means-default resolution
@@ -145,16 +162,17 @@ type Stream struct {
 }
 
 // Stream resolves the stream-shaping knobs against their built-in
-// defaults. A zero Defaults yields today's behaviour: no coalescing,
-// animated spinner. Assumes a Config that passed Validate (which is
-// what bounds CoalesceMs — see MaxCoalesceMs).
+// defaults. A zero Defaults yields the mobile-friendly shape: 3s grid
+// coalescing, static spinner. Assumes a Config that passed Validate
+// (which is what bounds CoalesceMs — see MaxCoalesceMs).
 func (d Defaults) Stream() Stream {
 	s := Stream{
-		CoalesceGrid:   DefaultCoalesceGrid,
-		SpinnerAnimate: DefaultSpinnerAnimate,
+		CoalesceInterval: DefaultCoalesceMs * time.Millisecond,
+		CoalesceGrid:     DefaultCoalesceGrid,
+		SpinnerAnimate:   DefaultSpinnerAnimate,
 	}
-	if d.CoalesceMs > 0 {
-		s.CoalesceInterval = time.Duration(d.CoalesceMs) * time.Millisecond
+	if d.CoalesceMs != nil {
+		s.CoalesceInterval = time.Duration(*d.CoalesceMs) * time.Millisecond
 	}
 	if d.CoalesceGrid != nil {
 		s.CoalesceGrid = *d.CoalesceGrid
@@ -204,17 +222,18 @@ func Load(path string) (cfg Config, ok bool, err error) {
 // and a value large enough to overflow time.Duration's nanosecond int64
 // would wrap negative and silently degrade to "off" — the worst failure
 // mode, since the operator would see no error and no effect. 60s is far
-// beyond any defensible setting (3s is the recommended one) while
-// keeping the arithmetic nowhere near the overflow boundary.
+// beyond any defensible setting while
+// keeping the arithmetic nowhere near the overflow boundary (3s is the
+// built-in default).
 const MaxCoalesceMs = 60_000
 
 // Validate checks field-level invariants. Cross-field checks against
 // the agent's runtime state (e.g. "is Defaults.Model in the probed
 // list?") happen in main.go after the probe completes.
 func (c Config) Validate() error {
-	if c.Defaults.CoalesceMs < 0 || c.Defaults.CoalesceMs > MaxCoalesceMs {
+	if c.Defaults.CoalesceMs != nil && (*c.Defaults.CoalesceMs < 0 || *c.Defaults.CoalesceMs > MaxCoalesceMs) {
 		return fmt.Errorf("defaults.coalesce_ms: invalid %d (want 0..%d, 0 = disabled)",
-			c.Defaults.CoalesceMs, MaxCoalesceMs)
+			*c.Defaults.CoalesceMs, MaxCoalesceMs)
 	}
 	switch c.Defaults.Thinking {
 	case "", "off", "minimal", "low", "medium", "high", "xhigh", "max":
