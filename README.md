@@ -218,7 +218,9 @@ update    Self-update the binary from GitHub Releases (see Updating above).
 --introduction         Poe introduction message
 --session-ttl          Idle TTL for a conv (default 2h)
 --gc-interval          GC sweep interval (default 5m)
---heartbeat-interval   SSE heartbeat tick (default 10s, 0 to disable)
+--heartbeat-interval   SSE heartbeat tick (default 3s, 0 to disable).
+                       Matches the default coalesce period so keepalives land
+                       inside the same wake window as text flushes.
 --drain-deadline       Bound on a worker's drain when the SERVICE is stopping
                        (default 45s). In-flight streams complete undisturbed
                        below it; past it the worker force-closes what remains,
@@ -253,9 +255,9 @@ keep working.
     "show_plans": true,
     "show_tools": true,
     "show_tool_details": true,
-    "coalesce_ms": 0,
+    "coalesce_ms": 3000,
     "coalesce_grid": true,
-    "spinner_animate": true
+    "spinner_animate": false
   },
   "agent": {
     "profile": "fir"
@@ -299,16 +301,18 @@ keep working.
   middle replaced by `… N lines elided …`) and rendered inside the tool
   line's blockquote; non-terminal updates stay spinner-only.
 - **`defaults.coalesce_ms`** — outbound SSE flush coalescing, in
-  milliseconds. `0` (default) = today's behaviour: one `text` frame per
-  agent chunk. When `> 0` the relay buffers text and emits at most one
-  frame per period. This is a **battery** knob: on the phone leg the
+  milliseconds. Omitted = built-in default (`3000`). Set an explicit
+  `0` to disable coalescing and get one `text` frame per agent chunk.
+  When `> 0` the relay buffers text and emits at most one frame per
+  period. This is a **battery** knob: on the phone leg the
   radio's energy is dominated by how often the modem wakes, not by
   bytes, and a frame every 20–100ms is the worst case — too frequent
   for LTE/5G cDRX micro-sleep (which needs ~100–320ms of quiet), too
   slow to be an efficient bulk transfer. Coalescing here is monotone:
   Poe cannot relay frames it was never given. The relay→Poe hop is
-  wired, so nothing is traded away. `3000` is the recommended first
-  rollout value; valid range is `0..60000` (larger is rejected at boot —
+  wired, so nothing is traded away. `3000` is the default (a week of
+  production use across four bots showed the Poe mobile app is markedly
+  better with it); valid range is `0..60000` (larger is rejected at boot —
   it starves mid-turn output, and a big enough value would overflow
   `time.Duration` and silently degrade to "off"). The first chunk of
   every turn is ALWAYS written straight through — that, not the
@@ -328,14 +332,15 @@ keep working.
   protocol, so every stream on every host lands in the same wake
   window. Only has effect when `coalesce_ms > 0`.
 - **`defaults.spinner_animate`** — animate the keepalive spinner's
-  dots. Omitted = built-in default (`true` = today's behaviour). The
-  animation changes the frame payload every tick, which by construction
-  defeats the relay's identical-frame dedupe (and any coalescing Poe's
-  own servers might do). Set to `false` and the keepalive collapses to
-  genuine state changes only — plan changed, tool started, new content
-  — plus a liveness floor (`2 ×` the stall threshold, min 10s) that
-  re-sends an identical frame purely so Poe does not
-  content-starvation-drop a long tool call.
+  dots. Omitted = built-in default (`false`). Animation changes the
+  frame payload every tick, which by construction defeats the relay's
+  identical-frame dedupe (and any coalescing Poe's own servers might
+  do) — so it is off, and the keepalive collapses to genuine state
+  changes only — plan changed, tool started, new content — plus a
+  liveness floor (`2 ×` the stall threshold, min 10s) that re-sends an
+  identical frame purely so Poe does not content-starvation-drop a long
+  tool call. Set it to `true` to get the moving dots back at the cost of
+  a wire frame per heartbeat.
 - **`agent.profile`** — reserved (today the relay only knows fir's
   `set_config_option` schema; multi-agent profile selection lands in a
   follow-up).
@@ -423,9 +428,10 @@ the config file.
 - **Frame accounting.** Every turn logs one
   `FRAMESTATS conv=… text_frames=… replace_frames=… bytes_out=… dur=…`
   line. Frames-per-turn is a direct proxy for the phone's radio wakeups,
-  so the before/after ratio when enabling `coalesce_ms` IS the
+  so the ratio between `coalesce_ms: 0` and the default IS the
   radio-wake ratio. A synthetic 2000-chunk / 60s answer goes from 2003
-  frames to 54 (37×) at `coalesce_ms: 3000` with a static spinner.
+  frames at `coalesce_ms: 0` to 54 (37×) at the default `coalesce_ms:
+  3000` with a static spinner.
 - **Agent → Poe surface.** Agent-emitted attachments and thoughts
   (when `hide_thinking=true`) are not forwarded back to the Poe user;
   non-terminal `tool_call_update` is spinner-only. Beyond

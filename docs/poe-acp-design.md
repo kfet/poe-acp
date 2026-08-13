@@ -204,7 +204,7 @@ Flags:
 --state-dir            $XDG_STATE_HOME/poe-acp
 --access-key-env       POEACP_ACCESS_KEY
 --session-ttl          2h
---heartbeat-interval   10s
+--heartbeat-interval   3s    (matches the default coalesce_ms period)
 --drain-deadline       45s   (bounded worker drain on a service STOP;
                              supervisor SIGKILLs at +15s)
 --swap-drain-deadline  30m   (same, for a worker retired by a SIGHUP swap:

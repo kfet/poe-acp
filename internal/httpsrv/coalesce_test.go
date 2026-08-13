@@ -508,7 +508,7 @@ const (
 	syntheticChunks     = 2000
 	syntheticBatches    = 100
 	syntheticSpan       = 600 * time.Millisecond // 60s / 100
-	syntheticHeartbeat  = 15 * time.Millisecond  // 1500ms / 100
+	syntheticHeartbeat  = 30 * time.Millisecond  // 3000ms / 100
 	syntheticCoalesceMs = 30 * time.Millisecond  // 3000ms / 100
 )
 

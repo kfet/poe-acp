@@ -74,7 +74,7 @@ func main() {
 		ttl             = flag.Duration("session-ttl", 10*time.Minute, "Idle TTL before a conv session is evicted")
 		sessCreateTO    = flag.Duration("session-create-timeout", 60*time.Second, "Bounds session acquisition (list/resume/new); decoupled from the request ctx so a flaky first request still warms the session")
 		gcEvery         = flag.Duration("gc-interval", 5*time.Minute, "GC sweep interval")
-		heartbeat       = flag.Duration("heartbeat-interval", 1500*time.Millisecond, "SSE heartbeat / spinner tick interval (0 to disable)")
+		heartbeat       = flag.Duration("heartbeat-interval", 3*time.Second, "SSE heartbeat / spinner tick interval (0 to disable)")
 		turnTimeout     = flag.Duration("turn-timeout", 0, "OPTIONAL absolute wall-clock ceiling on a single prompt turn. 0 (default) = no ceiling: an actively-progressing turn is NEVER cut, and only -idle-write-timeout (progress-resetting) can cancel a wedged turn. Set >0 only if you deliberately want a hard upper bound regardless of progress")
 		idleWriteTO     = flag.Duration("idle-write-timeout", 2*time.Minute, "Per-stream wedged-turn backstop: cancel a turn that writes no agent output within this window (heartbeat keepalives do not reset it; a tool_call update does). The only force-kill path during a graceful drain")
 		stallThreshold  = flag.Duration("stall-threshold", 8*time.Second, "Output-silence window before the mid-turn keepalive spinner re-arms via replace_response. Keeps Poe from content-starvation-dropping a long tool-heavy turn. Must stay well under Poe's drop tolerance")
