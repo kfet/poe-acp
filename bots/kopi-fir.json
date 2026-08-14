@@ -26,10 +26,7 @@
     "defaults": {
       "model": "anthropic/claude-opus-5",
       "thinking": "medium",
-      "hide_thinking": false,
-      "coalesce_ms": 3000,
-      "coalesce_grid": true,
-      "spinner_animate": false
+      "hide_thinking": false
     }
   },
   "credentials": { "env_file": "~/.config/poe-acp/bot-kopi-fir/env" }
