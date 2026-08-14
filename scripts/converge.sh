@@ -182,7 +182,13 @@ rsh() { # run a shell command on the target; stdin is forwarded
     # Single-quote the payload (POSIX-escaping embedded quotes) so the
     # remote login shell hands it to bash verbatim. stdin still forwards.
     # shellcheck disable=SC2029  # remote-side expansion is intended
-    ssh "$HOST" "bash -lc '${1//\'/\'\\\'\'}'"
+    # NOTE: build the single-quote escape with sed, not ${1//\'/...}. Bash 5.3
+    # changed backslash processing in pattern-substitution replacements, so the
+    # inline form double-escapes there and the far side dies with
+    # "unmatched '". sed is version-proof.
+    local esc
+    esc=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+    ssh "$HOST" "bash -lc '$esc'"
   fi
 }
 
