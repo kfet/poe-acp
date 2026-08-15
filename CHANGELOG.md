@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Added
+
+- `poe-acp reconcile` — pull the fleet `dist.lock` (conditional GET, ETag
+  cached) and converge this host to it. **Dry-run by default**, `--apply`
+  to act. poe-acp is `pin` (exact, downgrade included); fir is `floor`
+  (shell out to `fir update`, never manage its binary, report `ahead`);
+  fir extensions go through `fir packages update` and are verified.
+- One-deep binary swap with automatic rollback: an update renames the live
+  binary aside and the verified download over it; if the new worker never
+  completes the ready handshake, the previous binary goes back and a worker
+  is forked from it again — the old worker is never drained, so service
+  never breaks. Both sidecars (`poe-acp.new`, `poe-acp.prev`) are unlinked
+  as soon as the swap settles, so a settled host has exactly one binary on
+  disk. Undo a version that only crash-loops later with
+  `poe-acp update --version <old>`.
+- `self_heal` config knob (off by default): the supervisor reconciles on
+  boot and on a jittered ~15m timer, routing any binary swap through the
+  same fork + ready-handshake gate as a SIGHUP worker swap.
+- `status.json` written next to the config after every reconcile: versions
+  running, lock applied, actions, drift, timestamp. A plain file — no
+  endpoint, no push. `ssh <host> cat .../status.json` reads it.
+- `scripts/converge.sh` reads locked artefacts through `lockver`/`lockpol`,
+  so a version may be a bare string (= `pin`) or
+  `{"version": ..., "policy": "pin"|"floor"}`. Under `floor` a host running
+  ahead of the lock is left alone instead of failing the converge, and
+  `--tot` rewrites versions in place, preserving each artefact's shape and
+  policy.
+- `dist.lock` pins fir as `{"version": "0.98.1", "policy": "floor"}`: fir
+  owns its own updates, so the lock is a floor, not an exact pin.
+- Lock schema gained a per-artefact policy (`{"version": "...", "policy":
+  "floor"}`); a bare version string still parses and means `pin`.
+
 ## [0.55.0] - 2026-08-13
 
 ### Changed

@@ -441,3 +441,78 @@ func TestAssetArch(t *testing.T) {
 		}
 	}
 }
+
+// --- Fetch: stage a release binary without touching the running one ---
+
+func TestFetch_HappyPath(t *testing.T) {
+	exe, client := fixture(t, "v0.3.0", "staged-binary", nil)
+	dst := exe + ".new"
+	if err := Fetch(client, "x/y", "0.3.0", dst); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != "staged-binary" {
+		t.Fatalf("staged=%q err=%v", got, err)
+	}
+	if fi, err := os.Stat(dst); err != nil || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("mode=%v err=%v", fi.Mode(), err)
+	}
+	// The running binary is untouched, and no checksum sidecar is left.
+	if b, _ := os.ReadFile(exe); string(b) != "old" {
+		t.Fatalf("running binary changed to %q", b)
+	}
+	if _, err := os.Stat(dst + ".sums"); !os.IsNotExist(err) {
+		t.Fatalf("checksums sidecar left behind: %v", err)
+	}
+}
+
+func TestFetch_ChecksumMismatch(t *testing.T) {
+	exe, client := fixture(t, "v0.3.0", "staged", []byte("deadbeef  "+assetName()+"\n"))
+	dst := exe + ".new"
+	err := Fetch(client, "x/y", "v0.3.0", dst)
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("err=%v want checksum mismatch", err)
+	}
+	// A binary that failed verification must not be left on disk.
+	if _, serr := os.Stat(dst); !os.IsNotExist(serr) {
+		t.Fatalf("unverified download survived: %v", serr)
+	}
+	if _, serr := os.Stat(dst + ".sums"); !os.IsNotExist(serr) {
+		t.Fatalf("checksums sidecar survived: %v", serr)
+	}
+}
+
+func TestFetch_NoChecksumEntry(t *testing.T) {
+	exe, client := fixture(t, "v0.3.0", "staged", []byte("deadbeef  other\n"))
+	err := Fetch(client, "x/y", "v0.3.0", exe+".new")
+	if err == nil || !strings.Contains(err.Error(), "no checksum entry") {
+		t.Fatalf("err=%v want no checksum entry", err)
+	}
+}
+
+func TestFetch_AssetDownloadError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dl/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
+	exe, client := clientFor(t, httptest.NewServer(mux))
+	err := Fetch(client, "x/y", "v0.3.0", exe+".new")
+	if err == nil || !strings.Contains(err.Error(), "download asset") {
+		t.Fatalf("err=%v want download asset error", err)
+	}
+}
+
+func TestFetch_ChecksumsDownloadError(t *testing.T) {
+	asset, bin, _ := makeRelease("staged")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dl/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/"+asset) {
+			w.Write(bin)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	exe, client := clientFor(t, httptest.NewServer(mux))
+	err := Fetch(client, "x/y", "v0.3.0", exe+".new")
+	if err == nil || !strings.Contains(err.Error(), "download checksums") {
+		t.Fatalf("err=%v want download checksums error", err)
+	}
+}

@@ -50,6 +50,20 @@ server flags, relay config, agent, fir extensions, credential *references*
 versions: poe-acp, fir (released from `kfet/fir-dist`), and each fir
 extension repo by git rev.
 
+A locked artefact is either a bare version string or an object carrying a
+policy:
+
+```json
+{ "poe_acp": "0.55.0",
+  "fir": { "version": "0.98.1", "policy": "floor" } }
+```
+
+`pin` (the default, and what a bare string means) converges exactly —
+including downgrade. `floor` upgrades a host that is below and leaves one
+that is above alone, reporting it as ahead. fir is `floor`: it owns its own
+updates, and downgrading it is a deliberate manual act. Both
+`scripts/converge.sh` and `poe-acp reconcile` read the lock this way.
+
 **`scripts/converge.sh` is the only sanctioned way to touch a host.**
 
 ```bash
@@ -185,6 +199,48 @@ poe-acp update -restart-cmd "launchctl kickstart -k gui/$UID/<label>"
 On a fleet host, do not run this by hand: `scripts/converge.sh <bot> --apply`
 owns the upgrade and picks the graceful or hard path itself (and verifies the
 swap took).
+
+### Self-heal: `poe-acp reconcile` (pull, not push)
+
+The fleet is intermittently online, so an ssh push never reaches a sleeping
+laptop. Each host can instead PULL the fleet target itself:
+
+```bash
+poe-acp reconcile                 # dry run (default): what differs from dist.lock
+poe-acp reconcile --apply         # converge this host
+```
+
+It fetches `dist.lock` from the repo's raw URL (conditional GET, ETag cached
+next to the config), then per artefact: **poe_acp** (`pin`) is downloaded,
+checksum-verified and swapped in; **fir** (`floor`) is left to its own
+self-updater (`fir update`) and only verified — a fir ahead of the lock is
+reported and left alone; **exts** go through `fir packages update`.
+
+A binary swap is accepted only if a worker forked from the new binary
+completes the ready handshake; if it does not, the outgoing binary is renamed
+back and a worker forked from it — the old worker was never drained, so no
+stream is dropped. Both sidecar files (`poe-acp.new`, `poe-acp.prev`) exist
+only inside that window: once a swap settles, successfully or not, the
+directory holds exactly one file again. A bad version that comes ready and
+only crash-loops later is undone with the command that already exists:
+
+```bash
+poe-acp update --version <old-version>
+```
+
+Set `"self_heal": true` in a bot's config.json to have the supervisor run the
+same reconcile on boot and every ~15 minutes (jittered). Off by default, so it
+is enabled host by host.
+
+Each run writes `status.json` next to the config — versions running, the lock
+applied, actions taken, drift, timestamp. It is a plain file: no endpoint, no
+push, no server. Read it from wherever you are:
+
+```bash
+ssh <host> cat '~/.config/poe-acp/bot-<bot>/status.json'
+```
+
+A sleeping node is simply unreachable, which is the truth about it.
 
 Self-update is refused when the binary lives under a package-manager path
 (Homebrew, linuxbrew, `/usr/bin`); use `brew upgrade poe-acp` there instead.
