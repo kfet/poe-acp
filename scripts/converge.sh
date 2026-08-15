@@ -43,6 +43,21 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 need jq
 
 # ---------------------------------------------------------------------------
+# dist.lock access
+#
+# A locked artefact is EITHER a bare version string (policy defaults to
+# "pin") OR an object {"version": ..., "policy": "pin"|"floor"}. Both
+# shapes are read through lockver/lockpol so no call site has to care.
+#   pin   converge exactly, including downgrade
+#   floor upgrade if below; leave alone (and say so) if above
+# ---------------------------------------------------------------------------
+lockver() { jq -r "$1 | if type == \"object\" then .version else . end" "$LOCK"; }
+lockpol() { jq -r "$1 | if type == \"object\" then (.policy // \"pin\") else \"pin\" end" "$LOCK"; }
+
+# ver_ge <a> <b>: true when version a >= version b.
+ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
+
+# ---------------------------------------------------------------------------
 # Spec access ($SPEC is set in main)
 # ---------------------------------------------------------------------------
 SPEC=""
@@ -425,11 +440,12 @@ mech_label() { # <supervisor> <mech>
 # ---------------------------------------------------------------------------
 converge() {
   local bot=$1 apply=$2 changes=0 unit_changed=0
-  local want_pa want_fir want_ext cur host supervisor binary
+  local want_pa want_fir want_ext fir_policy cur host supervisor binary
 
   [ -f "$LOCK" ] || die "missing $LOCK"
-  want_pa=$(jq -r '.poe_acp' "$LOCK")
-  want_fir=$(jq -r '.fir' "$LOCK")
+  want_pa=$(lockver '.poe_acp')
+  want_fir=$(lockver '.fir')
+  fir_policy=$(lockpol '.fir')
   want_ext=$(jq -r '.exts["github.com/kfet/fir-exts"]' "$LOCK")
 
   host=$(jqs '.host')
@@ -478,6 +494,10 @@ converge() {
     cur=$(rsh "fir --version 2>/dev/null | head -1 | awk '{print \$2}' || true")
     if [ "$cur" = "$want_fir" ]; then
       note "fir $cur ✓"
+    elif [ "$fir_policy" = floor ] && [ -n "$cur" ] && ver_ge "$cur" "$want_fir"; then
+      # floor: ahead of the lock is fine and is NOT drift. fir owns its own
+      # updates; a downgrade is a deliberate manual act, never a converge.
+      note "fir $cur ahead of lock floor $want_fir, leaving ✓"
     else
       changes=$((changes + 1))
       note "fir: ${cur:-missing} → $want_fir"
@@ -487,7 +507,11 @@ converge() {
         else
         rsh "fir update" || true
         cur=$(rsh "fir --version 2>/dev/null | head -1 | awk '{print \$2}' || true")
+        if [ "$fir_policy" = floor ]; then
+          ver_ge "${cur:-0}" "$want_fir" || die "fir is $cur after 'fir update', lock floor is $want_fir"
+        else
         [ "$cur" = "$want_fir" ] || die "fir is $cur after 'fir update', lock wants $want_fir — releases moved past the lock? Re-run --tot or fetch v$want_fir from $FIR_DIST_REPO/releases manually"
+        fi
         note "fir now $cur ✓"
         fi
       fi
@@ -723,13 +747,14 @@ tot() {
   need git
   local old_pa old_fir old_ext new_pa new_fir new_ext moved=0
   if [ -f "$LOCK" ]; then
-    old_pa=$(jq -r '.poe_acp' "$LOCK")
-    old_fir=$(jq -r '.fir' "$LOCK")
+    old_pa=$(lockver '.poe_acp')
+    old_fir=$(lockver '.fir')
     old_ext=$(jq -r '.exts["github.com/kfet/fir-exts"]' "$LOCK")
   else
     old_pa=none; old_fir=none; old_ext=none
   fi
 
+  [ -f "$LOCK" ] || echo '{}' >"$LOCK"
   echo "== tot: resolving latest releases (this is the ONLY place resolution happens)"
   new_pa=$(latest_tag "$POE_ACP_REPO")
   new_fir=$(latest_tag "$FIR_DIST_REPO")
@@ -743,10 +768,17 @@ tot() {
   [ "$old_ext" != "$new_ext" ] && { note "fir-exts: ${old_ext:0:12} → ${new_ext:0:12}"; moved=1; }
   [ "$moved" = 0 ] && { echo "== tot: lock already at latest, nothing moved"; return 0; }
 
-  jq -n --arg pa "$new_pa" --arg fir "$new_fir" --arg ext "$new_ext" \
-        --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{poe_acp: $pa, fir: $fir, exts: {"github.com/kfet/fir-exts": $ext}, resolved_at: $at}' \
-    >"$LOCK"
+  # Rewrite versions in place, preserving each artefact's shape and policy:
+  # an object stays an object (policy intact), a bare string stays a string.
+  jq --arg pa "$new_pa" --arg fir "$new_fir" --arg ext "$new_ext" \
+     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     'def setver($v): if type == "object" then .version = $v else $v end;
+      .poe_acp |= setver($pa)
+      | .fir |= setver($fir)
+      | .exts["github.com/kfet/fir-exts"] = $ext
+      | .resolved_at = $at' \
+     "$LOCK" >"$TMPD/lock.json"
+  mv "$TMPD/lock.json" "$LOCK"
   echo "== tot: dist.lock rewritten. Review the diff, commit it, then converge each bot:"
   echo "   git diff dist.lock"
   for f in "$BOTS_DIR"/*.json; do

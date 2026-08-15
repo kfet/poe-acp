@@ -50,6 +50,20 @@ server flags, relay config, agent, fir extensions, credential *references*
 versions: poe-acp, fir (released from `kfet/fir-dist`), and each fir
 extension repo by git rev.
 
+A locked artefact is either a bare version string or an object carrying a
+policy:
+
+```json
+{ "poe_acp": "0.55.0",
+  "fir": { "version": "0.98.1", "policy": "floor" } }
+```
+
+`pin` (the default, and what a bare string means) converges exactly —
+including downgrade. `floor` upgrades a host that is below and leaves one
+that is above alone, reporting it as ahead. fir is `floor`: it owns its own
+updates, and downgrading it is a deliberate manual act. Both
+`scripts/converge.sh` and `poe-acp reconcile` read the lock this way.
+
 **`scripts/converge.sh` is the only sanctioned way to touch a host.**
 
 ```bash
@@ -210,8 +224,17 @@ later is undone by hand: `mv poe-acp.prev poe-acp && systemctl --user restart <u
 
 Set `"self_heal": true` in a bot's config.json to have the supervisor run the
 same reconcile on boot and every ~15 minutes (jittered). Off by default, so it
-is enabled host by host. Each run writes `status.json` next to the config
-(versions, lock applied, drift); `ssh <host> cat ~/.config/poe-acp/bot-<name>/status.json`.
+is enabled host by host.
+
+Each run writes `status.json` next to the config — versions running, the lock
+applied, actions taken, drift, timestamp. It is a plain file: no endpoint, no
+push, no server. Read it from wherever you are:
+
+```bash
+ssh <host> cat '~/.config/poe-acp/bot-<bot>/status.json'
+```
+
+A sleeping node is simply unreachable, which is the truth about it.
 
 Self-update is refused when the binary lives under a package-manager path
 (Homebrew, linuxbrew, `/usr/bin`); use `brew upgrade poe-acp` there instead.
