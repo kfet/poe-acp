@@ -216,11 +216,17 @@ checksum-verified and swapped in; **fir** (`floor`) is left to its own
 self-updater (`fir update`) and only verified — a fir ahead of the lock is
 reported and left alone; **exts** go through `fir packages update`.
 
-A binary swap keeps the outgoing binary as `poe-acp.prev` and is accepted only
-if a worker forked from the new binary completes the ready handshake; if it
-does not, `.prev` is renamed back and a worker forked from it — the old worker
-was never drained, so no stream is dropped. A crash-loop that only shows up
-later is undone by hand: `mv poe-acp.prev poe-acp && systemctl --user restart <unit>`.
+A binary swap is accepted only if a worker forked from the new binary
+completes the ready handshake; if it does not, the outgoing binary is renamed
+back and a worker forked from it — the old worker was never drained, so no
+stream is dropped. Both sidecar files (`poe-acp.new`, `poe-acp.prev`) exist
+only inside that window: once a swap settles, successfully or not, the
+directory holds exactly one file again. A bad version that comes ready and
+only crash-loops later is undone with the command that already exists:
+
+```bash
+poe-acp update --version <old-version>
+```
 
 Set `"self_heal": true` in a bot's config.json to have the supervisor run the
 same reconcile on boot and every ~15 minutes (jittered). Off by default, so it

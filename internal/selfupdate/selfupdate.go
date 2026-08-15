@@ -179,7 +179,15 @@ func Run(currentVersion string, opts Options) (Result, error) {
 // running binary — the caller decides when and how to swap it in (see
 // supervisor.Swapper). dst must live on the same filesystem as the
 // binary it will replace so that swap is an atomic rename.
-func Fetch(c *http.Client, repo, version, dst string) error {
+func Fetch(c *http.Client, repo, version, dst string) (err error) {
+	// Self-cleaning: a Fetch that fails for any reason leaves nothing on
+	// disk, so a caller never has to reason about a half-downloaded or
+	// unverified binary sitting next to the running one.
+	defer func() {
+		if err != nil {
+			os.Remove(dst)
+		}
+	}()
 	asset := fmt.Sprintf("poe-acp-%s-%s", runtime.GOOS, assetArch(runtime.GOARCH))
 	base := fmt.Sprintf("https://github.com/%s/releases/download/%s", repo, ensureV(version))
 	actual, err := download(c, base+"/"+asset, dst, 0o755)
