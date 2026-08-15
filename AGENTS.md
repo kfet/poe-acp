@@ -24,6 +24,7 @@ docs/                    design doc + Poe protocol reference
 internal/command/        relay chat-commands: login, !help, !status, !model, …
 internal/config/         JSON config loader (DisallowUnknownFields)
 internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
+internal/install/        versioned binary layout + current/last-good symlinks
 internal/paramctl/       parameter_controls schema builder + Resolve
 internal/poeproto/       minimal Poe HTTP+SSE
 internal/router/         conv_id → ACP session map + GC
