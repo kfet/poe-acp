@@ -1,6 +1,6 @@
 {
   "poe_acp": "0.55.0",
-  "fir": "0.98.1",
+  "fir": { "version": "0.98.1", "policy": "floor" },
   "exts": {
     "github.com/kfet/fir-exts": "2b2caa7a8504bc5c41aa88b17c3cbe8389884ee0"
   },

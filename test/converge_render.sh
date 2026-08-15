@@ -96,7 +96,7 @@ fake="$tmpd/fakehost"
 mkdir -p "$fake/.local/bin"
 # Track the lock rather than a hardcoded version: this asserts "already
 # converged is detected", not "the fleet is pinned to X".
-LOCKED_POE_ACP=$(jq -r .poe_acp "$ROOT/dist.lock")
+LOCKED_POE_ACP=$(jq -r '.poe_acp | if type == "object" then .version else . end' "$ROOT/dist.lock")
 printf '#!/bin/sh\necho %s\n' "$LOCKED_POE_ACP" >"$fake/.local/bin/poe-acp"
 chmod +x "$fake/.local/bin/poe-acp"
 
@@ -318,6 +318,48 @@ if "$CONVERGE" two-fir --target-root "$fake3" --apply >/dev/null 2>&1; then
 else
   ok "frozen supervisor pid after a hard restart fails loudly"
 fi
+
+# ---------------------------------------------------------------------------
+# dist.lock artefact policies: a locked artefact is a bare version string
+# (= pin) or {"version":..,"policy":"pin"|"floor"}. floor means "upgrade if
+# below, leave alone if above"; pin converges exactly. Driven against a
+# throwaway copy of the repo so the real dist.lock is never touched.
+# ---------------------------------------------------------------------------
+echo "== dist.lock artefact policies"
+lockroot="$tmpd/lockroot"
+mkdir -p "$lockroot"
+cp -r "$ROOT/scripts" "$ROOT/bots" "$lockroot/"
+fake4="$tmpd/fakehost4"
+mkdir -p "$fake4/.local/bin"
+printf '#!/bin/sh\necho fir 9.9.9\n' >"$fake4/.local/bin/fir"
+chmod +x "$fake4/.local/bin/fir"
+
+jq '.fir = {"version": "0.98.1", "policy": "floor"}' "$ROOT/dist.lock" >"$lockroot/dist.lock"
+out=$("$lockroot/scripts/converge.sh" two-fir --target-root "$fake4")
+case "$out" in
+  *"fir 9.9.9 ahead of lock floor 0.98.1, leaving"*) ok "floor policy leaves an ahead fir alone" ;;
+  *) bad "floor policy should leave an ahead fir alone"; echo "$out" ;;
+esac
+
+jq '.fir = "0.98.1"' "$ROOT/dist.lock" >"$lockroot/dist.lock"
+out=$("$lockroot/scripts/converge.sh" two-fir --target-root "$fake4")
+case "$out" in
+  *"fir: 9.9.9 → 0.98.1"*) ok "bare version string still means pin" ;;
+  *) bad "a bare version string must converge exactly (pin)"; echo "$out" ;;
+esac
+
+# --tot rewrites versions in place and must PRESERVE each artefact's shape,
+# so a policy survives a resolve. (jq expression asserted directly: --tot
+# itself resolves from the network.)
+shape=$(jq -c --arg pa 9.9.9 --arg fir 8.8.8 --arg ext abc --arg at NOW \
+  'def setver($v): if type == "object" then .version = $v else $v end;
+   .poe_acp |= setver($pa) | .fir |= setver($fir)
+   | .exts["github.com/kfet/fir-exts"] = $ext | .resolved_at = $at
+   | {poe_acp, fir}' \
+  <<<'{"poe_acp":"0.1.0","fir":{"version":"0.2.0","policy":"floor"}}')
+[ "$shape" = '{"poe_acp":"9.9.9","fir":{"version":"8.8.8","policy":"floor"}}' ] \
+  && ok "tot rewrite preserves artefact shape and policy" \
+  || bad "tot rewrite lost the policy: $shape"
 
 echo
 echo "passed=$pass failed=$fail"

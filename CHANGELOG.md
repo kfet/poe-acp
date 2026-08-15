@@ -21,6 +21,14 @@
 - `status.json` written next to the config after every reconcile: versions
   running, lock applied, actions, drift, timestamp. A plain file — no
   endpoint, no push. `ssh <host> cat .../status.json` reads it.
+- `scripts/converge.sh` reads locked artefacts through `lockver`/`lockpol`,
+  so a version may be a bare string (= `pin`) or
+  `{"version": ..., "policy": "pin"|"floor"}`. Under `floor` a host running
+  ahead of the lock is left alone instead of failing the converge, and
+  `--tot` rewrites versions in place, preserving each artefact's shape and
+  policy.
+- `dist.lock` pins fir as `{"version": "0.98.1", "policy": "floor"}`: fir
+  owns its own updates, so the lock is a floor, not an exact pin.
 - Lock schema gained a per-artefact policy (`{"version": "...", "policy":
   "floor"}`); a bare version string still parses and means `pin`.
 
