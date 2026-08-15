@@ -173,6 +173,34 @@ func Run(currentVersion string, opts Options) (Result, error) {
 	return res, nil
 }
 
+// Fetch downloads the release binary for version (e.g. "v0.56.0") of
+// repo for this GOOS/GOARCH, verifies its sha256 against the release's
+// checksums.txt, and leaves it executable at dst. It does NOT touch the
+// running binary — the caller decides when and how to swap it in (see
+// supervisor.Swapper). dst must live on the same filesystem as the
+// binary it will replace so that swap is an atomic rename.
+func Fetch(c *http.Client, repo, version, dst string) error {
+	asset := fmt.Sprintf("poe-acp-%s-%s", runtime.GOOS, assetArch(runtime.GOARCH))
+	base := fmt.Sprintf("https://github.com/%s/releases/download/%s", repo, ensureV(version))
+	actual, err := download(c, base+"/"+asset, dst, 0o755)
+	if err != nil {
+		return fmt.Errorf("download asset: %w", err)
+	}
+	sumsPath := dst + ".sums"
+	defer os.Remove(sumsPath)
+	if _, err := download(c, base+"/checksums.txt", sumsPath, 0o644); err != nil {
+		return fmt.Errorf("download checksums: %w", err)
+	}
+	expected, err := lookupChecksum(sumsPath, asset)
+	if err != nil {
+		return err
+	}
+	if actual != expected {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", expected, actual)
+	}
+	return nil
+}
+
 // ensureV prepends "v" to a version string if not already present.
 func ensureV(s string) string {
 	if strings.HasPrefix(s, "v") {

@@ -59,6 +59,11 @@ type Config struct {
 	// enablement is this OR the --enable-mcp-attach flag (kept as a
 	// deprecated alias), so existing flag-based deployments keep working.
 	PoeMCP bool `json:"poe_mcp,omitempty"`
+
+	// SelfHeal makes the supervisor pull the fleet dist.lock on boot and
+	// on a jittered ~15m timer, converging this host to it (see
+	// internal/dist). Off by default so it can be enabled host by host.
+	SelfHeal bool `json:"self_heal,omitempty"`
 }
 
 // Defaults pins per-conversation parameter defaults independently of

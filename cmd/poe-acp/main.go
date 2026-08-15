@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,6 +26,7 @@ import (
 	"github.com/kfet/poe-acp/internal/agentcfg"
 	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/config"
+	"github.com/kfet/poe-acp/internal/dist"
 	"github.com/kfet/poe-acp/internal/httpsrv"
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poemcp"
@@ -46,6 +48,13 @@ func main() {
 	// script and `make deploy` over a running binary.
 	if len(os.Args) > 1 && os.Args[1] == "update" {
 		os.Exit(runUpdate(os.Args[2:]))
+	}
+
+	// `reconcile` pulls the fleet dist.lock and converges this host to
+	// it. Dry-run unless --apply. The supervisor runs the same code on a
+	// timer when self_heal is enabled in the config.
+	if len(os.Args) > 1 && os.Args[1] == "reconcile" {
+		os.Exit(runReconcile(os.Args[2:]))
 	}
 
 	// `mcp-serve` is the self-hosted stdio MCP server the agent spawns
@@ -173,7 +182,7 @@ func main() {
 	// inherited listener and runs all the relay logic below. The
 	// supervisor is tiny and never reaches the agent/router setup.
 	if !supervisor.IsWorker() {
-		runSupervisor(*httpAddr, version, *drainDeadline, *swapDrainDL)
+		runSupervisor(*httpAddr, version, *drainDeadline, *swapDrainDL, cfg.SelfHeal, cfgPath)
 		return
 	}
 	log.Printf("worker mode (pid=%d, supervisor=%d)", os.Getpid(), os.Getppid())
@@ -552,8 +561,15 @@ type worker struct {
 // allows that worker the same value plus supervisor.RetireGrace before
 // escalating to SIGKILL, so a wedged worker generation can never survive
 // its retirement.
-func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.Duration) {
-	sup, err := supervisor.New(supervisor.Config{Addr: addr})
+//
+// selfHeal enables the reconcile timer (config `self_heal`): the
+// supervisor pulls the fleet lock on boot and every ~15m, and any
+// poe-acp binary swap it decides on goes through the SAME ready
+// handshake as a SIGHUP swap — with a revert to poe-acp.prev if the new
+// binary never comes ready.
+func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.Duration, selfHealOn bool, cfgPath string) {
+	binPath := selfPath()
+	sup, err := supervisor.New(supervisor.Config{Addr: addr, BinPath: binPath})
 	if err != nil {
 		log.Fatalf("supervisor: %v", err)
 	}
@@ -665,6 +681,41 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 		log.Printf("sdnotify: notified systemd ready")
 	}
 
+	// swapWorker forks a replacement worker, waits for its ready
+	// handshake, and retires the old one off-loop. Both the SIGHUP
+	// reload and a self-heal binary swap go through it — the handshake
+	// is the entire safety property, so there is exactly one of it.
+	swapWorker := func() error {
+		logPileup()
+		nw, err := spawnReady()
+		if err != nil {
+			return err
+		}
+		old := current
+		current = nw
+		sup.SetCurrent(nw.proc)
+		log.Printf("supervisor: worker %d serving; retiring old worker %d (%s)", nw.proc.Pid, old.proc.Pid, swapOrder)
+		// Retire off the loop: the old worker keeps draining its
+		// in-flight streams while the supervisor stays responsive.
+		// This is the SWAP contract — nothing external is waiting on
+		// it, so a healthy multi-minute turn is left alone.
+		go retire(old, swapOrder)
+		return nil
+	}
+
+	// swapReq serialises self-heal binary swaps onto this loop: the
+	// reconcile goroutine sends a reply channel and blocks on it, so a
+	// swap can never run concurrently with a SIGHUP one.
+	swapReq := make(chan chan error)
+	if selfHealOn {
+		log.Printf("self-heal: enabled (reconcile on boot, then every ~%s)", selfHealInterval)
+		go selfHeal(cfgPath, binPath, func() error {
+			reply := make(chan error, 1)
+			swapReq <- reply
+			return <-reply
+		})
+	}
+
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	usr2 := make(chan os.Signal, 1)
@@ -676,21 +727,12 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 		select {
 		case <-hup:
 			log.Printf("SIGHUP: worker swap")
-			logPileup()
-			nw, err := spawnReady()
-			if err != nil {
+			if err := swapWorker(); err != nil {
 				log.Printf("supervisor: swap aborted, keeping worker %d: %v", current.proc.Pid, err)
-				continue
 			}
-			old := current
-			current = nw
-			sup.SetCurrent(nw.proc)
-			log.Printf("supervisor: worker %d serving; retiring old worker %d (%s)", nw.proc.Pid, old.proc.Pid, swapOrder)
-			// Retire off the loop: the old worker keeps draining its
-			// in-flight streams while the supervisor stays responsive.
-			// This is the SWAP contract — nothing external is waiting on
-			// it, so a healthy multi-minute turn is left alone.
-			go retire(old, swapOrder)
+		case reply := <-swapReq:
+			// A self-heal binary swap: same fork + ready handshake.
+			reply <- swapWorker()
 		case <-usr2:
 			log.Printf("SIGUSR2: supervisor self-upgrade (retiring worker %d first)", current.proc.Pid)
 			// A self-upgrade is NOT a swap: no replacement worker is
@@ -779,4 +821,109 @@ func runUpdate(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// selfHealInterval is the base period of the supervisor's reconcile
+// timer; each tick adds up to selfHealJitter so hosts waking together do
+// not hit the lock URL in lockstep.
+const (
+	selfHealInterval = 15 * time.Minute
+	selfHealJitter   = 5 * time.Minute
+)
+
+// selfPath resolves this executable, following symlinks, so a swap
+// renames the real file and every forked worker execs the new one.
+func selfPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return os.Args[0]
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved
+	}
+	return exe
+}
+
+// reconcileOpts builds the shared dist.Options for both the `reconcile`
+// subcommand and the supervisor's timer.
+func reconcileOpts(cfgPath, lockURL string, apply bool, install func(staged string) error) dist.Options {
+	return dist.Options{
+		LockURL: lockURL,
+		Dir:     filepath.Dir(cfgPath),
+		BinPath: selfPath(),
+		Version: version,
+		Apply:   apply,
+		Log:     log.Printf,
+		Run: func(name string, args ...string) (string, error) {
+			out, err := exec.Command(name, args...).CombinedOutput()
+			return string(out), err
+		},
+		Download: func(repo, ver, dst string) error {
+			return selfupdate.Fetch(&http.Client{Timeout: 5 * time.Minute}, repo, ver, dst)
+		},
+		Install: install,
+	}
+}
+
+// runReconcile implements `poe-acp reconcile`: pull the fleet dist.lock
+// and report what differs. DRY-RUN unless --apply. Run outside a
+// supervisor there is no ready handshake to gate a binary swap on, so
+// --apply installs the new binary (keeping poe-acp.prev) and tells the
+// operator to reload the service.
+func runReconcile(args []string) int {
+	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+	apply := fs.Bool("apply", false, "converge this host; without it, report what would change and touch nothing")
+	cfgFlag := fs.String("config", "", "config file whose directory holds the lock cache and status.json")
+	lockURL := fs.String("lock-url", dist.DefaultLockURL, "URL of the fleet dist.lock")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfgPath := *cfgFlag
+	if cfgPath == "" {
+		cfgPath = defaultConfigPath()
+	}
+	install := func(string) error {
+		sw := &supervisor.Swapper{Path: selfPath()}
+		if err := sw.Install(); err != nil {
+			return err
+		}
+		log.Printf("reconcile: reload the service to activate (previous binary kept at %s)", sw.Prev())
+		return nil
+	}
+	res, err := dist.Reconcile(reconcileOpts(cfgPath, *lockURL, *apply, install))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "reconcile:", err)
+		return 1
+	}
+	for _, d := range res.Drift {
+		fmt.Fprintln(os.Stderr, "drift:", d)
+	}
+	if len(res.Drift) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// selfHeal runs reconcile on boot and then on a jittered timer, applying
+// what it finds. bring is the supervisor's fork-and-wait-for-ready step:
+// SwapAndVerify uses it as the acceptance test for a new binary and
+// reverts to poe-acp.prev if it fails.
+func selfHeal(cfgPath, binPath string, bring func() error) {
+	install := func(string) error {
+		sw := &supervisor.Swapper{Path: binPath}
+		reverted, err := supervisor.SwapAndVerify(sw, bring, log.Printf)
+		if err != nil {
+			return err
+		}
+		if reverted {
+			return fmt.Errorf("new binary never came ready; reverted to %s", sw.Prev())
+		}
+		return nil
+	}
+	for {
+		if _, err := dist.Reconcile(reconcileOpts(cfgPath, "", true, install)); err != nil {
+			log.Printf("self-heal: reconcile failed: %v", err)
+		}
+		time.Sleep(selfHealInterval + time.Duration(rand.Int63n(int64(selfHealJitter))))
+	}
 }
