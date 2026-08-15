@@ -26,6 +26,7 @@ import (
 	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/httpsrv"
+	"github.com/kfet/poe-acp/internal/install"
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poemcp"
 	"github.com/kfet/poe-acp/internal/poeproto"
@@ -46,6 +47,13 @@ func main() {
 	// script and `make deploy` over a running binary.
 	if len(os.Args) > 1 && os.Args[1] == "update" {
 		os.Exit(runUpdate(os.Args[2:]))
+	}
+
+	// `dist` manages the versioned binary layout that makes a swap
+	// reversible (install a version, activate it, inspect last-good /
+	// pins). See cmd/poe-acp/dist.go and docs/rollback.md.
+	if len(os.Args) > 1 && os.Args[1] == "dist" {
+		os.Exit(runDist(os.Args[2:], os.Stdout, os.Stderr))
 	}
 
 	// `mcp-serve` is the self-hosted stdio MCP server the agent spawns
@@ -86,6 +94,7 @@ func main() {
 		showVersion     = flag.Bool("version", false, "Print version and exit")
 		debugFlag       = flag.Bool("debug", false, "Enable verbose debug logging (also via POEACP_DEBUG=1)")
 		printCatalog    = flag.Bool("print-catalog", false, "Build the merged skills catalog and print it to stdout, then exit")
+		installRoot     = flag.String("install-root", "", "Root of the versioned binary layout (default: $POEACP_INSTALL_ROOT, else $XDG_STATE_HOME/poe-acp/dist). The supervisor's ExecStart must target <root>/current — a symlink — for crash-loop rollback to be available; a plain-file install keeps working with rollback reported as unavailable")
 		enableMCPAttach = flag.Bool("enable-mcp-attach", false, "Deprecated alias for the config `poe_mcp` knob: expose the self-hosted `poe` MCP server (attach + suggest tools) to the agent. Prefer setting poe_mcp:true in config.json")
 	)
 	flag.Parse()
@@ -173,7 +182,19 @@ func main() {
 	// inherited listener and runs all the relay logic below. The
 	// supervisor is tiny and never reaches the agent/router setup.
 	if !supervisor.IsWorker() {
-		runSupervisor(*httpAddr, version, *drainDeadline, *swapDrainDL)
+		// Rollback substrate: the versioned layout the supervisor forks
+		// workers from. Scoped by bot name so several units sharing one
+		// install root keep separate crash counters (they share
+		// last-good and pins, which describe the BINARY).
+		layout := install.New(install.Config{Root: *installRoot, Scope: cfg.BotName})
+		healer := supervisor.NewHealer(supervisor.HealConfig{Store: layout})
+		if ok, err := healer.Available(); ok {
+			cur, _ := layout.CurrentVersion()
+			log.Printf("supervisor: versioned layout %s (current=%s); crash-loop rollback ARMED", layout.Root(), cur)
+		} else {
+			log.Printf("supervisor: crash-loop rollback UNAVAILABLE (%v); binary swaps are one-way on this host", err)
+		}
+		runSupervisor(*httpAddr, version, *drainDeadline, *swapDrainDL, healer)
 		return
 	}
 	log.Printf("worker mode (pid=%d, supervisor=%d)", os.Getpid(), os.Getppid())
@@ -552,7 +573,14 @@ type worker struct {
 // allows that worker the same value plus supervisor.RetireGrace before
 // escalating to SIGKILL, so a wedged worker generation can never survive
 // its retirement.
-func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.Duration) {
+//
+// healer is the rollback state machine (supervisor/heal.go). Every
+// worker that completes the startup handshake confirms the running
+// binary healthy (last-good advances to it); a worker that dies feeds
+// the crash-loop detector, which reverts `current` to `last-good` and
+// pins the bad version. On a host without the versioned layout the
+// healer reports "unavailable" and nothing else changes.
+func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.Duration, healer *supervisor.Healer) {
 	sup, err := supervisor.New(supervisor.Config{Addr: addr})
 	if err != nil {
 		log.Fatalf("supervisor: %v", err)
@@ -650,12 +678,41 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 		}
 	}
 
+	// confirmHealth records that the worker just forked completed its
+	// startup handshake: positive proof the CURRENT binary can serve, so
+	// last-good advances to it and the crash record is cleared.
+	confirmHealth := func() {
+		if out := healer.Confirm(); out.Action != supervisor.HealUnavailable {
+			log.Printf("supervisor: %s", out)
+		}
+	}
+	// noteCrash feeds a worker death to the crash-loop detector and
+	// reports whether it reverted `current` to last-good. On a revert the
+	// caller must swap workers so the reverted binary is the one running.
+	noteCrash := func() bool {
+		out := healer.Crashed()
+		if out.Action != supervisor.HealUnavailable {
+			log.Printf("supervisor: %s", out)
+		}
+		return out.Action == supervisor.HealReverted
+	}
+
 	current, err := spawnReady()
 	if err != nil {
-		log.Fatalf("supervisor: initial worker: %v", err)
+		// A worker that cannot start IS the crash signal. If that
+		// completes a crash loop the healer has already repointed
+		// `current` at last-good, so one retry runs the reverted binary.
+		if noteCrash() {
+			log.Printf("supervisor: reverted to last-good; retrying initial worker")
+			current, err = spawnReady()
+		}
+		if err != nil {
+			log.Fatalf("supervisor: initial worker: %v", err)
+		}
 	}
 	sup.SetCurrent(current.proc)
 	log.Printf("supervisor: worker pid=%d serving", current.proc.Pid)
+	confirmHealth()
 
 	// Now that a worker is serving, tell systemd we are up (Type=notify).
 	// No-op when NOTIFY_SOCKET is unset (launchd / bare process).
@@ -680,11 +737,22 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 			nw, err := spawnReady()
 			if err != nil {
 				log.Printf("supervisor: swap aborted, keeping worker %d: %v", current.proc.Pid, err)
+				// The old worker is still serving, so a revert cannot be
+				// picked up by simply forking here: re-enter this very
+				// branch by SIGHUPing ourselves. The update path IS the
+				// reload path.
+				if noteCrash() {
+					log.Printf("supervisor: reverted to last-good; re-entering worker swap")
+					if serr := supervisor.SignalSelf(syscall.SIGHUP); serr != nil {
+						log.Printf("supervisor: %v", serr)
+					}
+				}
 				continue
 			}
 			old := current
 			current = nw
 			sup.SetCurrent(nw.proc)
+			confirmHealth()
 			log.Printf("supervisor: worker %d serving; retiring old worker %d (%s)", nw.proc.Pid, old.proc.Pid, swapOrder)
 			// Retire off the loop: the old worker keeps draining its
 			// in-flight streams while the supervisor stays responsive.
@@ -723,6 +791,12 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 				continue
 			}
 			log.Printf("supervisor: serving worker %d died unexpectedly; respawning", pid)
+			// The death may complete a crash loop; if it does, `current`
+			// has already been repointed at last-good and the respawn
+			// below forks the reverted binary — the same fork-from-
+			// `current` path a SIGHUP swap takes, minus retiring a
+			// worker that is already gone.
+			noteCrash()
 			nw, err := spawnReady()
 			if err != nil {
 				log.Fatalf("supervisor: respawn failed: %v", err)
@@ -730,6 +804,7 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 			current = nw
 			sup.SetCurrent(nw.proc)
 			log.Printf("supervisor: worker pid=%d serving", nw.proc.Pid)
+			confirmHealth()
 		}
 	}
 }
