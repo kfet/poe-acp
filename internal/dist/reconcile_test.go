@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -304,6 +305,53 @@ func TestReconcileApplySwapsAndUpdates(t *testing.T) {
 	readJSON(t, StatusPath(dir), &st)
 	if !st.Applied || st.Fir != "0.98.1" {
 		t.Fatalf("status=%+v", st)
+	}
+	// The reconciler leaves exactly two files behind: the ETag cache and
+	// the status snapshot. No staged binary, no temp files.
+	wantFiles(t, dir, "dist.lock.cache", "status.json")
+}
+
+// wantFiles asserts the exact set of files in dir.
+func wantFiles(t *testing.T, dir string, want ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("directory holds %v, want %v", got, want)
+	}
+}
+
+// TestReconcileStagedBinaryNeverSurvives: whether the install hook
+// succeeds or fails, poe-acp.new is gone by the time reconcile returns.
+func TestReconcileStagedBinaryNeverSurvives(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		installErr error
+	}{
+		{"install ok", nil},
+		{"install fails", errors.New("boom")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := okRun("0.98.1")
+			opts, dir := baseOpts(t, run)
+			opts.Apply = true
+			opts.Download = func(_, _, dst string) error { return os.WriteFile(dst, []byte("x"), 0o755) }
+			opts.Install = func(string) error { return tc.installErr }
+			if _, err := Reconcile(opts); err != nil {
+				t.Fatalf("Reconcile: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "poe-acp.new")); !os.IsNotExist(err) {
+				t.Fatalf("staged binary survived (err=%v)", err)
+			}
+		})
 	}
 }
 

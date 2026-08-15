@@ -109,9 +109,13 @@ func reconcilePoeACP(opts *Options, want Artefact, res *Result) Action {
 		res.note(opts, &res.Drift, "poe-acp swap %s -> %s skipped: no downloader/installer", opts.Version, want.Version)
 		return act
 	}
+	// The staged file exists only for this call: Install consumes it by
+	// renaming it over the live binary, and the removal below catches
+	// every other outcome, so no half-downloaded binary is ever left
+	// sitting next to the running one.
 	staged := opts.BinPath + ".new"
+	defer os.Remove(staged)
 	if err := opts.Download(opts.Repo, want.Version, staged); err != nil {
-		os.Remove(staged)
 		res.note(opts, &res.Drift, "poe-acp download %s FAILED: %v", want.Version, err)
 		return act
 	}

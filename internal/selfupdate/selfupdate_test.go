@@ -468,9 +468,17 @@ func TestFetch_HappyPath(t *testing.T) {
 
 func TestFetch_ChecksumMismatch(t *testing.T) {
 	exe, client := fixture(t, "v0.3.0", "staged", []byte("deadbeef  "+assetName()+"\n"))
-	err := Fetch(client, "x/y", "v0.3.0", exe+".new")
+	dst := exe + ".new"
+	err := Fetch(client, "x/y", "v0.3.0", dst)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("err=%v want checksum mismatch", err)
+	}
+	// A binary that failed verification must not be left on disk.
+	if _, serr := os.Stat(dst); !os.IsNotExist(serr) {
+		t.Fatalf("unverified download survived: %v", serr)
+	}
+	if _, serr := os.Stat(dst + ".sums"); !os.IsNotExist(serr) {
+		t.Fatalf("checksums sidecar survived: %v", serr)
 	}
 }
 

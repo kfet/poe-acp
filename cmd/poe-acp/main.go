@@ -565,8 +565,8 @@ type worker struct {
 // selfHeal enables the reconcile timer (config `self_heal`): the
 // supervisor pulls the fleet lock on boot and every ~15m, and any
 // poe-acp binary swap it decides on goes through the SAME ready
-// handshake as a SIGHUP swap — with a revert to poe-acp.prev if the new
-// binary never comes ready.
+// handshake as a SIGHUP swap — with a revert to the previous binary if
+// the new one never comes ready, and no sidecar files left behind.
 func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.Duration, selfHealOn bool, cfgPath string) {
 	binPath := selfPath()
 	sup, err := supervisor.New(supervisor.Config{Addr: addr, BinPath: binPath})
@@ -868,8 +868,8 @@ func reconcileOpts(cfgPath, lockURL string, apply bool, install func(staged stri
 // runReconcile implements `poe-acp reconcile`: pull the fleet dist.lock
 // and report what differs. DRY-RUN unless --apply. Run outside a
 // supervisor there is no ready handshake to gate a binary swap on, so
-// --apply installs the new binary (keeping poe-acp.prev) and tells the
-// operator to reload the service.
+// --apply installs the new binary and tells the operator to reload the
+// service; going back is `poe-acp update --version <old>`.
 func runReconcile(args []string) int {
 	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
 	apply := fs.Bool("apply", false, "converge this host; without it, report what would change and touch nothing")
@@ -884,10 +884,14 @@ func runReconcile(args []string) int {
 	}
 	install := func(string) error {
 		sw := &supervisor.Swapper{Path: selfPath()}
+		// No handshake to gate on from a one-shot CLI process, so the
+		// swap is just the rename dance. Cleanup runs either way: a
+		// completed OR a failed swap leaves no sidecar behind.
+		defer sw.Cleanup()
 		if err := sw.Install(); err != nil {
 			return err
 		}
-		log.Printf("reconcile: reload the service to activate (previous binary kept at %s)", sw.Prev())
+		log.Printf("reconcile: reload the service to activate; to go back, `poe-acp update --version %s`", version)
 		return nil
 	}
 	res, err := dist.Reconcile(reconcileOpts(cfgPath, *lockURL, *apply, install))
@@ -907,7 +911,7 @@ func runReconcile(args []string) int {
 // selfHeal runs reconcile on boot and then on a jittered timer, applying
 // what it finds. bring is the supervisor's fork-and-wait-for-ready step:
 // SwapAndVerify uses it as the acceptance test for a new binary and
-// reverts to poe-acp.prev if it fails.
+// reverts to the previous one if it fails.
 func selfHeal(cfgPath, binPath string, bring func() error) {
 	install := func(string) error {
 		sw := &supervisor.Swapper{Path: binPath}
@@ -916,7 +920,7 @@ func selfHeal(cfgPath, binPath string, bring func() error) {
 			return err
 		}
 		if reverted {
-			return fmt.Errorf("new binary never came ready; reverted to %s", sw.Prev())
+			return fmt.Errorf("new binary never came ready; reverted to %s", version)
 		}
 		return nil
 	}

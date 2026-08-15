@@ -10,11 +10,13 @@
   (shell out to `fir update`, never manage its binary, report `ahead`);
   fir extensions go through `fir packages update` and are verified.
 - One-deep binary swap with automatic rollback: an update renames the live
-  binary to `poe-acp.prev` and the verified download over it; if the new
-  worker never completes the ready handshake, `.prev` goes back and a
-  worker is forked from it again — the old worker is never drained, so
-  service never breaks. Recover a late crash-loop with
-  `mv poe-acp.prev poe-acp && systemctl --user restart <unit>`.
+  binary aside and the verified download over it; if the new worker never
+  completes the ready handshake, the previous binary goes back and a worker
+  is forked from it again — the old worker is never drained, so service
+  never breaks. Both sidecars (`poe-acp.new`, `poe-acp.prev`) are unlinked
+  as soon as the swap settles, so a settled host has exactly one binary on
+  disk. Undo a version that only crash-loops later with
+  `poe-acp update --version <old>`.
 - `self_heal` config knob (off by default): the supervisor reconciles on
   boot and on a jittered ~15m timer, routing any binary swap through the
   same fork + ready-handshake gate as a SIGHUP worker swap.
