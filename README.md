@@ -186,6 +186,33 @@ On a fleet host, do not run this by hand: `scripts/converge.sh <bot> --apply`
 owns the upgrade and picks the graceful or hard path itself (and verifies the
 swap took).
 
+### Self-heal: `poe-acp reconcile` (pull, not push)
+
+The fleet is intermittently online, so an ssh push never reaches a sleeping
+laptop. Each host can instead PULL the fleet target itself:
+
+```bash
+poe-acp reconcile                 # dry run (default): what differs from dist.lock
+poe-acp reconcile --apply         # converge this host
+```
+
+It fetches `dist.lock` from the repo's raw URL (conditional GET, ETag cached
+next to the config), then per artefact: **poe_acp** (`pin`) is downloaded,
+checksum-verified and swapped in; **fir** (`floor`) is left to its own
+self-updater (`fir update`) and only verified — a fir ahead of the lock is
+reported and left alone; **exts** go through `fir packages update`.
+
+A binary swap keeps the outgoing binary as `poe-acp.prev` and is accepted only
+if a worker forked from the new binary completes the ready handshake; if it
+does not, `.prev` is renamed back and a worker forked from it — the old worker
+was never drained, so no stream is dropped. A crash-loop that only shows up
+later is undone by hand: `mv poe-acp.prev poe-acp && systemctl --user restart <unit>`.
+
+Set `"self_heal": true` in a bot's config.json to have the supervisor run the
+same reconcile on boot and every ~15 minutes (jittered). Off by default, so it
+is enabled host by host. Each run writes `status.json` next to the config
+(versions, lock applied, drift); `ssh <host> cat ~/.config/poe-acp/bot-<name>/status.json`.
+
 Self-update is refused when the binary lives under a package-manager path
 (Homebrew, linuxbrew, `/usr/bin`); use `brew upgrade poe-acp` there instead.
 A remote host can be updated with `ssh <host> poe-acp update -restart-cmd ...`.
