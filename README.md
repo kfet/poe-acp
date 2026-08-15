@@ -188,6 +188,26 @@ swap took).
 
 Self-update is refused when the binary lives under a package-manager path
 (Homebrew, linuxbrew, `/usr/bin`); use `brew upgrade poe-acp` there instead.
+
+### Reversible swaps (`poe-acp dist`)
+
+A host can install binaries into a versioned layout — `versions/poe-acp-<v>`
+plus `current` and `last-good` symlinks — and start its supervisor from
+`<root>/current`. The supervisor then rolls the binary back on its own: a
+worker that completes the startup handshake advances `last-good`, and three
+worker crashes within 60s repoint `current` at `last-good`, pin the bad
+version, and swap workers onto the good one. Hosts with a plain-file install
+keep working; rollback is simply reported as unavailable at startup.
+
+```sh
+poe-acp dist status                    # current, last-good, pins, crash count
+poe-acp dist -version 0.55.0 install ./poe-acp-linux-arm64
+poe-acp dist activate 0.55.0           # atomic symlink repoint
+```
+
+See [docs/rollback.md](docs/rollback.md) for the layout, the supervisor state
+machine, and the durable `rollback.log`.
+
 A remote host can be updated with `ssh <host> poe-acp update -restart-cmd ...`.
 
 ## Endpoints
@@ -487,6 +507,7 @@ poe-acp/
   internal/command/        relay chat-commands: login, !help, !status, !model, …
   internal/config/         JSON config loader (DisallowUnknownFields)
   internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
+  internal/install/        versioned binary layout + current/last-good symlinks
   internal/paramctl/       parameter_controls schema builder + Resolve
   internal/poeproto/       minimal Poe HTTP+SSE
   internal/router/         conv_id → ACP session map + GC

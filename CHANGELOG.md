@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Rollback substrate: versioned binary layout + crash-loop revert.** Binaries
+  live at `<root>/versions/poe-acp-<version>` with `current` and `last-good`
+  symlinks (`internal/install`); the supervisor's `ExecStart` targets `current`,
+  so a swap is one atomic symlink repoint. A worker that completes the startup
+  handshake advances `last-good`; three worker crashes within 60s repoint
+  `current` back at `last-good`, pin the bad version, and re-enter the ordinary
+  worker-swap path (`internal/supervisor/heal.go`). Every decision is appended to
+  `<root>/rollback.log`. Hosts with a plain-file install keep working with
+  rollback reported as unavailable at startup — no flag day. See
+  [docs/rollback.md](docs/rollback.md).
+- `poe-acp dist` subcommand: `status`, `install`, `activate`, `unpin` for the
+  versioned layout, plus `-install-root` on the server to override its location.
+
 ## [0.55.0] - 2026-08-13
 
 ### Changed
