@@ -4,6 +4,13 @@
 
 ## [0.56.0] - 2026-08-19
 
+### Changed
+
+- The coverage gate is now a pinned Go tool dependency (`tool
+  github.com/kfet/covgate/cmd/covgate`, v0.1.2) invoked as `go tool covgate`,
+  instead of `go run github.com/kfet/covgate/cmd/covgate@v0.1.0` resolved from
+  the network on every run. Build tooling only; no runtime change.
+
 ### Fixed
 
 - **Selecting a Provider without opening the nested Model dropdown no longer
