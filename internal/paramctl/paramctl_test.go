@@ -534,3 +534,38 @@ func collect(secs []poeproto.Section, into map[string]any) {
 		walk(s.Controls)
 	}
 }
+
+// TestProviderOnlyResolvesToSchemaDefault is the no-drift guard for the
+// bug where Poe sends only the parameters the user has touched: picking
+// a Provider without opening the nested Model dropdown arrives as
+// {"provider": P} alone, with no model_<P> key. The relay must land on
+// exactly the model the schema advertised as that provider's
+// default_value — never on a default belonging to another provider.
+func TestProviderOnlyResolvesToSchemaDefault(t *testing.T) {
+	t.Parallel()
+	models := []client.ModelInfo{
+		{ID: "anthropic/claude-opus-5", Name: "Opus 5"},
+		{ID: "anthropic/claude-sonnet-4-5", Name: "Sonnet 4.5"},
+		{ID: "sakana/shinka-1", Name: "Shinka 1"},
+		{ID: "poe/gpt-5", Name: "GPT-5"},
+		{ID: "kimi-k2", Name: "Kimi K2"},
+	}
+	for _, cfgModel := range []string{"", "anthropic/claude-opus-5", "sakana/shinka-1"} {
+		defs := Resolve(config.Defaults{Model: cfgModel}, models, "")
+		pc := Build(models, defs)
+		schemaDefaults := map[string]any{}
+		collect(pc.Sections, schemaDefaults)
+		for _, prov := range Providers(models) {
+			opts := router.ParseOptions(map[string]any{"provider": prov}, defs, models)
+			want := schemaDefaults[ProviderParamName(prov)]
+			if opts.Model != want {
+				t.Errorf("defaults.Model=%q provider=%q: resolved %q, schema default_value %v",
+					cfgModel, prov, opts.Model, want)
+			}
+			if got := ProviderOf(opts.Model); got != prov {
+				t.Errorf("defaults.Model=%q provider=%q: resolved %q belongs to provider %q",
+					cfgModel, prov, opts.Model, got)
+			}
+		}
+	}
+}

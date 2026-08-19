@@ -1732,16 +1732,28 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 // Model resolution order (first non-empty wins):
 //
 //  1. `model` — legacy/back-compat single dropdown shape, still
-//     honoured if any caller sends it.
+//     honoured if any caller sends it. An empty string is ignored
+//     (not a model) so injected junk can't blank out the default.
 //  2. `provider` + `model_<sanitised(provider)>` — cascading shape.
-//     The sanitiser matches paramctl.ProviderParamName: lowercase
+//     The sanitiser matches ProviderParamName: lowercase
 //     letters/digits/underscore, other bytes → '_'. Empty provider
 //     buckets to "other".
-//  3. defaults.Model — left in place if neither of the above
-//     resolved to a non-empty string.
-func ParseOptions(params map[string]any, defaults Options) Options {
+//  3. `provider` alone → that provider's default model, per
+//     DefaultModelForProvider over `models`. Poe only sends parameters
+//     the user has explicitly touched, so a user who switches Provider
+//     without opening the nested Model dropdown sends just
+//     {"provider": P} — the dropdown's default_value is UI-only and
+//     never reaches the relay. Resolving it here is what keeps the
+//     user on the provider they picked.
+//  4. defaults.Model — left in place if none of the above resolved to
+//     a non-empty string (e.g. unknown provider, or an empty `models`
+//     list because the model probe failed).
+//
+// models is the agent's available-model list (router.AvailableModels);
+// nil is legal and simply disables step 3.
+func ParseOptions(params map[string]any, defaults Options, models []client.ModelInfo) Options {
 	o := defaults
-	if m, ok := resolveModel(params); ok {
+	if m, ok := resolveModel(params, defaults, models); ok {
 		o.Model = m
 	}
 	if v, ok := params["thinking"].(string); ok {
@@ -1766,33 +1778,93 @@ func ParseOptions(params map[string]any, defaults Options) Options {
 }
 
 // resolveModel implements the model-selection precedence documented on
-// ParseOptions. ok=false signals "no model-related key in params" so
-// the caller leaves defaults.Model untouched.
-func resolveModel(params map[string]any) (string, bool) {
-	if v, ok := params["model"].(string); ok {
+// ParseOptions. ok=false signals "nothing in params resolved to a
+// model" so the caller leaves defaults.Model untouched.
+func resolveModel(params map[string]any, defaults Options, models []client.ModelInfo) (string, bool) {
+	// An empty string is not a model: an injected `"model": ""` must
+	// not blank out defaults.Model (Options.Model == "" means "leave
+	// the agent as-is") nor shadow the provider fallback below. Same
+	// guard as the per-provider key.
+	if v, ok := params["model"].(string); ok && v != "" {
 		return v, true
 	}
 	provider, ok := params["provider"].(string)
 	if !ok {
 		return "", false
 	}
-	key := "model_" + sanitiseProviderForParam(provider)
-	if v, ok := params[key].(string); ok && v != "" {
+	if provider == "" {
+		// Same bucketing as ProviderOf: a slash-less model id (and,
+		// defensively, an empty provider value) lives under "other".
+		provider = OtherProvider
+	}
+	if v, ok := params[poeproto.ProviderParamPrefix+SanitiseProvider(provider)].(string); ok && v != "" {
 		return v, true
 	}
-	// Provider was selected but no usable model_<provider> value was
-	// supplied. Treat as "no override" so the caller's default (which
-	// may not belong to this provider, but is the best we have)
-	// survives. The relay will SetModel to whatever defaults.Model is.
+	// Provider was explicitly selected but no usable model_<provider>
+	// value was supplied — the nested dropdown's default_value is
+	// UI-only. Resolve to the model paramctl.Build advertises as that
+	// provider's default so the user stays on the provider they chose
+	// instead of silently falling back to a default that may belong to
+	// a different one.
+	if m := DefaultModelForProvider(models, provider, defaults.Model); m != "" {
+		return m, true
+	}
+	// Unknown provider, or no model list (probe failed): keep today's
+	// behaviour and let the caller's default survive.
 	return "", false
 }
 
-// sanitiseProviderForParam is the inverse-of-mapping side of
-// paramctl.ProviderParamName. Kept in this package to avoid an import
-// cycle (paramctl already depends on router).
-func sanitiseProviderForParam(p string) string {
+// OtherProvider is the bucket label for models whose ID has no '/'
+// prefix. Kept stable so config defaults and tests can target it.
+const OtherProvider = "other"
+
+// ProviderOf returns the prefix-before-first-slash of a model id. An
+// id with no '/' (or an empty id) is bucketed under OtherProvider.
+//
+// This package is the canonical home of the provider rules (paramctl
+// imports router, not the reverse) so the parameter_controls schema
+// and the runtime resolution cannot drift.
+func ProviderOf(modelID string) string {
+	i := strings.IndexByte(modelID, '/')
+	if i <= 0 {
+		return OtherProvider
+	}
+	return modelID[:i]
+}
+
+// DefaultModelForProvider returns the model id that provider's Model
+// dropdown advertises as its `default_value`: defaultModel when it
+// belongs to provider and is present in models, otherwise the first
+// model of that provider in agent-list order. Returns "" when the
+// provider contributes no models (unknown provider, or an empty list).
+//
+// Single-sourced on purpose: paramctl.Build uses it to fill the UI
+// default_value and resolveModel uses it to materialise that same
+// choice at runtime, so the two cannot diverge.
+func DefaultModelForProvider(models []client.ModelInfo, provider, defaultModel string) string {
+	first := ""
+	for _, m := range models {
+		if ProviderOf(m.ID) != provider {
+			continue
+		}
+		if defaultModel != "" && m.ID == defaultModel {
+			return defaultModel
+		}
+		if first == "" {
+			first = m.ID
+		}
+	}
+	return first
+}
+
+// SanitiseProvider folds a provider id into [a-z0-9_], lowercased.
+// Any other byte becomes '_'. Used only to derive the per-provider
+// `model_<provider>` parameter_name (see ProviderParamName); the
+// human-facing provider value remains the original string, and
+// provider matching against model ids always uses that raw value.
+func SanitiseProvider(p string) string {
 	if p == "" {
-		return "other"
+		return OtherProvider
 	}
 	b := make([]byte, 0, len(p))
 	for i := 0; i < len(p); i++ {
@@ -1807,6 +1879,12 @@ func sanitiseProviderForParam(p string) string {
 		}
 	}
 	return string(b)
+}
+
+// ProviderParamName is the parameter_name used for the per-provider
+// Model dropdown in the cascading parameter_controls shape.
+func ProviderParamName(provider string) string {
+	return poeproto.ProviderParamPrefix + SanitiseProvider(provider)
 }
 
 // Defaults returns the per-conversation option defaults configured on

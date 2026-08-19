@@ -263,20 +263,20 @@ func TestPlan_DisabledIsSilent(t *testing.T) {
 
 func TestParseOptions_ProgressKnobs(t *testing.T) {
 	defaults := Options{ShowPlans: true, ShowTools: true}
-	if got := ParseOptions(nil, defaults); got != defaults {
+	if got := ParseOptions(nil, defaults, nil); got != defaults {
 		t.Fatalf("empty params must keep defaults: %#v", got)
 	}
-	got := ParseOptions(map[string]any{"show_plans": false, "show_tools": false}, defaults)
+	got := ParseOptions(map[string]any{"show_plans": false, "show_tools": false}, defaults, nil)
 	if got.ShowPlans || got.ShowTools {
 		t.Fatalf("user opt-out ignored: %#v", got)
 	}
 	// Wrong-typed values are untrusted input: dropped, defaults survive.
-	got = ParseOptions(map[string]any{"show_plans": "yes", "show_tools": 1}, defaults)
+	got = ParseOptions(map[string]any{"show_plans": "yes", "show_tools": 1}, defaults, nil)
 	if !got.ShowPlans || !got.ShowTools {
 		t.Fatalf("wrong-typed params must be ignored: %#v", got)
 	}
 	// And the opt-in direction from an off default.
-	got = ParseOptions(map[string]any{"show_plans": true, "show_tools": true}, Options{})
+	got = ParseOptions(map[string]any{"show_plans": true, "show_tools": true}, Options{}, nil)
 	if !got.ShowPlans || !got.ShowTools {
 		t.Fatalf("opt-in ignored: %#v", got)
 	}
@@ -504,16 +504,16 @@ func TestToolDetails_UnknownCallIdStillRenders(t *testing.T) {
 
 func TestParseOptions_ShowToolDetails(t *testing.T) {
 	defaults := Options{ShowTools: true, ShowToolDetails: true}
-	if got := ParseOptions(nil, defaults); got != defaults {
+	if got := ParseOptions(nil, defaults, nil); got != defaults {
 		t.Fatalf("empty params must keep defaults: %#v", got)
 	}
-	if got := ParseOptions(map[string]any{"show_tool_details": false}, defaults); got.ShowToolDetails {
+	if got := ParseOptions(map[string]any{"show_tool_details": false}, defaults, nil); got.ShowToolDetails {
 		t.Fatalf("user opt-out ignored: %#v", got)
 	}
-	if got := ParseOptions(map[string]any{"show_tool_details": "yes"}, defaults); !got.ShowToolDetails {
+	if got := ParseOptions(map[string]any{"show_tool_details": "yes"}, defaults, nil); !got.ShowToolDetails {
 		t.Fatalf("wrong-typed param must be ignored: %#v", got)
 	}
-	if got := ParseOptions(map[string]any{"show_tool_details": true}, Options{}); !got.ShowToolDetails {
+	if got := ParseOptions(map[string]any{"show_tool_details": true}, Options{}, nil); !got.ShowToolDetails {
 		t.Fatalf("opt-in ignored: %#v", got)
 	}
 }

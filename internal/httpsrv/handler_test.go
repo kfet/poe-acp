@@ -307,12 +307,69 @@ func TestHandler_Query_ParametersForwardedToAgent(t *testing.T) {
 	}
 }
 
+// TestHandler_Query_ProviderOnlyPicksProviderModel is the end-to-end
+// regression: Poe sends only the parameters the user has touched, so
+// switching Provider without opening the nested Model dropdown arrives
+// as {"provider": "sakana"} alone. The relay must set a sakana model,
+// not the (anthropic) configured default.
+func TestHandler_Query_ProviderOnlyPicksProviderModel(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		models []string
+	)
+	fa := &trackingAgent{
+		fakeAgent: &fakeAgent{},
+		models: []client.ModelInfo{
+			{ID: "anthropic/claude-opus-5", Name: "Opus 5"},
+			{ID: "sakana/shinka-1", Name: "Shinka 1"},
+			{ID: "sakana/shinka-2", Name: "Shinka 2"},
+		},
+		onSetModel: func(id string) {
+			mu.Lock()
+			models = append(models, id)
+			mu.Unlock()
+		},
+	}
+	rtr, err := router.New(router.Config{
+		Agent: fa, StateDir: t.TempDir(), SessionTTL: time.Hour,
+		Defaults: router.Options{Model: "anthropic/claude-opus-5"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr, HeartbeatInterval: 0})
+
+	body := mustJSON(map[string]any{
+		"type": "query", "conversation_id": "cprov", "user_id": "u", "message_id": "m",
+		"query": []map[string]any{{
+			"role":       "user",
+			"content":    "hello",
+			"parameters": map[string]any{"provider": "sakana"},
+		}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(models) != 1 || models[0] != "sakana/shinka-1" {
+		t.Fatalf("set_model calls = %v, want [sakana/shinka-1]", models)
+	}
+}
+
 // trackingAgent wraps fakeAgent and records SetModel/SetConfigOption calls.
 type trackingAgent struct {
 	*fakeAgent
 	onSetModel  func(string)
 	onSetConfig func(string, string)
+	models      []client.ModelInfo
 }
+
+func (a *trackingAgent) Models() ([]client.ModelInfo, string) { return a.models, "" }
 
 func (a *trackingAgent) SetModel(_ context.Context, _ acp.SessionId, id string) error {
 	if a.onSetModel != nil {
