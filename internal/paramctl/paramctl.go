@@ -28,13 +28,16 @@
 // The relay reconciles the user-visible state back to a single agent
 // model id in router.ParseOptions: bare `model` (collapsed shape and
 // legacy/back-compat) wins; otherwise `model_<provider>` (looked up by
-// the chosen `provider` value) is used. Empty parameters fall back to
-// the resolved Defaults().
+// the chosen `provider` value) is used; a `provider` sent on its own —
+// which is what Poe delivers when the user switches Provider without
+// opening the nested Model dropdown, since only touched parameters are
+// sent — resolves through router.DefaultModelForProvider, the very
+// function that fills the default_value below. Empty parameters fall
+// back to the resolved Defaults().
 package paramctl
 
 import (
 	"log"
-	"strings"
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/config"
@@ -87,7 +90,20 @@ const DefaultShowToolDetails = true
 
 // OtherProvider is the bucket label for models whose ID has no '/'
 // prefix. Kept stable so config defaults and tests can target it.
-const OtherProvider = "other"
+// Canonical definition lives in router (paramctl imports router, not
+// the reverse) so the schema and the runtime resolution share one rule.
+const OtherProvider = router.OtherProvider
+
+// ProviderOf returns the prefix-before-first-slash of a model id. An
+// id with no '/' (or an empty id) is bucketed under OtherProvider.
+func ProviderOf(modelID string) string { return router.ProviderOf(modelID) }
+
+// ProviderParamName is the parameter_name used for the per-provider
+// Model dropdown. The provider id is sanitised so the result is a
+// stable identifier (letters/digits/underscore only); the unsanitised
+// provider id is still what's compared against in the `condition`
+// block.
+func ProviderParamName(provider string) string { return router.ProviderParamName(provider) }
 
 // Resolve picks the operator-facing defaults.
 //
@@ -151,47 +167,6 @@ func hasModel(models []client.ModelInfo, id string) bool {
 	return false
 }
 
-// ProviderOf returns the prefix-before-first-slash of a model id. An
-// id with no '/' (or an empty id) is bucketed under OtherProvider.
-func ProviderOf(modelID string) string {
-	i := strings.IndexByte(modelID, '/')
-	if i <= 0 {
-		return OtherProvider
-	}
-	return modelID[:i]
-}
-
-// ProviderParamName is the parameter_name used for the per-provider
-// Model dropdown. The provider id is sanitised so the result is a
-// stable identifier (letters/digits/underscore only); the unsanitised
-// provider id is still what's compared against in the `condition`
-// block.
-func ProviderParamName(provider string) string {
-	return poeproto.ProviderParamPrefix + sanitiseProvider(provider)
-}
-
-// sanitiseProvider folds the provider id into [a-z0-9_], lowercased.
-// Any other byte becomes '_'. Used only to derive parameter_name; the
-// human-facing provider value remains the original string.
-func sanitiseProvider(p string) string {
-	if p == "" {
-		return OtherProvider
-	}
-	b := make([]byte, 0, len(p))
-	for i := 0; i < len(p); i++ {
-		c := p[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_':
-			b = append(b, c)
-		case c >= 'A' && c <= 'Z':
-			b = append(b, c+('a'-'A'))
-		default:
-			b = append(b, '_')
-		}
-	}
-	return string(b)
-}
-
 // providerGroup is a single provider's bucket of models. Order within
 // each group is the order models appeared in the agent's list.
 type providerGroup struct {
@@ -252,11 +227,10 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 	case len(groups) == 0:
 		// No models known — skip provider/model controls entirely.
 	case len(groups) == 1:
-		// Single provider — collapse to a bare `model` drop_down. Use
-		// defaults.Model only if it actually lives in this group; the
-		// hasModel check guards a misconfigured default whose provider
-		// happens to be the one we have but whose id isn't in the
-		// returned model list.
+		// Single provider — collapse to a bare `model` drop_down. The
+		// default_value comes from the same rule the cascading shape
+		// uses, so a misconfigured default whose id isn't in the
+		// returned model list falls back to the first model.
 		g := groups[0]
 		modelOpts := make([]poeproto.ValueNamePair, 0, len(g.models))
 		for _, m := range g.models {
@@ -267,12 +241,7 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 			Label:         "Model",
 			ParameterName: poeproto.ParamModel,
 			Options:       modelOpts,
-		}
-		switch {
-		case defaults.Model != "" && hasModel(g.models, defaults.Model):
-			modelCtl.DefaultValue = defaults.Model
-		case len(g.models) > 0:
-			modelCtl.DefaultValue = g.models[0].ID
+			DefaultValue:  router.DefaultModelForProvider(g.models, g.id, defaults.Model),
 		}
 		controls = append(controls, modelCtl)
 	default:
@@ -308,16 +277,12 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 				Label:         "Model",
 				ParameterName: ProviderParamName(g.id),
 				Options:       modelOpts,
-			}
-			// Per-provider default: defaults.Model wins if it lives in
-			// this provider; otherwise default to the first model so
-			// the UI never lands on an empty selection when the user
-			// switches providers.
-			switch {
-			case g.id == defaultProvider && defaults.Model != "":
-				modelCtl.DefaultValue = defaults.Model
-			case len(g.models) > 0:
-				modelCtl.DefaultValue = g.models[0].ID
+				// Per-provider default: defaults.Model wins if it lives
+				// in this provider; otherwise the first model, so the
+				// UI never lands on an empty selection when the user
+				// switches providers. Same rule router.resolveModel
+				// applies when Poe sends `provider` alone.
+				DefaultValue: router.DefaultModelForProvider(g.models, g.id, defaults.Model),
 			}
 			controls = append(controls, poeproto.Control{
 				Control: "condition",

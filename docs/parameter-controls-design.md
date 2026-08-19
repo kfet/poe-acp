@@ -345,3 +345,23 @@ boot-time probe; flat layout; no `condition` block) is unchanged.
 then `provider` + `model_<provider>`), so the collapse needs no router
 change. `TestBuild_SingleProvider_*` and
 `TestBuildAndResolveAgree_SingleProvider` pin the collapsed shape.
+
+### Provider selected, model untouched
+
+Poe sends only the parameters the user has explicitly touched, and a
+control's `default_value` is a UI display concern — it is never
+materialised into the request dict. A user who switches Provider but
+never opens the nested Model dropdown therefore produces
+`{"provider": "sakana"}` with no `model_sakana` key.
+
+`router.DefaultModelForProvider(models, provider, defaultModel)` is the
+single source for "which model does provider P default to": the
+resolved `defaults.Model` when it belongs to P and is present in the
+agent's list, otherwise P's first model in agent-list order.
+`paramctl.Build` uses it to fill every Model dropdown's `default_value`,
+and `router.ParseOptions` uses it to resolve a bare `provider` at
+runtime — so the UI promise and the applied model cannot drift.
+`TestProviderOnlyResolvesToSchemaDefault` pins the two together.
+
+An unknown provider (or an empty model catalog, e.g. a failed probe)
+resolves to nothing and leaves `defaults.Model` in place, as before.

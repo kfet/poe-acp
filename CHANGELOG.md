@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Selecting a Provider without opening the nested Model dropdown no longer
+  silently keeps a model from a different provider.** Poe only sends the
+  parameters a user has explicitly touched, so switching Provider arrives as
+  `{"provider":"sakana"}` with no `model_sakana` key (the control's
+  `default_value` is UI-only). `ParseOptions` now resolves a bare `provider`
+  to that provider's advertised default model via the new
+  `router.DefaultModelForProvider`, the same function `paramctl.Build` uses
+  to fill the dropdown's `default_value`, so the UI promise and the runtime
+  choice cannot drift. Unknown providers and an empty model catalog keep the
+  previous fall-back-to-defaults behaviour, and a non-empty bare `model`
+  still wins.
+- An injected empty `"model": ""` parameter no longer blanks out the
+  configured default model (nor shadows the provider fallback above) — an
+  empty string is not a model. Poe's own UI never sends it, but
+  `parameters` is untrusted input other bots can populate.
+
 ## [0.55.0] - 2026-08-13
 
 ### Changed

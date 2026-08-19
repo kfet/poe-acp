@@ -164,11 +164,11 @@ func TestRouter_PromptError(t *testing.T) {
 }
 
 func TestParseOptions_InvalidThinking(t *testing.T) {
-	got := ParseOptions(map[string]any{"thinking": "bogus"}, Options{Thinking: "low"})
+	got := ParseOptions(map[string]any{"thinking": "bogus"}, Options{Thinking: "low"}, nil)
 	if got.Thinking != "low" {
 		t.Fatalf("expected default kept, got %q", got.Thinking)
 	}
-	got = ParseOptions(map[string]any{"model": 123, "hide_thinking": "yes"}, Options{Model: "x"})
+	got = ParseOptions(map[string]any{"model": 123, "hide_thinking": "yes"}, Options{Model: "x"}, nil)
 	if got.Model != "x" {
 		t.Fatalf("model overridden: %q", got.Model)
 	}

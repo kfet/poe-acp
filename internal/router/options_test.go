@@ -8,6 +8,8 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+
+	"github.com/kfet/acp-kit/client"
 )
 
 func mustRouter(t *testing.T, agent Agent) *Router {
@@ -21,60 +23,78 @@ func mustRouter(t *testing.T, agent Agent) *Router {
 
 func TestParseOptions(t *testing.T) {
 	t.Parallel()
+	// catalog mirrors a multi-provider agent list; order matters —
+	// "first model in agent-list order" is the per-provider default.
+	catalog := []client.ModelInfo{
+		{ID: "anthropic/claude-opus-5", Name: "Opus 5"},
+		{ID: "anthropic/claude-sonnet-4-5", Name: "Sonnet 4.5"},
+		{ID: "sakana/shinka-1", Name: "Shinka 1"},
+		{ID: "sakana/shinka-2", Name: "Shinka 2"},
+		{ID: "kimi-k2", Name: "Kimi K2"},
+	}
 	cases := []struct {
 		name     string
 		in       map[string]any
 		defaults Options
+		models   []client.ModelInfo
 		want     Options
 	}{
-		{"nil/no defaults", nil, Options{}, Options{}},
-		{"empty/no defaults", map[string]any{}, Options{}, Options{}},
+		{"nil/no defaults", nil, Options{}, nil, Options{}},
+		{"empty/no defaults", map[string]any{}, Options{}, nil, Options{}},
 		{
 			"empty params overlays nothing — defaults survive",
 			map[string]any{},
 			Options{Model: "anth/sonnet", Thinking: "medium"},
+			catalog,
 			Options{Model: "anth/sonnet", Thinking: "medium"},
 		},
 		{
 			"nil params with defaults",
 			nil,
 			Options{Model: "anth/sonnet", Thinking: "medium", HideThinking: false},
+			catalog,
 			Options{Model: "anth/sonnet", Thinking: "medium", HideThinking: false},
 		},
 		{
 			"all valid overrides defaults",
 			map[string]any{"model": "anthropic/claude-sonnet-4-5", "thinking": "high", "hide_thinking": true},
 			Options{Model: "anth/sonnet", Thinking: "medium"},
+			catalog,
 			Options{Model: "anthropic/claude-sonnet-4-5", Thinking: "high", HideThinking: true},
 		},
 		{
 			"thinking off accepted",
 			map[string]any{"thinking": "off"},
 			Options{},
+			nil,
 			Options{Thinking: "off"},
 		},
 		{
 			"thinking none rejected — default survives",
 			map[string]any{"thinking": "none"},
 			Options{Thinking: "medium"},
+			nil,
 			Options{Thinking: "medium"},
 		},
 		{
 			"unknown key dropped, default survives for untouched fields",
 			map[string]any{"model": "x", "bogus_key": "whatever"},
 			Options{Thinking: "medium"},
+			nil,
 			Options{Model: "x", Thinking: "medium"},
 		},
 		{
 			"invalid thinking dropped — default survives",
 			map[string]any{"thinking": "bogus"},
 			Options{Thinking: "medium"},
+			nil,
 			Options{Thinking: "medium"},
 		},
 		{
 			"wrong types dropped — defaults survive",
 			map[string]any{"model": 42, "thinking": true, "hide_thinking": "yes"},
 			Options{Model: "anth/sonnet", Thinking: "medium"},
+			nil,
 			Options{Model: "anth/sonnet", Thinking: "medium"},
 		},
 		// --- Cascading provider+model_<provider> shape ----------------
@@ -82,6 +102,7 @@ func TestParseOptions(t *testing.T) {
 			"provider + model_<provider> resolves",
 			map[string]any{"provider": "anthropic", "model_anthropic": "anthropic/sonnet"},
 			Options{Model: "openai/old"},
+			catalog,
 			Options{Model: "anthropic/sonnet"},
 		},
 		{
@@ -91,36 +112,129 @@ func TestParseOptions(t *testing.T) {
 				"provider": "anthropic", "model_anthropic": "anthropic/sonnet",
 			},
 			Options{},
+			catalog,
 			Options{Model: "openai/gpt-5"},
 		},
 		{
-			"provider with no matching model_<provider> → defaults survive",
-			map[string]any{"provider": "anthropic", "model_openai": "openai/gpt-5"},
-			Options{Model: "anth/sonnet"},
-			Options{Model: "anth/sonnet"},
+			"bare model wins over provider alone",
+			map[string]any{"model": "openai/gpt-5", "provider": "sakana"},
+			Options{Model: "anthropic/claude-opus-5"},
+			catalog,
+			Options{Model: "openai/gpt-5"},
 		},
 		{
 			"provider sanitisation — Foo.Bar → foo_bar",
 			map[string]any{"provider": "Foo.Bar", "model_foo_bar": "Foo.Bar/x"},
 			Options{},
+			catalog,
 			Options{Model: "Foo.Bar/x"},
 		},
 		{
 			"empty provider value → 'other' bucket",
 			map[string]any{"provider": "", "model_other": "kimi-k2"},
 			Options{},
+			catalog,
 			Options{Model: "kimi-k2"},
 		},
 		{
 			"provider wrong type → no override",
 			map[string]any{"provider": 42, "model_anthropic": "x"},
 			Options{Model: "anth/sonnet"},
+			catalog,
 			Options{Model: "anth/sonnet"},
+		},
+		// --- Provider selected, model_<provider> absent ---------------
+		// Poe only sends parameters the user has touched, so switching
+		// Provider without opening the nested Model dropdown arrives as
+		// {"provider": P} alone. The resolved model must belong to P.
+		{
+			"provider alone → that provider's first model, not the cross-provider default",
+			map[string]any{"provider": "sakana"},
+			Options{Model: "anthropic/claude-opus-5", Thinking: "medium"},
+			catalog,
+			Options{Model: "sakana/shinka-1", Thinking: "medium"},
+		},
+		{
+			"provider alone matching the default's provider → the default",
+			map[string]any{"provider": "anthropic"},
+			Options{Model: "anthropic/claude-sonnet-4-5"},
+			catalog,
+			Options{Model: "anthropic/claude-sonnet-4-5"},
+		},
+		{
+			"provider alone, no default at all → provider's first model",
+			map[string]any{"provider": "anthropic"},
+			Options{},
+			catalog,
+			Options{Model: "anthropic/claude-opus-5"},
+		},
+		{
+			"provider alone, default not in catalog → provider's first model",
+			map[string]any{"provider": "anthropic"},
+			Options{Model: "anthropic/phantom"},
+			catalog,
+			Options{Model: "anthropic/claude-opus-5"},
+		},
+		{
+			"empty model_<provider> value → provider default, not cross-provider default",
+			map[string]any{"provider": "sakana", "model_sakana": ""},
+			Options{Model: "anthropic/claude-opus-5"},
+			catalog,
+			Options{Model: "sakana/shinka-1"},
+		},
+		{
+			"other-bucket provider alone → first slash-less model",
+			map[string]any{"provider": "other"},
+			Options{Model: "anthropic/claude-opus-5"},
+			catalog,
+			Options{Model: "kimi-k2"},
+		},
+		{
+			"empty provider value alone buckets to other",
+			map[string]any{"provider": ""},
+			Options{Model: "anthropic/claude-opus-5"},
+			catalog,
+			Options{Model: "kimi-k2"},
+		},
+		{
+			"unknown provider → defaults survive",
+			map[string]any{"provider": "nosuch"},
+			Options{Model: "anthropic/claude-opus-5"},
+			catalog,
+			Options{Model: "anthropic/claude-opus-5"},
+		},
+		{
+			"provider alone with no model catalog → defaults survive",
+			map[string]any{"provider": "sakana"},
+			Options{Model: "anthropic/claude-opus-5"},
+			nil,
+			Options{Model: "anthropic/claude-opus-5"},
+		},
+		{
+			"empty bare model ignored — default survives",
+			map[string]any{"model": ""},
+			Options{Model: "anthropic/claude-opus-5"},
+			catalog,
+			Options{Model: "anthropic/claude-opus-5"},
+		},
+		{
+			"empty bare model does not shadow the provider fallback",
+			map[string]any{"model": "", "provider": "sakana"},
+			Options{Model: "anthropic/claude-opus-5"},
+			catalog,
+			Options{Model: "sakana/shinka-1"},
+		},
+		{
+			"model_<other-provider> only → the selected provider's default",
+			map[string]any{"provider": "anthropic", "model_sakana": "sakana/shinka-2"},
+			Options{Model: "openai/old"},
+			catalog,
+			Options{Model: "anthropic/claude-opus-5"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ParseOptions(tc.in, tc.defaults)
+			got := ParseOptions(tc.in, tc.defaults, tc.models)
 			if got != tc.want {
 				t.Fatalf("got %#v want %#v", got, tc.want)
 			}
@@ -392,7 +506,7 @@ func TestRouter_AppliesDefaultsOnEmptyParams(t *testing.T) {
 	}
 
 	// Caller hands ParseOptions empty params + the router's defaults.
-	opts := ParseOptions(nil, r.Defaults())
+	opts := ParseOptions(nil, r.Defaults(), nil)
 	if err := r.Prompt(context.Background(), "c1", "u",
 		[]Turn{{Role: "user", Content: "hi"}}, opts, &captureSink{}); err != nil {
 		t.Fatalf("prompt: %v", err)

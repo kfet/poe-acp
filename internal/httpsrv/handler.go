@@ -335,7 +335,8 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		}
 	}
 
-	opts := router.ParseOptions(req.LatestParameters(), h.cfg.Router.Defaults())
+	models, _ := h.cfg.Router.AvailableModels()
+	opts := router.ParseOptions(req.LatestParameters(), h.cfg.Router.Defaults(), models)
 
 	if kitlog.Enabled() {
 		kitlog.Debugf("query: conv=%q user=%q msg=%q turns=%d",
