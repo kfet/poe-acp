@@ -7,3 +7,7 @@ require (
 	github.com/kfet/acp-kit v0.4.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 )
+
+require github.com/kfet/covgate v0.1.2 // indirect
+
+tool github.com/kfet/covgate/cmd/covgate
