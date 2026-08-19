@@ -19,7 +19,7 @@ endif
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 GO_LICENSES := go run github.com/google/go-licenses@v1.6.0
-COVGATE     := go run github.com/kfet/covgate/cmd/covgate@v0.1.0
+COVGATE     := go tool covgate
 
 # Cross-compile matrix. Element format: <goos>-<goarch>[-<goarm>].
 CROSS      := darwin-arm64 darwin-amd64 linux-amd64 linux-arm64 linux-armv6
