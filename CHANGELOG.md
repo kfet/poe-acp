@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-08-19
+
 ### Fixed
 
 - **Selecting a Provider without opening the nested Model dropdown no longer
