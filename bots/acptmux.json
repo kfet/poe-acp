@@ -1,0 +1,36 @@
+{
+  "name": "acptmux",
+  "host": "rn",
+  "platform": "linux/amd64",
+  "supervisor": "systemd-user",
+  "unit": "poe-acp-acptmux",
+  "binary": "~/.local/bin/poe-acp",
+  "agent": {
+    "cmd": "ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 zboxserver .local/bin/acp-tmux -config .config/acp-tmux/config.json -agent fir",
+    "kind": "acp-tmux"
+  },
+  "server": {
+    "http_addr": "127.0.0.1:8348",
+    "poe_path": "/acp-tmux",
+    "config_path": "~/.config/poe-acp/acptmux/config.json",
+    "heartbeat_interval": "3s",
+    "session_ttl": "30m",
+    "introduction": "acp-tmux — drives real terminal coding agents (codex, claude-code, aider, crush, gemini-cli, opencode) in tmux panes on zboxserver, fronted as ACP. Turn boundaries via ACPEND markers."
+  },
+  "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s"
+  },
+  "config": {
+    "bot_name": "sea-zbox",
+    "defaults": {
+      "model": "fir",
+      "thinking": "medium",
+      "hide_thinking": false,
+      "show_plans": true,
+      "show_tools": true
+    }
+  },
+  "credentials": { "env_file": "~/.config/poe-acp/acptmux/env" }
+}

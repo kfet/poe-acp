@@ -16,7 +16,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CONVERGE="$ROOT/scripts/converge.sh"
 GOLDEN="$ROOT/test/golden"
-BOTS=(two-fir kopi-fir sea-fir fir-air)
+BOTS=(two-fir kopi-fir sea-fir fir-air acptmux)
 
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok   $1"; }
@@ -39,7 +39,7 @@ for bot in "${BOTS[@]}"; do
     check_golden "$bot.$art" "$GOLDEN/$bot.$art" "$t"; rm -f "$t"
   done
 done
-for bot in two-fir kopi-fir sea-fir; do
+for bot in two-fir kopi-fir sea-fir acptmux; do
   t=$(mktemp); "$CONVERGE" render "$bot" unit >"$t"
   check_golden "$bot.unit" "$GOLDEN/$bot.unit" "$t"; rm -f "$t"
 done

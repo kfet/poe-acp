@@ -1,0 +1,15 @@
+[Unit]
+Description=poe-acp (acptmux)
+After=network-online.target
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/poe-acp/acptmux/env
+Type=notify
+ExecStart=%h/.local/bin/poe-acp --http-addr 127.0.0.1:8348 --poe-path /acp-tmux --config %h/.config/poe-acp/acptmux/config.json --agent-cmd "ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 zboxserver .local/bin/acp-tmux -config .config/acp-tmux/config.json -agent fir" --heartbeat-interval 3s --session-ttl 30m --introduction "acp-tmux — drives real terminal coding agents (codex, claude-code, aider, crush, gemini-cli, opencode) in tmux panes on zboxserver, fronted as ACP. Turn boundaries via ACPEND markers."
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
