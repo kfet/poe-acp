@@ -6,6 +6,8 @@
 # Usage:
 #   converge.sh <bot>                          dry-run (default): show what would change
 #   converge.sh <bot> --apply                  actually converge the host
+#   converge.sh <bot> --local                  act on THIS machine directly (no ssh);
+#                                              refuses unless the spec host is us
 #   converge.sh <bot> --target-root DIR        act on a local fake host rooted at DIR
 #                                              (no ssh; for testing)
 #   converge.sh --tot                          resolve latest-of-everything ONCE and
@@ -165,9 +167,18 @@ EOF
 # ---------------------------------------------------------------------------
 HOST=""
 TARGET_ROOT=""
+LOCAL=0
+FORCE_LOCAL=0
 
 rsh() { # run a shell command on the target; stdin is forwarded
-  if [ -n "$TARGET_ROOT" ]; then
+  if [ "$LOCAL" = 1 ]; then
+    # We ARE the target. Run through a LOGIN bash so PATH matches exactly
+    # what the ssh path (`ssh host bash -lc`) would produce — otherwise a
+    # perfectly installed `fir` in ~/.local/bin probes as "not found".
+    # Unlike --target-root this does NOT rewrite HOME and does NOT gate any
+    # real work: local mode is a transport swap, not a test harness.
+    bash -lc "$1"
+  elif [ -n "$TARGET_ROOT" ]; then
     # A real target is reached through a LOGIN shell, so ~/.local/bin is on
     # PATH. Mirror that for the fake root — it is also how a test supplies
     # stub `systemctl`/`launchctl`/`ps` binaries for the recycle path.
@@ -440,8 +451,35 @@ converge() {
   PA_EXE=${binary##*/}
   HOST="$host"
 
-  echo "== converge $bot (host=$host supervisor=$supervisor)$([ -n "$TARGET_ROOT" ] && echo " [fake root: $TARGET_ROOT]")"
+  echo "== converge $bot (host=$host supervisor=$supervisor)$([ -n "$TARGET_ROOT" ] && echo " [fake root: $TARGET_ROOT]")$([ "$LOCAL" = 1 ] && echo " [local]")"
   [ "$apply" = 1 ] || echo "== DRY RUN — no changes will be made (use --apply)"
+
+  [ "$LOCAL" = 1 ] && [ -n "$TARGET_ROOT" ] && die "--local and --target-root are mutually exclusive"
+
+  # --local is a loaded gun: it points every write at THIS machine while the
+  # spec still names some other host. Refuse unless the spec's host really is
+  # us. Best-effort by design — an unresolvable name warns rather than blocks,
+  # since not every fleet host has tailscale/DNS reachable from itself.
+  if [ "$LOCAL" = 1 ] && [ "$FORCE_LOCAL" != 1 ]; then
+    local _tsips _hostip _realhost
+    _tsips=$( (tailscale ip 2>/dev/null || /Applications/Tailscale.app/Contents/MacOS/Tailscale ip 2>/dev/null || true) | tr '\n' ' ')
+    # The spec's host is an ssh_config ALIAS (converge reaches it via `ssh
+    # $host`), so resolve it the way ssh itself would before touching DNS —
+    # otherwise a perfectly valid alias looks unresolvable.
+    _realhost=$(ssh -G "$host" 2>/dev/null | awk '/^hostname /{print $2; exit}' || true)
+    [ -n "$_realhost" ] || _realhost="$host"
+    _hostip=$(dscacheutil -q host -a name "$_realhost" 2>/dev/null | awk '/^ip_address:/{print $2; exit}' || true)
+    if [ -z "$_hostip" ] && command -v getent >/dev/null 2>&1; then
+      _hostip=$(getent hosts "$_realhost" 2>/dev/null | awk '{print $1; exit}' || true)
+    fi
+    if [ -z "$_hostip" ] || [ -z "$_tsips" ]; then
+      die "--local refused: cannot confirm spec host '$host' is this machine (resolved='${_hostip:-?}' local='${_tsips:-?}'). Re-run with --force-local if you are certain."
+    elif ! printf '%s' "$_tsips" | grep -qw -- "$_hostip"; then
+      die "--local refused: spec host '$host' ($_realhost) resolves to $_hostip, not this machine ($_tsips)"
+    else
+      echo "== --local: confirmed '$host' -> $_realhost ($_hostip) is this machine"
+    fi
+  fi
 
   # Preflight: fail loudly on an unreachable target rather than mistaking
   # transport failure for missing files.
@@ -762,6 +800,7 @@ usage() {
 usage:
   converge.sh <bot>                          dry-run (default): show what would change
   converge.sh <bot> --apply                  actually converge the host
+  converge.sh <bot> --local                  act on THIS machine directly (no ssh)
   converge.sh <bot> --target-root DIR        act on a local fake host rooted at DIR (no ssh)
   converge.sh --tot                          resolve latest-of-everything ONCE and
                                              rewrite dist.lock; NEVER converges
@@ -805,6 +844,8 @@ case "$1" in
         --apply) APPLY=1; shift ;;
         --dry-run) APPLY=0; shift ;;
         --target-root) TARGET_ROOT=$(cd "$2" && pwd) || die "bad --target-root"; shift 2 ;;
+        --local) LOCAL=1; shift ;;
+        --force-local) LOCAL=1; FORCE_LOCAL=1; shift ;;
         *) usage ;;
       esac
     done
