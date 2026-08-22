@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-08-22
+
 ### Changed
 
 - **BEHAVIOUR CHANGE: `show_tool_details` now defaults to `false`.** The
