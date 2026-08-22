@@ -11,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/poeproto"
+	"github.com/kfet/poe-acp/internal/router"
 	"github.com/kfet/poe-acp/internal/skills"
 )
 
@@ -410,5 +413,47 @@ func TestBuildSkillsCatalog_LoaderErrors(t *testing.T) {
 	// Both loaders fail → merged is empty → returns "".
 	if got := buildSkillsCatalog(filepath.Join(t.TempDir(), "config.json")); got != "" {
 		t.Fatalf("expected empty catalog on loader failure, got %q", got)
+	}
+}
+
+// TestBuildControls_AppliesPins is the regression guard for the bug
+// where the live ParameterControlsProvider built its schema straight
+// from agent.Models() and so served an UNPINNED list, while the
+// boot-time cache-invalidation hash was computed from a pinned one.
+// The hash changed, Poe re-fetched, and got a schema with the pin
+// missing — pinned_models silently no-opped in the UI.
+//
+// Both call sites now go through buildControls; this asserts it really
+// hoists, and that it is idempotent (the hash path passes an
+// already-pinned list).
+func TestBuildControls_AppliesPins(t *testing.T) {
+	models := []client.ModelInfo{
+		{ID: "anthropic/claude-opus-5", Name: "Opus"},
+		{ID: "openrouter/openrouter/auto", Name: "Auto"},
+		{ID: "openrouter/stealth/ox-alpha", Name: "Ox Alpha"},
+	}
+	pinned := []string{"openrouter/stealth/ox-alpha"}
+
+	// firstModelOf returns the first option of the first drop_down
+	// whose ParameterName matches, searching inside condition wrappers.
+	firstProviderOption := func(pc *poeproto.ParameterControls) string {
+		for _, c := range pc.Sections[0].Controls {
+			if c.ParameterName == poeproto.ParamProvider && len(c.Options) > 0 {
+				return c.Options[0].Value
+			}
+		}
+		return ""
+	}
+
+	pc := buildControls(models, pinned, router.Options{})
+	if got := firstProviderOption(pc); got != "openrouter" {
+		t.Fatalf("pin did not hoist provider: first provider = %q, want %q", got, "openrouter")
+	}
+
+	// Idempotence: feeding an already-pinned list must not change it.
+	pre := config.OrderPinned(models, pinned)
+	pc2 := buildControls(pre, pinned, router.Options{})
+	if schemaHash(pc) != schemaHash(pc2) {
+		t.Fatal("buildControls is not idempotent: pinned vs double-pinned schemas differ")
 	}
 }

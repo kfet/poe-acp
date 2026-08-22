@@ -342,8 +342,11 @@ func main() {
 		CoalesceGrid:      stream.CoalesceGrid,
 		SpinnerStatic:     !stream.SpinnerAnimate,
 		ParameterControlsProvider: func() *poeproto.ParameterControls {
+			// Re-probe live so a re-auth/model change is picked up, but
+			// go through buildControls so the operator's pins are applied
+			// to the schema Poe actually fetches.
 			m, _ := agent.Models()
-			return paramctl.Build(m, defaults)
+			return buildControls(m, cfg.PinnedModels, defaults)
 		},
 		Commands: broker,
 	})
@@ -355,7 +358,7 @@ func main() {
 	// unset (operator hasn't opted in).
 	if cfg.BotName != "" {
 		go maybeRefetchSettings(ctx, stateDir, cfg.BotName, secret,
-			paramctl.Build(models, defaults), "")
+			buildControls(models, cfg.PinnedModels, defaults), "")
 	} else {
 		log.Printf("config: bot_name unset; Poe settings cache will not auto-refetch")
 	}
