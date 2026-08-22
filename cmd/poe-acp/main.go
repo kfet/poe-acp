@@ -267,6 +267,11 @@ func main() {
 	// same resolved struct seeds Build() (UI default_values) and
 	// Router.Defaults (runtime apply on first turn) so they cannot drift.
 	models, current := agent.Models()
+	// Hoist operator-pinned models before anything derives from the
+	// list: both paramctl.Resolve's validation and the schema built by
+	// paramctl.Build must see the same ordered list so the UI order,
+	// the default_value and the schema hash stay coherent.
+	models = config.OrderPinned(models, cfg.PinnedModels)
 	defaults := paramctl.Resolve(cfg.Defaults, models, current)
 	log.Printf("resolved defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
 		defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails)

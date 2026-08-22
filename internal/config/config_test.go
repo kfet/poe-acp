@@ -3,9 +3,12 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kfet/acp-kit/client"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -48,7 +51,7 @@ func TestLoad_Missing(t *testing.T) {
 	if ok {
 		t.Fatalf("ok=true for missing file")
 	}
-	if cfg != (Config{}) {
+	if !reflect.DeepEqual(cfg, Config{}) {
 		t.Fatalf("expected zero config, got %#v", cfg)
 	}
 }
@@ -130,7 +133,7 @@ func TestLoad_EmptyJSON(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("load: %v / ok=%v", err, ok)
 	}
-	if cfg != (Config{}) {
+	if !reflect.DeepEqual(cfg, Config{}) {
 		t.Fatalf("expected zero config, got %#v", cfg)
 	}
 }
@@ -254,4 +257,81 @@ func TestValidate_CoalesceMsBounds(t *testing.T) {
 			t.Errorf("coalesce_ms=%v: %v", ms, err)
 		}
 	}
+}
+
+func TestLoad_PinnedModels(t *testing.T) {
+	t.Parallel()
+	p := writeFile(t, `{"pinned_models": ["openrouter/stealth/ox-alpha", "anthropic/claude-sonnet-4"]}`)
+	cfg, ok, err := Load(p)
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	want := []string{"openrouter/stealth/ox-alpha", "anthropic/claude-sonnet-4"}
+	if len(cfg.PinnedModels) != len(want) {
+		t.Fatalf("got %v, want %v", cfg.PinnedModels, want)
+	}
+	for i := range want {
+		if cfg.PinnedModels[i] != want[i] {
+			t.Fatalf("got %v, want %v", cfg.PinnedModels, want)
+		}
+	}
+
+	// Unknown top-level keys still fail loudly.
+	p = writeFile(t, `{"pinned_model": ["x"]}`)
+	if _, _, err := Load(p); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected unknown-field error, got %v", err)
+	}
+}
+
+func TestOrderPinned(t *testing.T) {
+	t.Parallel()
+	mk := func(ids ...string) []client.ModelInfo {
+		out := make([]client.ModelInfo, len(ids))
+		for i, id := range ids {
+			out[i] = client.ModelInfo{ID: id, Name: id}
+		}
+		return out
+	}
+	eq := func(got, want []client.ModelInfo) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range want {
+			if got[i].ID != want[i].ID {
+				return false
+			}
+		}
+		return true
+	}
+
+	base := mk("a/x", "b/y", "a/z", "c/w")
+
+	// Pin reorders to front, preserving pin order and relative tail order.
+	got := OrderPinned(base, []string{"c/w", "b/y"})
+	if !eq(got, mk("c/w", "b/y", "a/x", "a/z")) {
+		t.Fatalf("pin reorder: got %v", ids(got))
+	}
+
+	// Unknown pins are ignored.
+	if !eq(OrderPinned(base, []string{"nope/none"}), base) {
+		t.Fatalf("unknown pin changed list: %v", ids(OrderPinned(base, []string{"nope/none"})))
+	}
+
+	// Duplicate pin hoists once.
+	if !eq(OrderPinned(base, []string{"b/y", "b/y"}), mk("b/y", "a/x", "a/z", "c/w")) {
+		t.Fatalf("dup pin: %v", ids(OrderPinned(base, []string{"b/y", "b/y"})))
+	}
+
+	// Empty inputs are pass-through.
+	if !eq(OrderPinned(nil, []string{"a/x"}), nil) || !eq(OrderPinned(base, nil), base) {
+		t.Fatalf("empty-input pass-through broken")
+	}
+}
+
+func ids(ms []client.ModelInfo) []string {
+	out := make([]string, len(ms))
+	for i, m := range ms {
+		out[i] = m.ID
+	}
+	return out
 }

@@ -1,7 +1,10 @@
 package paramctl
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -575,4 +578,72 @@ func TestProviderOnlyResolvesToSchemaDefault(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestBuild_PinnedModelsOrderAndSchema(t *testing.T) {
+	t.Parallel()
+	models := []client.ModelInfo{
+		{ID: "openrouter/gpt-x", Name: "GPT X"},
+		{ID: "anthropic/claude", Name: "Claude"},
+		{ID: "openrouter/stealth/ox-alpha", Name: "Ox Alpha"},
+	}
+	pinned := []string{"openrouter/stealth/ox-alpha"}
+
+	ordered := config.OrderPinned(models, pinned)
+	if ordered[0].ID != "openrouter/stealth/ox-alpha" {
+		t.Fatalf("pin not first: %v", ordered[0].ID)
+	}
+	// Relative order of everything else preserved.
+	var rest []string
+	for _, m := range ordered[1:] {
+		rest = append(rest, m.ID)
+	}
+	if fmt.Sprint(rest) != "[openrouter/gpt-x anthropic/claude]" {
+		t.Fatalf("tail order changed: %v", rest)
+	}
+
+	// Schema reflects the ordering and serializes differently.
+	def := router.Options{}
+	before, err := json.Marshal(Build(models, def))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := json.Marshal(Build(ordered, def))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(before, after) {
+		t.Fatalf("pinned ordering did not change serialized schema")
+	}
+
+	// Deterministic: same inputs → same bytes.
+	again, _ := json.Marshal(Build(config.OrderPinned(models, pinned), def))
+	if !bytes.Equal(after, again) {
+		t.Fatalf("ordering not deterministic")
+	}
+}
+
+func TestConfig_OrderPinned_SchemaHashChanges(t *testing.T) {
+	// The hash path in cmd/poe-acp hashes paramctl.Build output; assert
+	// here that a pinned list changes the built schema's canonical JSON,
+	// which is what feeds last_schema_hash.
+	t.Parallel()
+	models := []client.ModelInfo{
+		{ID: "a/x", Name: "X"},
+		{ID: "b/y", Name: "Y"},
+	}
+	h1 := sha256.Sum256(mustJSON(t, Build(models, router.Options{})))
+	h2 := sha256.Sum256(mustJSON(t, Build(config.OrderPinned(models, []string{"b/y"}), router.Options{})))
+	if h1 == h2 {
+		t.Fatalf("schema hash unchanged by pinning")
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
