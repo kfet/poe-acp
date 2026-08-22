@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-08-22
+
 ### Fixed
 
 - **provider-only parameter resolved to the wrong model when
