@@ -254,7 +254,7 @@ keep working.
     "hide_thinking": true,
     "show_plans": true,
     "show_tools": true,
-    "show_tool_details": true,
+    "show_tool_details": false,
     "coalesce_ms": 3000,
     "coalesce_grid": true,
     "spinner_animate": false
@@ -296,7 +296,9 @@ keep working.
   tool call's `content` blocks (for a remote-exec tool: the host and the
   full command) and, on the terminal `tool_call_update`, a
   ``> `✓ <title>` ``/``> `✗ <title>` `` group with the result text.
-  Omitted = built-in default (`true`). Requires `show_tools`. Each
+  Omitted = built-in default (`false`) — the verbose rendering is
+  opt-in; the per-tool line from `show_tools` remains the durable
+  record on its own. Requires `show_tools`. Each
   content block is bounded (12 lines / 800 chars, head and tail kept,
   middle replaced by `… N lines elided …`) and rendered inside the tool
   line's blockquote; non-terminal updates stay spinner-only.

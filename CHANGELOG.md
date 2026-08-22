@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **BEHAVIOUR CHANGE: `show_tool_details` now defaults to `false`.** The
+  built-in fallback `paramctl.DefaultShowToolDetails` flipped from `true` to
+  `false`, so a deployment that never sets `defaults.show_tool_details` no
+  longer renders each tool call's `content` blocks and terminal result group
+  into the answer body. The per-tool_call line from `show_tools` (still on by
+  default) remains the durable record of what the agent did; the verbose
+  content/result rendering is now opt-in. Restore the old behaviour with
+  `"show_tool_details": true` in `defaults`, or per-conversation from the Poe
+  Options toggle "Tool details".
+
 ## [0.56.0] - 2026-08-19
 
 ### Changed
