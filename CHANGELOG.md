@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **provider-only parameter resolved to the wrong model when
+  `pinned_models` was set.** The schema (`paramctl.Build`) saw the
+  pinned-ordered list while the runtime path (`httpsrv` →
+  `router.ParseOptions`) saw raw agent probe order, so a user who
+  touched only the Provider dropdown landed on that provider's first
+  raw model instead of the pinned one the UI advertised — the drift
+  class 8c7a7e8 fixed, reintroduced through a second list.
+  `router.Config` gains a `ModelOrder` hook, wired once in main to
+  `config.OrderPinned`, applied inside `Router.AvailableModels` so
+  schema `default_value` and the runtime provider fallback resolve
+  over the same list.
+
 ## [0.58.0] - 2026-08-22
 
 ### Added

@@ -7,6 +7,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/poe-acp/internal/config"
 )
 
 func newCmdRouter(t *testing.T, agent Agent, defModel string) *Router {
@@ -144,5 +145,42 @@ func TestAgentCommands(t *testing.T) {
 	cs := r.AgentCommands()
 	if len(cs) != 2 || cs[0].Name != "reload" {
 		t.Fatalf("AgentCommands: %v", cs)
+	}
+}
+
+// TestAvailableModels_ModelOrder pins the single-source invariant for
+// operator model ordering: AvailableModels applies Config.ModelOrder,
+// so httpsrv's ParseOptions list matches the one paramctl.Build used
+// for the schema's default_value. Guards against the pinned_models
+// regression where the runtime path saw raw agent probe order.
+func TestAvailableModels_ModelOrder(t *testing.T) {
+	a := newFakeAgent(nil)
+	a.models = []client.ModelInfo{
+		{ID: "openrouter/aion-labs/aion-2.0"},
+		{ID: "anthropic/claude-opus-5"},
+		{ID: "openrouter/stealth/ox-alpha"},
+	}
+	a.currentModelID = "anthropic/claude-opus-5"
+	pin := func(models []client.ModelInfo) []client.ModelInfo {
+		return config.OrderPinned(models, []string{"openrouter/stealth/ox-alpha"})
+	}
+	r := newCmdRouter(t, a, "")
+	r.cfg.ModelOrder = pin
+
+	m, cur := r.AvailableModels()
+	if len(m) != 3 || m[0].ID != "openrouter/stealth/ox-alpha" || cur != "anthropic/claude-opus-5" {
+		t.Fatalf("pin not applied at source: %v cur=%q", m, cur)
+	}
+
+	// The exact production shape: ParseOptions over the router's list
+	// must land on the pinned model for a provider-only parameter,
+	// matching what the schema built from the same list advertises.
+	defs := Options{Model: "anthropic/claude-opus-5"}
+	opts := ParseOptions(map[string]any{"provider": "openrouter"}, defs, m)
+	if opts.Model != "openrouter/stealth/ox-alpha" {
+		t.Fatalf("provider-only param resolved %q, want pinned ox-alpha", opts.Model)
+	}
+	if DefaultModelForProvider(m, "openrouter", defs.Model) != opts.Model {
+		t.Fatalf("schema default and runtime fallback disagree")
 	}
 }

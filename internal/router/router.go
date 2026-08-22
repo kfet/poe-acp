@@ -193,6 +193,12 @@ type Config struct {
 	// "preserve verbatim" instruction. See acp-spec/rfd-system-prompt.md
 	// and docs/skill-injection-plan.md.
 	SystemPromptProvider func() string
+	// ModelOrder, when set, reorders the list AvailableModels returns.
+	// Applied once, at the source, so paramctl.Build's schema
+	// default_value and ParseOptions' provider fallback resolve over
+	// the same list (the 8c7a7e8 no-drift invariant; see
+	// config.OrderPinned). Nil = agent order unchanged.
+	ModelOrder func([]client.ModelInfo) []client.ModelInfo
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
 	// HTTPClient is used to fetch attachment bytes (download-to-disk
@@ -2491,10 +2497,17 @@ var turnTokenSeq atomic.Uint64
 // cancel their own turn.
 type TurnTokener interface{ SetTurnToken(uint64) }
 
-// AvailableModels returns the agent's available models and current id.
+// AvailableModels returns the agent's available models and current id,
+// reordered through cfg.ModelOrder when set. This is THE ordered
+// consumer: httpsrv feeds its result to ParseOptions, so it matches
+// the list paramctl.Build used for the schema's default_value.
 // Satisfies command.Controller.
 func (r *Router) AvailableModels() (models []client.ModelInfo, currentID string) {
-	return r.cfg.Agent.Models()
+	models, currentID = r.cfg.Agent.Models()
+	if r.cfg.ModelOrder != nil {
+		models = r.cfg.ModelOrder(models)
+	}
+	return models, currentID
 }
 
 // AgentCommands returns the agent's advertised command catalog.
