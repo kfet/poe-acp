@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-08-22
+
 ### Added
 
 - `pinned_models` config field: operator-listed model ids are hoisted
