@@ -580,6 +580,50 @@ func TestProviderOnlyResolvesToSchemaDefault(t *testing.T) {
 	}
 }
 
+// TestProviderOnlyResolvesToSchemaDefaultWithPins is the no-drift guard
+// for the pinned_models regression. It mirrors the production wiring —
+// the same OrderPinned-ordered list feeds both paramctl.Resolve/Build
+// (schema) and router.ParseOptions (runtime) — and asserts that a
+// provider-only parameter resolves to exactly the schema-advertised
+// default even with pins in play, so a future third model list cannot
+// reintroduce the 8c7a7e8 bug class.
+func TestProviderOnlyResolvesToSchemaDefaultWithPins(t *testing.T) {
+	t.Parallel()
+	raw := []client.ModelInfo{
+		{ID: "openrouter/aion-labs/aion-2.0", Name: "Aion 2.0"},
+		{ID: "anthropic/claude-opus-5", Name: "Opus 5"},
+		{ID: "anthropic/claude-sonnet-4-5", Name: "Sonnet 4.5"},
+		{ID: "openrouter/stealth/ox-alpha", Name: "Ox Alpha"},
+		{ID: "sakana/shinka-1", Name: "Shinka 1"},
+	}
+	for _, pinned := range [][]string{
+		nil,
+		{"openrouter/stealth/ox-alpha"},
+		{"sakana/shinka-1"},
+		{"anthropic/claude-sonnet-4-5", "openrouter/stealth/ox-alpha"},
+	} {
+		for _, cfgModel := range []string{"", "anthropic/claude-opus-5"} {
+			models := config.OrderPinned(raw, pinned)
+			defs := Resolve(config.Defaults{Model: cfgModel}, models, "")
+			pc := Build(models, defs)
+			schemaDefaults := map[string]any{}
+			collect(pc.Sections, schemaDefaults)
+			for _, prov := range Providers(models) {
+				opts := router.ParseOptions(map[string]any{"provider": prov}, defs, models)
+				want := schemaDefaults[ProviderParamName(prov)]
+				if opts.Model != want {
+					t.Errorf("pins=%v defaults.Model=%q provider=%q: resolved %q, schema default_value %v",
+						pinned, cfgModel, prov, opts.Model, want)
+				}
+				if got := ProviderOf(opts.Model); got != prov {
+					t.Errorf("pins=%v defaults.Model=%q provider=%q: resolved %q belongs to provider %q",
+						pinned, cfgModel, prov, opts.Model, got)
+				}
+			}
+		}
+	}
+}
+
 func TestBuild_PinnedModelsOrderAndSchema(t *testing.T) {
 	t.Parallel()
 	models := []client.ModelInfo{

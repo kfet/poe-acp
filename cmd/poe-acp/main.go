@@ -268,10 +268,13 @@ func main() {
 	// Router.Defaults (runtime apply on first turn) so they cannot drift.
 	models, current := agent.Models()
 	// Hoist operator-pinned models before anything derives from the
-	// list: both paramctl.Resolve's validation and the schema built by
-	// paramctl.Build must see the same ordered list so the UI order,
-	// the default_value and the schema hash stay coherent.
-	models = config.OrderPinned(models, cfg.PinnedModels)
+	// list, and hand the same reordering to router.Config.ModelOrder
+	// so the schema and the runtime provider fallback resolve over one
+	// ordered list (see router.Config.ModelOrder).
+	pin := func(in []client.ModelInfo) []client.ModelInfo {
+		return config.OrderPinned(in, cfg.PinnedModels)
+	}
+	models = pin(models)
 	defaults := paramctl.Resolve(cfg.Defaults, models, current)
 	log.Printf("resolved defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
 		defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails)
@@ -291,6 +294,7 @@ func main() {
 		StartTime:            time.Now(),
 		AccessKey:            secret,
 		MCPAttachEnabled:     mcpEnabled,
+		ModelOrder:           pin,
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
