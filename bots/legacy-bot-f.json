@@ -29,7 +29,8 @@
       "thinking": "medium",
       "hide_thinking": false
     },
-    "agent": { "profile": "fir" }
+    "agent": { "profile": "fir" },
+    "pinned_models": ["openrouter/stealth/ox-alpha"]
   },
   "credentials": { "env_file": "~/.config/poe-acp/env" }
 }
