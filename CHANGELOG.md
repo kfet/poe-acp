@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `pinned_models` config field: operator-listed model ids are hoisted
+  (in the given order) to the top of Poe's parameter-control model
+  dropdowns, preserving the agent's ordering for everything else.
+  Applied before `paramctl.Build`/`Resolve`, so it flows into the
+  serialized settings and schema hash.
+
 ## [0.57.0] - 2026-08-22
 
 ### Changed

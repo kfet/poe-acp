@@ -16,6 +16,8 @@ import (
 	"io/fs"
 	"os"
 	"time"
+
+	"github.com/kfet/acp-kit/client"
 )
 
 // Config is the on-disk shape. Add fields with care — every field is
@@ -59,6 +61,17 @@ type Config struct {
 	// enablement is this OR the --enable-mcp-attach flag (kept as a
 	// deprecated alias), so existing flag-based deployments keep working.
 	PoeMCP bool `json:"poe_mcp,omitempty"`
+
+	// PinnedModels lists model ids ("<provider>/<modelId>") that are
+	// hoisted to the top of the Poe model dropdowns, in the order given,
+	// while every other model keeps the agent's own relative order
+	// (providers included). Ids that don't appear in the agent's probed
+	// list at boot are silently ignored, and a duplicated id pins only
+	// its first occurrence — so a stale pin never breaks the schema.
+	// The reordering happens before parameter_controls are built, so it
+	// changes the serialized settings (and thus the schema hash / cache
+	// invalidation) exactly like any other schema change.
+	PinnedModels []string `json:"pinned_models,omitempty"`
 }
 
 // Defaults pins per-conversation parameter defaults independently of
@@ -189,6 +202,39 @@ type Agent struct {
 	// auto-detect from --agent-cmd. Used to pick which set_config_option
 	// controls the relay exposes. Reserved; today only "fir" is wired.
 	Profile string `json:"profile,omitempty"`
+}
+
+// OrderPinned returns models reordered so that any model whose ID
+// appears in pinned is hoisted to the front, keeping the pinned models
+// in the order they were pinned and every other model in its original
+// relative order. Pinned ids that match no model are ignored, and a
+// duplicated pin only hoists the model once. Stable: the result is a
+// deterministic function of (models, pinned).
+func OrderPinned(models []client.ModelInfo, pinned []string) []client.ModelInfo {
+	if len(models) == 0 || len(pinned) == 0 {
+		return models
+	}
+	rank := make(map[string]int, len(pinned))
+	for i, id := range pinned {
+		if _, dup := rank[id]; !dup {
+			rank[id] = i
+		}
+	}
+	head := make([]client.ModelInfo, 0, len(rank))
+	tail := make([]client.ModelInfo, 0, len(models))
+	for _, m := range models {
+		if r, ok := rank[m.ID]; ok {
+			head = append(head, m)
+			// Insertion sort by pin rank — head is at most len(pinned)
+			// long, so this is effectively free and keeps pins ordered.
+			for i := len(head) - 1; i > 0 && rank[head[i-1].ID] > r; i-- {
+				head[i-1], head[i] = head[i], head[i-1]
+			}
+			continue
+		}
+		tail = append(tail, m)
+	}
+	return append(head, tail...)
 }
 
 // Load reads and parses a config file. A non-existent path returns an
