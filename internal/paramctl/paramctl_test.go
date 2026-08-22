@@ -29,17 +29,24 @@ func TestResolve_ConfigWins(t *testing.T) {
 }
 
 // TestResolve_ProgressKnobDefaults pins the built-in defaults for the
-// progress knobs (both ON) and the operator's ability to turn either
-// off from config.json.
+// progress knobs (show_plans and show_tools ON, show_tool_details OFF)
+// and the operator's ability to flip any of them from config.json.
 func TestResolve_ProgressKnobDefaults(t *testing.T) {
 	t.Parallel()
 	d := Resolve(config.Defaults{}, twoModels, "")
-	if !d.ShowPlans || !d.ShowTools || !d.ShowToolDetails {
-		t.Fatalf("nil show_plans/show_tools/show_tool_details should default to true, got %+v", d)
+	if !d.ShowPlans || !d.ShowTools {
+		t.Fatalf("nil show_plans/show_tools should default to true, got %+v", d)
+	}
+	if d.ShowToolDetails {
+		t.Fatalf("nil show_tool_details should default to false, got %+v", d)
 	}
 	d = Resolve(config.Defaults{ShowPlans: boolPtr(false), ShowTools: boolPtr(false), ShowToolDetails: boolPtr(false)}, twoModels, "")
 	if d.ShowPlans || d.ShowTools || d.ShowToolDetails {
 		t.Fatalf("explicit false should override defaults, got %+v", d)
+	}
+	d = Resolve(config.Defaults{ShowToolDetails: boolPtr(true)}, twoModels, "")
+	if !d.ShowToolDetails {
+		t.Fatalf("explicit true should override the off-by-default, got %+v", d)
 	}
 }
 

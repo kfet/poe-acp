@@ -82,11 +82,13 @@ const DefaultShowPlans = true
 const DefaultShowTools = true
 
 // DefaultShowToolDetails is the built-in fallback when the operator has
-// not configured `defaults.show_tool_details` in config.json. On by
-// default: a bare tool title ("rexec") tells the user almost nothing,
-// while the bounded content/result rendering shows the actual command
-// and its outcome. Only has effect when ShowTools is also on.
-const DefaultShowToolDetails = true
+// not configured `defaults.show_tool_details` in config.json. Off by
+// default: the per-tool_call line from ShowTools is already the durable
+// record of what the agent did, while the content/result rendering
+// underneath it is verbose enough to bury the answer in a tool-heavy
+// turn. Operators (and users, via the Poe toggle) opt in when they want
+// the full command and outcome. Only has effect when ShowTools is on.
+const DefaultShowToolDetails = false
 
 // OtherProvider is the bucket label for models whose ID has no '/'
 // prefix. Kept stable so config defaults and tests can target it.
