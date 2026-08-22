@@ -18,15 +18,34 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kfet/acp-kit/client"
 	kitsysprompt "github.com/kfet/acp-kit/sysprompt"
 	"github.com/kfet/poe-acp/internal/config"
+	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poeproto"
+	"github.com/kfet/poe-acp/internal/router"
 	"github.com/kfet/poe-acp/internal/skills"
 )
 
 // httpClient is overridable in tests so maybeRefetchSettings can be
 // driven against an httptest.Server without reaching real Poe.
 var httpClient = http.DefaultClient
+
+// buildControls is the SINGLE place the served parameter_controls
+// schema is assembled: operator pins are applied, then the schema is
+// built. Both the live ParameterControlsProvider callback (what Poe
+// actually fetches) and the boot-time hash used for cache invalidation
+// go through it, so the two cannot diverge.
+//
+// Regression guard: an earlier version built the live schema straight
+// from agent.Models() while hashing a pinned list. The hash changed,
+// Poe dutifully re-fetched — and got an UNPINNED schema back, so
+// pinned_models silently did nothing in the UI.
+//
+// OrderPinned is idempotent, so passing an already-pinned list is safe.
+func buildControls(models []client.ModelInfo, pinned []string, defaults router.Options) *poeproto.ParameterControls {
+	return paramctl.Build(config.OrderPinned(models, pinned), defaults)
+}
 
 // maybeRefetchSettings hashes the freshly built parameter_controls and
 // compares against the last-pushed hash on disk. On change, it POSTs
