@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.59.1] - 2026-08-23
+
+### Changed
+
+- **`deploy` / `custom-bots` skills: dev bin dirs no longer lead the
+  service `PATH`.** The launchd plist template put `~/go/bin` first, so a
+  stale dev build there shadowed the managed binary for every
+  `poe-acp --version` check while converge — which compares the file it
+  manages, not what `PATH` resolves — still reported the bot converged.
+  Templates now list the managed install dir first and omit scratch bin
+  dirs. `deploy` gains two pitfalls (shadowed binary / lying `--version`;
+  shared binary path across co-located bots on one host) and its handoff
+  checklist now verifies the absolute `ExecStart` binary plus the running
+  worker's `/proc/<pid>/exe`. `bots/fir-air.json` `path_env` fixed to
+  match.
+
 ## [0.59.0] - 2026-08-22
 
 ### Fixed
