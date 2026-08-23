@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-08-23
+
+### Added
+
+- **Server-side observability for the arrival end of a turn.** A real
+  user-visible failure on a Funnel-exposed bot left ZERO server-side
+  trace, because the only per-turn line (`FRAMESTATS`) is written at the
+  END of a turn — so "Poe never delivered the query" and "we accepted it
+  and dropped it" were indistinguishable. Three log sites now close that
+  blind spot, chosen for minimum steady-state noise:
+  - `RECV conv=… msg=… bytes=…` — written in `httpsrv.ServeHTTP` the
+    moment a query is accepted, BEFORE any session or ACP work. Arrival
+    proof with conversation identity; always on, ~1 short line per turn.
+  - `WARN empty turn: conv=… produced no visible frames …` — replaces
+    the `FRAMESTATS` line when a turn produced zero text and zero
+    replace frames. Anomaly-only; silent in steady state.
+  - `WARN reject: <status> <reason> remote=…` — requests refused before
+    the router (bad bearer auth, undecodable body, unknown type).
+    Rate-limited to one line per 10s because the endpoint sits on a
+    public Tailscale Funnel path; suppressed hits are counted and
+    disclosed on the next line that gets through.
+
 ## [0.59.1] - 2026-08-23
 
 ### Changed
