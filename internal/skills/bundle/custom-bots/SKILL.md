@@ -202,7 +202,7 @@ launchd has no `EnvironmentFile`; source the env file through `sh -c` and set PA
 </array>
 <key>EnvironmentVariables</key>
 <dict>
-  <key>PATH</key><string>/Users/<you>/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   <key>HOME</key><string>/Users/<you></string>
 </dict>
 <key>RunAtLoad</key><true/>
@@ -210,6 +210,11 @@ launchd has no `EnvironmentFile`; source the env file through `sh -c` and set PA
 ```
 
 Use a unique label such as `dev.<you>.poe-acp.<bot>` and log paths per bot.
+
+`PATH` here is the **service** PATH: managed install dir first, dev/scratch bin dirs
+(`~/go/bin`, build trees) omitted — a stale `poe-acp` in one of those shadows the real
+binary in every `poe-acp --version` check. Verify with the absolute path from
+`ProgramArguments`, never a bare command. See the `deploy` skill's Pitfalls.
 
 ## Funnel and Poe setup
 

@@ -191,7 +191,7 @@ launchd plists can't load an `EnvironmentFile` directly, so wrap the binary in a
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/Users/<you>/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key><string>/Users/<you></string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -206,6 +206,12 @@ Notes:
 - `PATH` must include the directory holding the ACP agent binary (e.g. `fir`). launchd does **not** inherit your shell PATH. For Node-based agents (e.g. `claude-code --acp`), also include your nvm/node bin dir.
 - The wrapper `set -a; . env; set +a` exports every `KEY=value` in the env file to the child.
 - Use Apple-Silicon `/opt/homebrew/bin`; on Intel use `/usr/local/bin`.
+- **Never put a dev/scratch bin dir (`~/go/bin`, `~/bin`, a build tree) ahead of the
+  managed install dir in this `PATH`.** If a stale `poe-acp` sits there it shadows the
+  managed one for every human and agent that types `poe-acp --version`, and converge —
+  which compares the binary it manages, not what PATH resolves — will happily report
+  "converged" while you are reading the version of a binary nobody runs. Put the managed
+  dir first; if a dev dir must be present (for an agent binary), put it **last**.
 - `-introduction "<text>"` sets the greeting shown in Poe on first message. Easy to forget on a fresh deploy — users see the default otherwise.
 
 Load / reload / stop:
@@ -303,12 +309,24 @@ See the `update` skill (`.fir/skills/update/SKILL.md`) for the per-host upgrade 
 - **Agent not found** — `--agent-cmd` resolves against the service user's PATH. On launchd you must set PATH explicitly in `EnvironmentVariables`; shell PATH is not inherited.
 - **launchd env file** — plists have no `EnvironmentFile`; wrap in `sh -c 'set -a; . ~/.config/poe-acp/env; set +a; exec …'`.
 - **Multiple bots on one host** — one relay process per bot, each on its own loopback port + funnel prefix + access key.
+- **Shadowed binary / lying `--version`** — a bare `poe-acp --version` reports whatever PATH
+  resolves first, which is often a stale dev build in `~/go/bin` (e.g. left by `make install`)
+  rather than the binary the service actually execs. Always verify against the **absolute
+  path in `ExecStart`/`ProgramArguments`** — `/opt/homebrew/bin/poe-acp --version`,
+  `%h/.local/bin/poe-acp --version` — or read the running process:
+  `/proc/<worker-pid>/exe --version` (Linux). Keep dev bin dirs out of the service `PATH`
+  entirely, and delete stale copies rather than leaving them to be found.
+- **Shared binary path across bots** — two bots on one host that both exec
+  `~/.local/bin/poe-acp` share one file. Converging bot A swaps that binary under bot B's
+  running worker; converge then sees bot B "already at target" (it compares the file on
+  disk, not the live process) and skips the restart. After converging any bot, recycle every
+  other bot sharing its binary path (`systemctl --user reload poe-acp-<other>`).
 
 - **Caddy-fronted (non-funnel) SSE reuse `TransferEncodingError`** — if the bot sits behind Caddy/nginx instead of funnel, Poe's aiohttp keep-alive pool can reuse a stale socket and fail a turn with `TransferEncodingError: Not enough data to satisfy transfer length header` (buffer+redrive recovers it, but the user sees an error flash). Fix at the proxy: stop reusing client connections so Poe reconnects per turn. In Caddy add `header Connection close` to the site block. Verified: reuse → 0 (aiohttp new=N reused=0), ~10ms/turn TLS-resume cost, SSE streams still complete then close. Raising Caddy's `idle` timeout alone is not enough.
 
 ## Handoff checklist
 
-- [ ] `poe-acp --version` on the host matches the intended release.
+- [ ] The binary named in `ExecStart`/`ProgramArguments` (absolute path, **not** a bare `poe-acp`) reports the intended release, and the running worker's `/proc/<pid>/exe --version` agrees.
 - [ ] `tailscale funnel status` shows the expected mapping.
 - [ ] Curl smoke test returns `200` with SSE headers.
 - [ ] Poe test message round-trips.
