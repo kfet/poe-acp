@@ -18,7 +18,7 @@
   },
   "launchd": {
     "plist": "~/Library/LaunchAgents/dev.kfet.poe-acp.plist",
-    "path_env": "/Users/kfet/go/bin:/Users/kfet/.nvm/versions/node/v22.14.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+    "path_env": "/opt/homebrew/bin:/usr/local/bin:/Users/kfet/.nvm/versions/node/v22.14.0/bin:/usr/bin:/bin",
     "log_out": "/Users/kfet/Library/Logs/poe-acp.out.log",
     "log_err": "/Users/kfet/Library/Logs/poe-acp.err.log"
   },
