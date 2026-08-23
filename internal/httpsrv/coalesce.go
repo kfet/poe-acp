@@ -103,6 +103,15 @@ type frameStats struct {
 // IS the radio-wake ratio, so it must be readable straight out of a
 // production log without a debug flag.
 func logFrameStats(convID string, st frameStats, dur time.Duration) {
+	// A turn that arrived (RECV) and produced not one visible frame is an
+	// anomaly the user saw as an error bubble, so say so in the log rather
+	// than emitting a row of zeroes that reads like ordinary accounting.
+	// Fires only on that anomaly; silent in steady state.
+	if st.TextFrames == 0 && st.ReplaceFrames == 0 {
+		log.Printf("WARN empty turn: conv=%s produced no visible frames other_frames=%d dur=%s",
+			convID, st.OtherFrames, dur.Round(time.Millisecond))
+		return
+	}
 	log.Printf("FRAMESTATS conv=%s text_frames=%d replace_frames=%d bytes_out=%d dur=%s",
 		convID, st.TextFrames, st.ReplaceFrames, st.BytesOut, dur.Round(time.Millisecond))
 }

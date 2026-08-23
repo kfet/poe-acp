@@ -4,6 +4,7 @@ package httpsrv
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -223,8 +224,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	req, err := poeproto.Decode(r.Body)
+	cr := &countingReader{r: r.Body}
+	req, err := poeproto.Decode(cr)
 	if err != nil {
+		poeproto.LogReject(400, "decode: "+err.Error(), r.RemoteAddr)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -239,6 +242,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(s)
 
 	case poeproto.TypeQuery:
+		// RECV is the arrival proof: one short line written the moment a
+		// query is accepted, BEFORE any session/ACP work. Its absence for
+		// a message the user saw fail is what distinguishes "never
+		// delivered to us" from "we dropped it" — a distinction that was
+		// unrecoverable when the only per-turn line was FRAMESTATS at the
+		// END of a turn. Paired with FRAMESTATS it also yields per-turn
+		// latency for free (timestamp delta).
+		log.Printf("RECV conv=%s msg=%s bytes=%d", req.ConversationID, req.MessageID, cr.n)
 		h.handleQuery(r.Context(), w, req)
 
 	case poeproto.TypeReportReaction:
@@ -249,8 +260,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 	default:
+		poeproto.LogReject(400, "unknown request type: "+req.Type, r.RemoteAddr)
 		http.Error(w, "unknown request type: "+req.Type, http.StatusBadRequest)
 	}
+}
+
+// countingReader counts the bytes the decoder consumes so RECV can
+// report the real body size: r.ContentLength is -1 for a chunked body,
+// which is exactly what a proxied Poe request may arrive as.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // DebugHandler returns an http.Handler that dumps router state as JSON.

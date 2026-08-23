@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	kitlog "github.com/kfet/acp-kit/log"
@@ -456,12 +457,45 @@ func BearerAuth(secret string, next http.Handler) http.Handler {
 		const prefix = "Bearer "
 		h := r.Header.Get("Authorization")
 		if secret == "" || len(h) < len(prefix) || h[:len(prefix)] != prefix || h[len(prefix):] != secret {
+			LogReject(401, "unauthorized", r.RemoteAddr)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
+
+// rejectLogGap is the minimum spacing between reject WARN lines. The bot
+// endpoint sits on a public Funnel path, so unauthorized hits are
+// attacker-controlled volume: without this a scanner could write the
+// journal full and evict the lines we actually keep this log for.
+const rejectLogGap = 10 * time.Second
+
+var lastRejectLog atomic.Int64
+
+// LogReject emits a rate-limited WARN for a request refused before it
+// ever reached the router (bad auth, undecodable body, unknown type).
+// These are rare by definition in normal operation, and their absence is
+// as informative as their presence when tracing a request that vanished
+// between Poe and the agent. Dropped duplicates are counted, so a burst
+// still shows its true size on the next line that gets through.
+func LogReject(status int, reason, remote string) {
+	dropped := rejectDropped.Add(1) - 1
+	now := time.Now().UnixNano()
+	prev := lastRejectLog.Load()
+	if now-prev < int64(rejectLogGap) || !lastRejectLog.CompareAndSwap(prev, now) {
+		return
+	}
+	rejectDropped.Store(0)
+	if dropped > 0 {
+		log.Printf("WARN reject: %d %s remote=%s (+%d suppressed in last %s)",
+			status, reason, remote, dropped, rejectLogGap)
+		return
+	}
+	log.Printf("WARN reject: %d %s remote=%s", status, reason, remote)
+}
+
+var rejectDropped atomic.Int64
 
 // capWriter accumulates up to max bytes for debug-logging the head of a
 // streamed body. Once full, further writes are discarded and truncated
