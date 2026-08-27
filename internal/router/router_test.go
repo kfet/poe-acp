@@ -1779,8 +1779,8 @@ func TestRouter_ToolCallForwardsActivity(t *testing.T) {
 			ToolCallId: "t1", Kind: &k,
 		}})
 		// tool_call_update carrying a Title (exercises the pointer-title
-		// path) that also exceeds MaxFieldRunes and must be truncated.
-		longTitle := "supercalifragilistic-tool-title"
+		// path) that exceeds MaxTrailingFieldRunes and must be truncated.
+		longTitle := strings.Repeat("z", statusline.MaxTrailingFieldRunes+8)
 		a.emitUpdate(sid, acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{
 			ToolCallId: "t1", Title: &longTitle,
 		}})
@@ -1800,7 +1800,10 @@ func TestRouter_ToolCallForwardsActivity(t *testing.T) {
 	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
-	want := []string{"Running bash", "read", "supercalifra", ""}
+	want := []string{
+		"Running bash", "read",
+		strings.Repeat("z", statusline.MaxTrailingFieldRunes), "",
+	}
 	if len(sink.toolLabels) != len(want) {
 		t.Fatalf("toolLabels=%v want %v", sink.toolLabels, want)
 	}
