@@ -982,17 +982,57 @@ func toolActivityLabel(title string, kind acp.ToolKind) string {
 }
 
 // toolUpdateLabel derives the label from a tool_call_update, whose
-// title and kind are optional pointers.
+// title, kind and content are all optional.
+//
+// Precedence is title → text content → kind. Content beats kind on
+// purpose: agents that report mid-run progress do it in the update's
+// content ("wait poll 7: step 1/1 Bash") while leaving the title unset
+// and the kind at whatever the call started as, so preferring the kind
+// would keep showing a generic verb for the whole call. Only the first
+// line of a text block is considered, whitespace-collapsed and length-
+// guarded, so a multi-KB tool result cannot become the spinner label.
 func toolUpdateLabel(u *acp.SessionToolCallUpdate) string {
 	var title string
 	if u.Title != nil {
 		title = *u.Title
 	}
+	if l := capLabel(collapseSpace(title)); l != "" {
+		return l
+	}
+	if l := capLabel(updateContentLabel(u.Content)); l != "" {
+		return l
+	}
 	var kind acp.ToolKind
 	if u.Kind != nil {
 		kind = *u.Kind
 	}
-	return toolActivityLabel(title, kind)
+	return capLabel(collapseSpace(string(kind)))
+}
+
+// maxProgressLineRunes bounds the first line of a tool_call_update's
+// text content that may be used as a spinner label. A progress note is
+// a short sentence; anything longer is tool OUTPUT (a log, a diff, a
+// JSON dump) and saying its opening line is noise, not progress.
+const maxProgressLineRunes = 120
+
+// updateContentLabel returns the first usable progress line from a
+// tool_call_update's content: the first line of the first text block
+// that is non-empty and within maxProgressLineRunes. Non-text blocks
+// (diffs, terminals, images) are skipped — they have no one-line
+// spinner rendering.
+func updateContentLabel(content []acp.ToolCallContent) string {
+	for _, c := range content {
+		if c.Content == nil || c.Content.Content.Text == nil {
+			continue
+		}
+		first, _, _ := strings.Cut(c.Content.Content.Text.Text, "\n")
+		line := collapseSpace(first)
+		if line == "" || len([]rune(line)) > maxProgressLineRunes {
+			continue
+		}
+		return line
+	}
+	return ""
 }
 
 // collapseSpace trims and collapses all runs of whitespace (including
@@ -1000,10 +1040,14 @@ func toolUpdateLabel(u *acp.SessionToolCallUpdate) string {
 // can't break the one-line spinner blockquote.
 func collapseSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-// capLabel bounds a spinner label to statusline.MaxFieldRunes runes so a
-// verbose tool title can't blow up the transient status line. Rune-aware
-// so it never splits a multi-byte sequence.
-func capLabel(s string) string { return capRunes(s, statusline.MaxFieldRunes) }
+// capLabel bounds a spinner label to statusline.MaxTrailingFieldRunes
+// runes so a verbose tool title can't blow up the transient status line.
+// The activity label is the LAST segment of the spinner, so it gets the
+// wider trailing cap: a 12-rune clip turns "wait poll 7: step 1/1 Bash"
+// into "wait poll 7", and nothing follows it that a longer label could
+// push off a narrow screen. Rune-aware so it never splits a multi-byte
+// sequence.
+func capLabel(s string) string { return capRunes(s, statusline.MaxTrailingFieldRunes) }
 
 // capRunes truncates s to at most n runes. Rune-aware so it never splits
 // a multi-byte sequence (an emoji tool title stays valid UTF-8).

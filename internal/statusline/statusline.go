@@ -31,6 +31,11 @@ const ExtensionID = kit.ExtensionID
 // MaxFieldRunes caps the rendered length of mood and plan.
 const MaxFieldRunes = kit.MaxFieldRunes
 
+// MaxTrailingFieldRunes caps the LAST segment of the spinner line — the
+// live activity label. Wider than MaxFieldRunes because nothing follows
+// it, so it cannot push the mood/plan header off a narrow screen.
+const MaxTrailingFieldRunes = kit.MaxTrailingFieldRunes
+
 // Status is the renderable state of one status header.
 type Status = kit.Status
 

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Spinner shows real tool progress.** `toolUpdateLabel` now falls back to the
+  `tool_call_update`'s text content (first line, trimmed, whitespace-collapsed,
+  ignored beyond 120 runes or for non-text blocks) when the update carries no
+  title, so agents that report mid-run progress as content — fir does — no
+  longer render a generic spinner label.
+
+### Changed
+
+- Spinner activity label widened from 12 to 36 runes
+  (`acp-kit` `statusline.MaxTrailingFieldRunes`, bumped to v0.5.0). It is the
+  LAST segment of the status line, so a wider cap cannot push the mood/plan
+  header off a narrow screen; worst-case spinner line is 74 runes.
+
 ## [0.60.0] - 2026-08-23
 
 ### Added

@@ -149,8 +149,9 @@ func TestToolLines_DisabledIsSilent(t *testing.T) {
 	sink.mu.Lock()
 	labels := sink.toolLabels
 	sink.mu.Unlock()
-	if len(labels) != 1 || labels[0] != "go test ./.." {
-		t.Fatalf("toolLabels = %v, want the capped spinner label", labels)
+	// 13 runes: within the trailing-field cap, so it survives whole.
+	if len(labels) != 1 || labels[0] != "go test ./..." {
+		t.Fatalf("toolLabels = %v, want the full spinner label", labels)
 	}
 }
 
@@ -773,5 +774,95 @@ func TestToolDetails_ResultOnLaterUpdateStillLands(t *testing.T) {
 	})
 	if got, want := body(sink), "> `🔧 Bash`\n> `✓`\n> out"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestToolUpdateLabel_ContentFallback: an agent that reports mid-run
+// progress in the update's text content — leaving Title unset — must
+// still get a useful spinner label, and a bulk result blob must not
+// become one.
+func TestToolUpdateLabel_ContentFallback(t *testing.T) {
+	kind := acp.ToolKindExecute
+	title := "explicit title"
+	huge := strings.Repeat("x", maxProgressLineRunes+1) + "\nsecond line"
+	cases := []struct {
+		name string
+		u    acp.SessionToolCallUpdate
+		want string
+	}{
+		{
+			name: "content used when title absent",
+			u: acp.SessionToolCallUpdate{Kind: &kind, Content: []acp.ToolCallContent{
+				acp.ToolContent(acp.TextBlock("wait poll 7: step 1/1 Bash\nnoise")),
+			}},
+			want: "wait poll 7: step 1/1 Bash",
+		},
+		{
+			name: "whitespace collapsed and trimmed",
+			u: acp.SessionToolCallUpdate{Content: []acp.ToolCallContent{
+				acp.ToolContent(acp.TextBlock("  running\t\t bash  \nrest")),
+			}},
+			want: "running bash",
+		},
+		{
+			name: "title still wins",
+			u: acp.SessionToolCallUpdate{Title: &title, Content: []acp.ToolCallContent{
+				acp.ToolContent(acp.TextBlock("progress note")),
+			}},
+			want: "explicit title",
+		},
+		{
+			name: "oversize blob ignored, kind used instead",
+			u: acp.SessionToolCallUpdate{Kind: &kind, Content: []acp.ToolCallContent{
+				acp.ToolContent(acp.TextBlock(huge)),
+			}},
+			want: string(acp.ToolKindExecute),
+		},
+		{
+			name: "non-text block skipped",
+			u: acp.SessionToolCallUpdate{Content: []acp.ToolCallContent{
+				acp.ToolDiffContent("a.go", "new", "old"),
+				acp.ToolContent(acp.TextBlock("applying patch")),
+			}},
+			want: "applying patch",
+		},
+		{
+			name: "blank content leaves label empty",
+			u: acp.SessionToolCallUpdate{Content: []acp.ToolCallContent{
+				acp.ToolContent(acp.TextBlock("   \n  ")),
+			}},
+			want: "",
+		},
+		{
+			name: "long content capped at the trailing field width",
+			u: acp.SessionToolCallUpdate{Content: []acp.ToolCallContent{
+				acp.ToolContent(acp.TextBlock(strings.Repeat("q", statusline.MaxTrailingFieldRunes+10))),
+			}},
+			want: strings.Repeat("q", statusline.MaxTrailingFieldRunes),
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			u := c.u
+			if got := toolUpdateLabel(&u); got != c.want {
+				t.Errorf("toolUpdateLabel = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestSpinner_WorstCaseWidth documents the mobile budget after widening
+// the trailing activity cap: 74 runes with every field at its maximum.
+func TestSpinner_WorstCaseWidth(t *testing.T) {
+	line := statusline.Spinner(statusline.Status{
+		ProviderEmoji: "🏛️",
+		Mood:          strings.Repeat("m", statusline.MaxFieldRunes),
+		Plan:          strings.Repeat("p", statusline.MaxFieldRunes),
+	}, capLabel(strings.Repeat("a", 200)), "...")
+	// "> _" + 2 emoji + " • " + 12 + " • " + 12 + " • " + 36 + "..." + "_"
+	const want = 3 + 2 + 3 + statusline.MaxFieldRunes + 3 + statusline.MaxFieldRunes +
+		3 + statusline.MaxTrailingFieldRunes + 3 + 1
+	if got := len([]rune(line)); got != want {
+		t.Errorf("worst-case spinner width = %d runes, want %d (%q)", got, want, line)
 	}
 }
