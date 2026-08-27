@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.60.1] - 2026-08-27
+
 ### Fixed
 
 - **Spinner shows real tool progress.** `toolUpdateLabel` now falls back to the
