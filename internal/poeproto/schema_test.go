@@ -97,7 +97,7 @@ func TestParameterControls_MatchesPoeSchema(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			defaults := paramctl.Resolve(config.Defaults{}, tc.models, tc.cur)
-			pc := paramctl.Build(tc.models, defaults)
+			pc := paramctl.Build(tc.models, nil, defaults)
 			validate(t, schema, pc)
 		})
 	}
@@ -112,7 +112,7 @@ func TestSettingsResponse_MatchesPoeSchema(t *testing.T) {
 
 	models := []client.ModelInfo{{ID: "anthropic/sonnet", Name: "Sonnet"}}
 	defaults := paramctl.Resolve(config.Defaults{}, models, "anthropic/sonnet")
-	pc := paramctl.Build(models, defaults)
+	pc := paramctl.Build(models, nil, defaults)
 
 	resp := poeproto.SettingsResponse{
 		AllowAttachments:      true,

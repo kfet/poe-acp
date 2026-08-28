@@ -998,7 +998,7 @@ func TestHandler_ReportReactionRouterError(t *testing.T) {
 
 type errNewSessionAgent struct{ *fakeAgent }
 
-func (e *errNewSessionAgent) NewSession(_ context.Context, _ string, _ client.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
+func (e *errNewSessionAgent) NewSessionWithMeta(_ context.Context, _ string, _ client.SessionUpdateSink, _ []acp.ContentBlock, _ map[string]any) (acp.SessionId, error) {
 	return "", errors.New("new session boom")
 }
 

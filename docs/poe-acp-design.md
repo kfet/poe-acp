@@ -139,6 +139,31 @@ right thing with zero modifications.
 - Idle GC: sessions idle > `SESSION_TTL` removed from map. Agent proc
   itself runs until relay shutdown (no pool).
 
+#### Host placement (`_meta.host`)
+
+The relay starts exactly ONE agent process, and that invariant is not
+negotiable: the boot-time model probe, the command broker and the
+drain/swap supervisor all assume it. Per-conversation host selection is
+therefore expressed as a hint to that single agent rather than as a pool
+of processes:
+
+- Config declares a CURATED `hosts` list (+ optional `defaults.host`).
+  Nothing is enumerated from `~/.ssh/config`.
+- `paramctl` renders it as a `host` drop_down; `router.resolveHost` is
+  the single enforcement point — an unlisted value from Poe's untrusted
+  `parameters` dict is dropped in favour of `defaults.host`.
+- `getOrCreate` attaches `_meta.host` (string) to ACP `session/new` via
+  `client.AgentProc.NewSessionWithMeta`. Absent/empty means "local to
+  wherever the agent runs" — today's behaviour. That single key is the
+  WHOLE contract with the agent (acp-tmux places the session's tmux pane
+  accordingly); nothing else about placement crosses the boundary.
+- **Create-time only.** `sessionState.host` is immutable for the life of
+  the session. A live conversation whose dropdown changes keeps its
+  session and gets a one-off notice (`Router.noteHostChange`): moving it
+  would mean killing the pane and silently discarding the agent's
+  context — a catastrophic answer to twiddling a dropdown. Contrast
+  `model`, which is applied mid-session via `session/set_model`.
+
 #### Attachments
 
 For every attachment on the latest user turn the relay produces ACP

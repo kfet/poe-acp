@@ -43,7 +43,8 @@ type fakeAgent struct {
 	listErr          error
 	resumeErr        error
 	newSessErr       error
-	newSessErrOnCall int32 // when >0, the Nth NewSession call returns an error
+	newSessErrOnCall int32          // when >0, the Nth NewSession call returns an error
+	lastMeta         map[string]any // extraMeta of the last NewSessionWithMeta call
 	cancelErr        error
 	setModelErr      error
 	setConfigErr     error
@@ -87,7 +88,7 @@ func (f *fakeAgent) ResumeSession(_ context.Context, _ string, sid acp.SessionId
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeAgent) NewSession(_ context.Context, _ string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
+func (f *fakeAgent) NewSessionWithMeta(_ context.Context, _ string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock, extraMeta map[string]any) (acp.SessionId, error) {
 	n := atomic.AddInt32(&f.newSessCalls, 1)
 	if f.newSessErr != nil {
 		return "", f.newSessErr
@@ -101,6 +102,7 @@ func (f *fakeAgent) NewSession(_ context.Context, _ string, sink client.SessionU
 	id := acp.SessionId("sess-" + time.Now().Format("150405") + "-" + itoa(f.nextID))
 	f.sinks[id] = sink
 	f.lastSysBlocks = sysBlocks
+	f.lastMeta = extraMeta
 	return id, nil
 }
 

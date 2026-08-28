@@ -104,7 +104,7 @@ func TestResolve_NoModelsNoDefault(t *testing.T) {
 
 func TestBuild_NoModelsOmitsProviderAndModelDropdowns(t *testing.T) {
 	t.Parallel()
-	pc := Build(nil, router.Options{Thinking: DefaultThinking})
+	pc := Build(nil, nil, router.Options{Thinking: DefaultThinking})
 	for _, c := range pc.Sections[0].Controls {
 		switch c.ParameterName {
 		case "model", "provider":
@@ -119,7 +119,7 @@ func TestBuild_NoModelsOmitsProviderAndModelDropdowns(t *testing.T) {
 func TestBuild_WithModels_CascadingProviderAndModelDropdowns(t *testing.T) {
 	t.Parallel()
 	defs := router.Options{Model: "anthropic/sonnet", Thinking: "medium"}
-	pc := Build(twoModels, defs)
+	pc := Build(twoModels, nil, defs)
 
 	ctls := pc.Sections[0].Controls
 	// Provider dropdown is first.
@@ -223,7 +223,7 @@ func TestBuild_ProviderGrouping(t *testing.T) {
 		t.Fatalf("providers = %v want %v", provs, want)
 	}
 
-	pc := Build(models, router.Options{Thinking: DefaultThinking})
+	pc := Build(models, nil, router.Options{Thinking: DefaultThinking})
 	ctls := pc.Sections[0].Controls
 	// Inner model options should appear in the order they were given.
 	var openaiInner, otherInner []string
@@ -263,7 +263,7 @@ func TestBuild_ProviderParamSanitisation(t *testing.T) {
 		{ID: "Foo-Bar.Baz/model-x", Name: "X"},
 		{ID: "openai/gpt-5", Name: "GPT-5"},
 	}
-	pc := Build(models, router.Options{Thinking: DefaultThinking})
+	pc := Build(models, nil, router.Options{Thinking: DefaultThinking})
 	var cond *poeproto.Control
 	for i := range pc.Sections[0].Controls {
 		c := &pc.Sections[0].Controls[i]
@@ -304,7 +304,7 @@ func TestBuild_SingleProvider_CollapsesToBareModel(t *testing.T) {
 		{ID: "sakana/fugu-ultra", Name: "Fugu Ultra"},
 		{ID: "sakana/fugu-mini", Name: "Fugu Mini"},
 	}
-	pc := Build(models, router.Options{Model: "sakana/fugu-mini", Thinking: DefaultThinking})
+	pc := Build(models, nil, router.Options{Model: "sakana/fugu-mini", Thinking: DefaultThinking})
 	ctls := pc.Sections[0].Controls
 
 	// First (and only) model-related control must be a flat
@@ -373,7 +373,7 @@ func TestBuild_SingleProvider_DefaultsFirstModelWhenUnpinned(t *testing.T) {
 		{ID: "sakana/fugu-ultra", Name: "Fugu Ultra"},
 		{ID: "sakana/fugu-mini", Name: "Fugu Mini"},
 	}
-	pc := Build(models, router.Options{Thinking: DefaultThinking})
+	pc := Build(models, nil, router.Options{Thinking: DefaultThinking})
 	d, _ := pc.Sections[0].Controls[0].DefaultValue.(string)
 	if d != "sakana/fugu-ultra" {
 		t.Fatalf("model default = %v want first model sakana/fugu-ultra", pc.Sections[0].Controls[0].DefaultValue)
@@ -390,7 +390,7 @@ func TestBuild_SingleProvider_DefaultModelOutsideGroupFallsToFirst(t *testing.T)
 		{ID: "sakana/fugu-ultra", Name: "Fugu Ultra"},
 	}
 	// Bypass Resolve so an out-of-list default reaches Build directly.
-	pc := Build(models, router.Options{Model: "sakana/ghost", Thinking: DefaultThinking})
+	pc := Build(models, nil, router.Options{Model: "sakana/ghost", Thinking: DefaultThinking})
 	d, _ := pc.Sections[0].Controls[0].DefaultValue.(string)
 	if d != "sakana/fugu-ultra" {
 		t.Fatalf("model default = %v want first model when configured default is unknown", pc.Sections[0].Controls[0].DefaultValue)
@@ -408,7 +408,7 @@ func TestBuildAndResolveAgree_SingleProvider(t *testing.T) {
 		{ID: "sakana/fugu-mini", Name: "Fugu Mini"},
 	}
 	d := Resolve(config.Defaults{Model: "sakana/fugu-mini"}, models, "")
-	pc := Build(models, d)
+	pc := Build(models, nil, d)
 	schemaDefaults := map[string]any{}
 	collect(pc.Sections, schemaDefaults)
 	if got, want := schemaDefaults["model"], d.Model; got != want {
@@ -448,7 +448,7 @@ func TestBuild_DefaultModelProviderNotInList(t *testing.T) {
 		{ID: "google/gemini", Name: "Gemini"},
 	}
 	defs := router.Options{Model: "anthropic/sonnet", Thinking: DefaultThinking}
-	pc := Build(models, defs)
+	pc := Build(models, nil, defs)
 	prov := pc.Sections[0].Controls[0]
 	if prov.ParameterName != "provider" {
 		t.Fatalf("first ctl = %+v", prov)
@@ -490,7 +490,7 @@ func TestBuildAndResolveAgree(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := Resolve(tc.cfg, tc.models, tc.current)
-			pc := Build(tc.models, d)
+			pc := Build(tc.models, nil, d)
 			schemaDefaults := map[string]any{}
 			collect(pc.Sections, schemaDefaults)
 			if got, want := schemaDefaults["thinking"], d.Thinking; got != want {
@@ -562,7 +562,7 @@ func TestProviderOnlyResolvesToSchemaDefault(t *testing.T) {
 	}
 	for _, cfgModel := range []string{"", "anthropic/claude-opus-5", "sakana/shinka-1"} {
 		defs := Resolve(config.Defaults{Model: cfgModel}, models, "")
-		pc := Build(models, defs)
+		pc := Build(models, nil, defs)
 		schemaDefaults := map[string]any{}
 		collect(pc.Sections, schemaDefaults)
 		for _, prov := range Providers(models) {
@@ -605,7 +605,7 @@ func TestProviderOnlyResolvesToSchemaDefaultWithPins(t *testing.T) {
 		for _, cfgModel := range []string{"", "anthropic/claude-opus-5"} {
 			models := config.OrderPinned(raw, pinned)
 			defs := Resolve(config.Defaults{Model: cfgModel}, models, "")
-			pc := Build(models, defs)
+			pc := Build(models, nil, defs)
 			schemaDefaults := map[string]any{}
 			collect(pc.Sections, schemaDefaults)
 			for _, prov := range Providers(models) {
@@ -648,11 +648,11 @@ func TestBuild_PinnedModelsOrderAndSchema(t *testing.T) {
 
 	// Schema reflects the ordering and serializes differently.
 	def := router.Options{}
-	before, err := json.Marshal(Build(models, def))
+	before, err := json.Marshal(Build(models, nil, def))
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, err := json.Marshal(Build(ordered, def))
+	after, err := json.Marshal(Build(ordered, nil, def))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,7 +661,7 @@ func TestBuild_PinnedModelsOrderAndSchema(t *testing.T) {
 	}
 
 	// Deterministic: same inputs → same bytes.
-	again, _ := json.Marshal(Build(config.OrderPinned(models, pinned), def))
+	again, _ := json.Marshal(Build(config.OrderPinned(models, pinned), nil, def))
 	if !bytes.Equal(after, again) {
 		t.Fatalf("ordering not deterministic")
 	}
@@ -676,8 +676,8 @@ func TestConfig_OrderPinned_SchemaHashChanges(t *testing.T) {
 		{ID: "a/x", Name: "X"},
 		{ID: "b/y", Name: "Y"},
 	}
-	h1 := sha256.Sum256(mustJSON(t, Build(models, router.Options{})))
-	h2 := sha256.Sum256(mustJSON(t, Build(config.OrderPinned(models, []string{"b/y"}), router.Options{})))
+	h1 := sha256.Sum256(mustJSON(t, Build(models, nil, router.Options{})))
+	h2 := sha256.Sum256(mustJSON(t, Build(config.OrderPinned(models, []string{"b/y"}), nil, router.Options{})))
 	if h1 == h2 {
 		t.Fatalf("schema hash unchanged by pinning")
 	}

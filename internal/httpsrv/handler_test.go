@@ -33,7 +33,7 @@ func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]client.SessionI
 func (f *fakeAgent) ResumeSession(_ context.Context, _ string, _ acp.SessionId, _ client.SessionUpdateSink) error {
 	return nil
 }
-func (f *fakeAgent) NewSession(_ context.Context, _ string, sink client.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
+func (f *fakeAgent) NewSessionWithMeta(_ context.Context, _ string, sink client.SessionUpdateSink, _ []acp.ContentBlock, _ map[string]any) (acp.SessionId, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.n++

@@ -118,7 +118,7 @@ type Attachment struct {
 // as an interface for testability.
 type Agent interface {
 	Caps() client.Caps
-	NewSession(ctx context.Context, cwd string, sink client.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error)
+	NewSessionWithMeta(ctx context.Context, cwd string, sink client.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock, extraMeta map[string]any) (acp.SessionId, error)
 	ListSessions(ctx context.Context, cwd string) ([]client.SessionInfo, error)
 	ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink client.SessionUpdateSink) error
 	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
@@ -156,6 +156,12 @@ type Options struct {
 	// (completed/failed) `tool_call_update`. Only has effect when
 	// ShowTools is also true. Relay-side only.
 	ShowToolDetails bool
+	// Host is the ssh target the conversation's agent session runs on,
+	// sent to the agent as `_meta.host` on session/new. CREATE-TIME
+	// ONLY: a live session is never moved (that would tear down the
+	// pane and lose the agent's context) — see Router.noteHostChange.
+	// "" = no host hint, i.e. wherever the agent itself runs.
+	Host string
 }
 
 // Config configures a Router.
@@ -199,6 +205,13 @@ type Config struct {
 	// the same list (the 8c7a7e8 no-drift invariant; see
 	// config.OrderPinned). Nil = agent order unchanged.
 	ModelOrder func([]client.ModelInfo) []client.ModelInfo
+	// Hosts is the operator's curated allowlist of ssh targets a
+	// conversation may place its agent session on (config.Values of
+	// the config `hosts` list). It is the ENFORCEMENT point for the
+	// untrusted `host` Poe parameter: a value not in this list is
+	// dropped and Defaults.Host is used instead. Empty disables the
+	// feature — no `_meta.host` is ever sent (today's behaviour).
+	Hosts []string
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
 	// HTTPClient is used to fetch attachment bytes (download-to-disk
@@ -320,6 +333,15 @@ type sessionState struct {
 	// drainStop is closed by gcOnce when the session is evicted; the
 	// drain goroutine exits on the next select iteration.
 	drainStop chan struct{}
+
+	// host is the ssh target this session was CREATED on (the resolved
+	// Options.Host at acquisition time), or "" when the bot has no host
+	// list configured. Immutable for the session's lifetime: moving a
+	// live session would mean destroying its pane and the agent's
+	// context, so a later turn asking for a different host gets a
+	// message instead (noteHostChange). Written once in getOrCreate
+	// before the session is installed; read-only afterwards.
+	host string
 
 	// applied tracks the last successfully-applied agent options, so
 	// we only call set_model / set_config_option when values change.
@@ -1229,7 +1251,7 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 		return fmt.Errorf("empty user message")
 	}
 
-	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query)
+	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query, opts.Host)
 	if err != nil {
 		_ = sink.Error(fmt.Sprintf("relay: %v", err), "user_caused_error")
 		_ = sink.Done()
@@ -1346,7 +1368,7 @@ func (r *Router) recoverAndReplay(ctx context.Context, convID, userID string, qu
 	// otherwise it opens a new session. Re-resuming under a new sid is the
 	// intended behaviour here — the original leak was fir orphaning the OLD
 	// in-memory session, which session/release + the idle reaper now reclaim.
-	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query)
+	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query, opts.Host)
 	if err != nil {
 		_ = sink.Error(fmt.Sprintf("relay: %v", err), "user_caused_error")
 		_ = sink.Done()
@@ -1449,7 +1471,10 @@ func (r *Router) ReportReaction(ctx context.Context, convID, userID, messageID, 
 		Reaction:  kind,
 		Action:    action,
 	})
-	st, _, err := r.getOrCreate(ctx, convID, userID, nil)
+	// A reaction never carries Poe parameters, so it cannot express a
+	// host: fall through to the configured default (a hot session is
+	// reused anyway, which is the overwhelmingly common case).
+	st, _, err := r.getOrCreate(ctx, convID, userID, nil, "")
 	if err != nil {
 		return fmt.Errorf("reaction: getOrCreate: %w", err)
 	}
@@ -1605,6 +1630,10 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 			sink.FirstChunk()
 			_ = sink.Text(fmt.Sprintf("_(option not applied: %v)_\n\n", applyErr))
 		}
+		// Host is the one option that is NOT applied mid-session: the
+		// session's pane already exists elsewhere, so say so instead of
+		// tearing it down.
+		r.noteHostChange(st, req.opts, sink)
 	}
 
 	blocks := req.blocks
@@ -1630,7 +1659,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 		showToolDetails: req.opts.ShowTools && req.opts.ShowToolDetails,
 		tools:           newToolStates(req.opts),
 		scanner:         r.newAttachScanner(sink, st.cwd),
-		escaper:         &flagEscaper{},
+		escaper:         &flagEscaper{withHost: len(r.cfg.Hosts) > 0},
 	}}:
 	case <-st.drainStop:
 		// The session was torn down before this turn could start: the drain
@@ -1767,6 +1796,62 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 	return nil
 }
 
+// resolveHost validates a requested host against the operator's curated
+// allowlist (Config.Hosts) and returns the host to actually create the
+// session on. Poe parameters are untrusted — another bot calling ours can
+// inject any `host` string — so an unlisted value is dropped rather than
+// handed to the agent as an ssh destination. Falls back to
+// Defaults.Host, which is itself validated against the list at config
+// load. Returns "" when no host list is configured, which keeps
+// _meta.host off the wire entirely.
+func (r *Router) resolveHost(want string) string {
+	if len(r.cfg.Hosts) == 0 {
+		return r.cfg.Defaults.Host
+	}
+	for _, h := range r.cfg.Hosts {
+		if want != "" && h == want {
+			return want
+		}
+	}
+	if want != "" {
+		log.Printf("router: ignoring host %q: not in the configured hosts list", want)
+	}
+	return r.cfg.Defaults.Host
+}
+
+// noteHostChange reports a host dropdown change on a LIVE conversation.
+// Host is create-time only: the session's pane already exists on
+// st.host, and recreating it elsewhere would silently discard the
+// agent's accumulated context — the worst possible answer to twiddling
+// a dropdown. So the session is kept as-is and the user is told where
+// the change will land instead. The notice fires once per change (the
+// requested host is recorded in st.applied.Host) so a long conversation
+// isn't nagged on every turn.
+func (r *Router) noteHostChange(st *sessionState, opts Options, sink ChunkSink) {
+	want := r.resolveHost(opts.Host)
+	if want == "" || want == st.applied.Host {
+		return
+	}
+	st.applied.Host = want
+	if want == st.host {
+		return
+	}
+	kitlog.Debugf("noteHostChange conv=%s sid=%s: want host %q, session lives on %q — keeping session",
+		st.convID, string(st.sessionID), want, st.host)
+	sink.FirstChunk()
+	_ = sink.Text(fmt.Sprintf("_(host takes effect on the next conversation: this one stays on `%s`)_\n\n",
+		hostLabel(st.host)))
+}
+
+// hostLabel renders a session's host for a user-facing notice; a session
+// created before any host was configured has none.
+func hostLabel(host string) string {
+	if host == "" {
+		return "the agent's own host"
+	}
+	return host
+}
+
 // ParseOptions extracts a strongly-typed Options struct from Poe's
 // `parameters` dict, overlaying valid keys on top of defaults. Unknown
 // keys and wrong-type values are silently dropped — Poe documents that
@@ -1823,6 +1908,12 @@ func ParseOptions(params map[string]any, defaults Options, models []client.Model
 	}
 	if v, ok := params[poeproto.ParamShowToolDetails].(bool); ok {
 		o.ShowToolDetails = v
+	}
+	// Host is passed through verbatim; the allowlist check happens at
+	// the single point of use (Router.resolveHost), which is also where
+	// a host arriving from any other path is validated.
+	if v, ok := params[poeproto.ParamHost].(string); ok && v != "" {
+		o.Host = v
 	}
 	return o
 }
@@ -2699,7 +2790,7 @@ var ErrSessionBusy = errors.New("a reply is still in progress")
 // agent session if necessary. freshSeed is true iff the caller should seed
 // the next prompt with the full transcript (cold path that did not resume,
 // AND has prior turns to seed from).
-func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query []Turn) (st *sessionState, freshSeed bool, err error) {
+func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query []Turn, host string) (st *sessionState, freshSeed bool, err error) {
 	var forceFresh bool
 	incomingIDs := userTurnIDs(query)
 	incomingFP := turnFingerprints(query)
@@ -2746,7 +2837,8 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	} else {
 		r.mu.Unlock()
 	}
-	kitlog.Debugf("getOrCreate conv=%s user=%s -> miss, query_len=%d force_fresh=%v", convID, userID, len(query), forceFresh)
+	host = r.resolveHost(host)
+	kitlog.Debugf("getOrCreate conv=%s user=%s -> miss, query_len=%d force_fresh=%v host=%q", convID, userID, len(query), forceFresh, host)
 
 	cwd := filepath.Join(r.cfg.StateDir, "convs", convID)
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
@@ -2758,6 +2850,8 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		userID:       userID,
 		cwd:          cwd,
 		systemPrompt: r.systemPromptForSession(),
+		host:         host,
+		applied:      Options{Host: host},
 		lastUsedNs:   r.cfg.Now().UnixNano(),
 		chunkCh:      make(chan chunkMsg, 256),
 		drainStop:    make(chan struct{}),
@@ -2814,7 +2908,16 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	if st.systemPrompt != "" && caps.SystemPrompt {
 		sysBlocks = []acp.ContentBlock{acp.TextBlock(st.systemPrompt)}
 	}
-	sid, nerr := r.cfg.Agent.NewSession(acqCtx, cwd, st, sysBlocks)
+	// _meta.host is the whole wire contract for host placement: an
+	// agent that multiplexes tmux panes over ssh (acp-tmux) reads it at
+	// session create; absent/empty means "local to wherever the agent
+	// runs". Nothing else about placement crosses the boundary, and it
+	// is never sent again for the life of the session.
+	var extraMeta map[string]any
+	if host != "" {
+		extraMeta = map[string]any{poeproto.ParamHost: host}
+	}
+	sid, nerr := r.cfg.Agent.NewSessionWithMeta(acqCtx, cwd, st, sysBlocks, extraMeta)
 	if nerr != nil {
 		return nil, false, fmt.Errorf("acp new session: %w", nerr)
 	}

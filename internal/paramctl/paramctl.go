@@ -142,6 +142,11 @@ func Resolve(cfg config.Defaults, models []client.ModelInfo, probeCurrent string
 	if cfg.ShowToolDetails != nil {
 		o.ShowToolDetails = *cfg.ShowToolDetails
 	}
+	// Host has no built-in fallback: "" means "no host hint", i.e.
+	// wherever the agent itself runs — today's behaviour. Membership in
+	// the curated `hosts` list is enforced by config.Validate at load,
+	// and again by router.resolveHost at the point of use.
+	o.Host = cfg.Host
 
 	// Model resolution: only meaningful if we have an available list.
 	if len(models) == 0 {
@@ -222,7 +227,7 @@ func Providers(models []client.ModelInfo) []string {
 // priority semantics (capability score, cost tier) that the relay
 // can't see, so re-sorting here would clobber a meaningful order.
 // Providers are listed in first-seen order for the same reason.
-func Build(models []client.ModelInfo, defaults router.Options) *poeproto.ParameterControls {
+func Build(models []client.ModelInfo, hosts []config.Host, defaults router.Options) *poeproto.ParameterControls {
 	var controls []poeproto.Control
 
 	switch groups := groupByProvider(models); {
@@ -332,6 +337,28 @@ func Build(models []client.ModelInfo, defaults router.Options) *poeproto.Paramet
 		},
 	)
 
+	// Host: create-time placement of the conversation's agent session.
+	// Omitted entirely when the operator configured no host list, so an
+	// unconfigured bot serves byte-identical settings to before the
+	// feature existed. Curated only — the relay never enumerates ssh
+	// hosts itself.
+	if len(hosts) > 0 {
+		hostOpts := make([]poeproto.ValueNamePair, 0, len(hosts))
+		for _, h := range hosts {
+			hostOpts = append(hostOpts, poeproto.ValueNamePair{Value: h.Value, Name: h.Label()})
+		}
+		controls = append(controls, poeproto.Control{
+			Control:       "drop_down",
+			Label:         "Host (new chats)",
+			ParameterName: poeproto.ParamHost,
+			Options:       hostOpts,
+			// Same rule as Model: the configured default when it is in
+			// the list, else the first option, so the UI never shows an
+			// empty selection. config.Validate guarantees membership.
+			DefaultValue: defaultHost(hosts, defaults.Host),
+		})
+	}
+
 	return &poeproto.ParameterControls{
 		APIVersion: poeproto.ParameterControlsAPIVersion,
 		Sections: []poeproto.Section{{
@@ -348,4 +375,16 @@ func hasProvider(groups []providerGroup, id string) bool {
 		}
 	}
 	return false
+}
+
+// defaultHost returns the Host dropdown's default_value: want when it is
+// one of the configured hosts, otherwise the first host in the list.
+// hosts is non-empty at every call site.
+func defaultHost(hosts []config.Host, want string) string {
+	for _, h := range hosts {
+		if h.Value == want {
+			return want
+		}
+	}
+	return hosts[0].Value
 }
