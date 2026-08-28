@@ -259,6 +259,10 @@ keep working.
     "coalesce_grid": true,
     "spinner_animate": false
   },
+  "hosts": [
+    { "value": "zboxserver", "name": "zbox (server)" },
+    { "value": "boxy" }
+  ],
   "agent": {
     "profile": "fir"
   }
@@ -343,6 +347,27 @@ keep working.
   identical frame purely so Poe does not content-starvation-drop a long
   tool call. Set it to `true` to get the moving dots back at the cost of
   a wire frame per heartbeat.
+- **`hosts`** — CURATED list of ssh targets a conversation may run its
+  agent session on, in dropdown order. Each entry is
+  `{"value": "<ssh destination>", "name": "<label>"}`; `name` is
+  optional and defaults to `value`. The relay never enumerates hosts
+  itself (no `~/.ssh/config` parsing) and rejects any `host` parameter
+  value that is not in this list — Poe parameters are untrusted input,
+  and the value becomes an ssh destination on the agent side. Omitted
+  (the default) = no `Host` dropdown, no host ever sent, i.e. every
+  session runs wherever the agent runs. Only meaningful with an agent
+  that understands the create-time `_meta.host` hint (acp-tmux).
+- **`defaults.host`** — the ssh target new conversations run on. Must
+  appear in `hosts` when that list is non-empty (rejected at boot
+  otherwise); set on its own it pins every conversation to one host
+  with no user-facing dropdown. **Create-time only:** the value is sent
+  once, as `_meta.host` on ACP `session/new`. Changing the `Host`
+  dropdown mid-conversation deliberately does NOT move the live session
+  — that would destroy the agent's pane and its accumulated context —
+  the relay keeps the session and replies `_(host takes effect on the
+  next conversation: this one stays on `<host>`)_`. Start a new chat to
+  land on the new host. (Contrast `model`, which IS applied
+  mid-session.)
 - **`agent.profile`** — reserved (today the relay only knows fir's
   `set_config_option` schema; multi-agent profile selection lands in a
   follow-up).

@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`host` parameter control — pick which ssh host a NEW conversation's
+  agent session runs on.** A curated `hosts` list in config.json (plus
+  optional `defaults.host`) becomes a `Host (new chats)` dropdown; the
+  resolved value is attached as `_meta.host` on the ACP `session/new`
+  request, which is the entire wire contract with the agent (acp-tmux
+  reads it to place the session's tmux pane over ssh). Nothing is
+  auto-enumerated — no `~/.ssh/config` parsing — and a `host` parameter
+  value outside the configured list is dropped (Poe parameters are
+  untrusted, and the value becomes an ssh destination on the agent
+  side). The relay still starts exactly ONE agent process; host
+  selection is per session, not per process.
+  **Create-time only:** changing the dropdown on a live conversation
+  does NOT move or tear down the session — that would destroy the
+  agent's pane and its context — the relay keeps the session and says
+  `_(host takes effect on the next conversation: this one stays on
+  `<host>`)_` once per change. With no `hosts` and no `defaults.host`
+  configured, behaviour is unchanged: the dropdown is absent, no
+  `_meta` is sent on session create, and `--host` in agent output is
+  left verbatim (it becomes a reserved flag only for bots that declare
+  the control).
+
+### Changed
+
+- acp-kit bumped to v0.6.0 for `client.AgentProc.NewSessionWithMeta`,
+  the generic create-time `_meta` passthrough the `host` hint rides on.
+
 ## [0.60.1] - 2026-08-27
 
 ### Fixed

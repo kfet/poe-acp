@@ -43,8 +43,8 @@ var httpClient = http.DefaultClient
 // pinned_models silently did nothing in the UI.
 //
 // OrderPinned is idempotent, so passing an already-pinned list is safe.
-func buildControls(models []client.ModelInfo, pinned []string, defaults router.Options) *poeproto.ParameterControls {
-	return paramctl.Build(config.OrderPinned(models, pinned), defaults)
+func buildControls(models []client.ModelInfo, pinned []string, hosts []config.Host, defaults router.Options) *poeproto.ParameterControls {
+	return paramctl.Build(config.OrderPinned(models, pinned), hosts, defaults)
 }
 
 // maybeRefetchSettings hashes the freshly built parameter_controls and

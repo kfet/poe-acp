@@ -62,6 +62,19 @@ type Config struct {
 	// deprecated alias), so existing flag-based deployments keep working.
 	PoeMCP bool `json:"poe_mcp,omitempty"`
 
+	// Hosts is the CURATED list of ssh targets a conversation may run
+	// its agent session on, in the order they appear in the Poe `Host`
+	// dropdown. Nothing is auto-enumerated: the relay never reads
+	// ~/.ssh/config — an operator lists exactly the hosts this bot is
+	// allowed to reach, and the relay rejects anything else a caller
+	// sends in the `host` parameter.
+	//
+	// Empty (the default) means the Host dropdown is omitted entirely
+	// and no `host` is ever sent to the agent, i.e. every session runs
+	// wherever the agent itself runs. Only meaningful with an agent
+	// that understands the create-time `_meta.host` hint (acp-tmux).
+	Hosts []Host `json:"hosts,omitempty"`
+
 	// PinnedModels lists model ids ("<provider>/<modelId>") that are
 	// hoisted to the top of the Poe model dropdowns, in the order given,
 	// while every other model keeps the agent's own relative order
@@ -74,6 +87,39 @@ type Config struct {
 	PinnedModels []string `json:"pinned_models,omitempty"`
 }
 
+// Host is one selectable ssh target in the curated `hosts` list.
+type Host struct {
+	// Value is what the relay sends to the agent as `_meta.host` — an
+	// ssh destination the agent host can reach (a ~/.ssh/config alias,
+	// user@host, an IP). Required.
+	Value string `json:"value"`
+	// Name is the label shown in the Poe dropdown. Empty means "use
+	// Value".
+	Name string `json:"name,omitempty"`
+}
+
+// Label returns the dropdown label for this host: Name when set,
+// otherwise Value.
+func (h Host) Label() string {
+	if h.Name != "" {
+		return h.Name
+	}
+	return h.Value
+}
+
+// Values returns the wire values of a host list, in order. Used as the
+// router's allowlist for the untrusted `host` parameter.
+func Values(hosts []Host) []string {
+	if len(hosts) == 0 {
+		return nil
+	}
+	out := make([]string, len(hosts))
+	for i, h := range hosts {
+		out[i] = h.Value
+	}
+	return out
+}
+
 // Defaults pins per-conversation parameter defaults independently of
 // the agent's own current configuration. Stable across restarts so
 // Poe's cached settings response stays valid.
@@ -84,6 +130,17 @@ type Defaults struct {
 	// dropdown's default_value (UI shows first option, runtime falls
 	// through to the agent's own default).
 	Model string `json:"model,omitempty"`
+	// Host is the ssh target new conversations run on, sent to the
+	// agent as `_meta.host` on session create. It must appear in the
+	// top-level `hosts` list when that list is non-empty (Validate
+	// enforces it). Set without a `hosts` list it pins every
+	// conversation to one host with no user-facing dropdown. Empty
+	// means "no host hint" — the agent's own machine.
+	//
+	// Create-time only: changing the dropdown mid-conversation does
+	// NOT move a live session (it would destroy the agent's context);
+	// the relay keeps the session and says so.
+	Host string `json:"host,omitempty"`
 	// Thinking is one of "off","minimal","low","medium","high","xhigh","max". Empty
 	// string means "use built-in default" (currently "medium").
 	Thinking string `json:"thinking,omitempty"`
@@ -285,6 +342,21 @@ func (c Config) Validate() error {
 	case "", "off", "minimal", "low", "medium", "high", "xhigh", "max":
 	default:
 		return fmt.Errorf("defaults.thinking: invalid %q (want off|minimal|low|medium|high|xhigh|max)", c.Defaults.Thinking)
+	}
+	seen := make(map[string]struct{}, len(c.Hosts))
+	for i, h := range c.Hosts {
+		if h.Value == "" {
+			return fmt.Errorf("hosts[%d].value: must not be empty", i)
+		}
+		if _, dup := seen[h.Value]; dup {
+			return fmt.Errorf("hosts[%d].value: duplicate %q", i, h.Value)
+		}
+		seen[h.Value] = struct{}{}
+	}
+	if c.Defaults.Host != "" && len(c.Hosts) > 0 {
+		if _, ok := seen[c.Defaults.Host]; !ok {
+			return fmt.Errorf("defaults.host: %q is not in the `hosts` list", c.Defaults.Host)
+		}
 	}
 	return nil
 }

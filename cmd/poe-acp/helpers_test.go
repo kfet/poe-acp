@@ -445,14 +445,14 @@ func TestBuildControls_AppliesPins(t *testing.T) {
 		return ""
 	}
 
-	pc := buildControls(models, pinned, router.Options{})
+	pc := buildControls(models, pinned, nil, router.Options{})
 	if got := firstProviderOption(pc); got != "openrouter" {
 		t.Fatalf("pin did not hoist provider: first provider = %q, want %q", got, "openrouter")
 	}
 
 	// Idempotence: feeding an already-pinned list must not change it.
 	pre := config.OrderPinned(models, pinned)
-	pc2 := buildControls(pre, pinned, router.Options{})
+	pc2 := buildControls(pre, pinned, nil, router.Options{})
 	if schemaHash(pc) != schemaHash(pc2) {
 		t.Fatal("buildControls is not idempotent: pinned vs double-pinned schemas differ")
 	}

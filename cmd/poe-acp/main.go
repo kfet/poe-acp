@@ -276,8 +276,9 @@ func main() {
 	}
 	models = pin(models)
 	defaults := paramctl.Resolve(cfg.Defaults, models, current)
-	log.Printf("resolved defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
-		defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails)
+	log.Printf("resolved defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v host=%q (%d selectable)",
+		defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails,
+		defaults.Host, len(cfg.Hosts))
 
 	// Router
 	broker := command.New(agent)
@@ -295,6 +296,7 @@ func main() {
 		AccessKey:            secret,
 		MCPAttachEnabled:     mcpEnabled,
 		ModelOrder:           pin,
+		Hosts:                config.Values(cfg.Hosts),
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
@@ -350,7 +352,7 @@ func main() {
 			// go through buildControls so the operator's pins are applied
 			// to the schema Poe actually fetches.
 			m, _ := agent.Models()
-			return buildControls(m, cfg.PinnedModels, defaults)
+			return buildControls(m, cfg.PinnedModels, cfg.Hosts, defaults)
 		},
 		Commands: broker,
 	})
@@ -362,7 +364,7 @@ func main() {
 	// unset (operator hasn't opted in).
 	if cfg.BotName != "" {
 		go maybeRefetchSettings(ctx, stateDir, cfg.BotName, secret,
-			buildControls(models, cfg.PinnedModels, defaults), "")
+			buildControls(models, cfg.PinnedModels, cfg.Hosts, defaults), "")
 	} else {
 		log.Printf("config: bot_name unset; Poe settings cache will not auto-refetch")
 	}

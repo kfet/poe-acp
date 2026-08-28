@@ -38,7 +38,7 @@ func (a *wedgedAgent) ListSessions(context.Context, string) ([]client.SessionInf
 func (a *wedgedAgent) ResumeSession(context.Context, string, acp.SessionId, client.SessionUpdateSink) error {
 	return nil
 }
-func (a *wedgedAgent) NewSession(_ context.Context, _ string, sink client.SessionUpdateSink, _ []acp.ContentBlock) (acp.SessionId, error) {
+func (a *wedgedAgent) NewSessionWithMeta(_ context.Context, _ string, sink client.SessionUpdateSink, _ []acp.ContentBlock, _ map[string]any) (acp.SessionId, error) {
 	id := acp.SessionId("s-wedge")
 	a.sinks[id] = sink
 	return id, nil

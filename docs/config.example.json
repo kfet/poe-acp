@@ -9,8 +9,13 @@
     "show_tool_details": false,
     "coalesce_ms": 0,
     "coalesce_grid": true,
-    "spinner_animate": true
+    "spinner_animate": true,
+    "host": "zboxserver"
   },
+  "hosts": [
+    { "value": "zboxserver", "name": "zbox (server)" },
+    { "value": "boxy" }
+  ],
   "agent": {
     "profile": "fir"
   }

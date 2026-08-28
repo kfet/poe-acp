@@ -969,8 +969,8 @@ type raceInjectingAgent struct {
 	convID string
 }
 
-func (a *raceInjectingAgent) NewSession(ctx context.Context, cwd string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
-	sid, err := a.fakeAgent.NewSession(ctx, cwd, sink, sysBlocks)
+func (a *raceInjectingAgent) NewSessionWithMeta(ctx context.Context, cwd string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock, extraMeta map[string]any) (acp.SessionId, error) {
+	sid, err := a.fakeAgent.NewSessionWithMeta(ctx, cwd, sink, sysBlocks, extraMeta)
 	if err != nil {
 		return sid, err
 	}
@@ -998,7 +998,7 @@ func TestRouter_GetOrCreate_LostRaceFreshSeedFalse(t *testing.T) {
 		{Role: "bot", Content: "reply"},
 		{Role: "user", Content: "second"},
 	}
-	st, freshSeed, err := r.getOrCreate(context.Background(), "c1", "u", query)
+	st, freshSeed, err := r.getOrCreate(context.Background(), "c1", "u", query, "")
 	if err != nil {
 		t.Fatal(err)
 	}

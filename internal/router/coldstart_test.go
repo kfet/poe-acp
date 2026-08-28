@@ -16,11 +16,11 @@ type ctxCheckingAgent struct {
 	*fakeAgent
 }
 
-func (a *ctxCheckingAgent) NewSession(ctx context.Context, cwd string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, error) {
+func (a *ctxCheckingAgent) NewSessionWithMeta(ctx context.Context, cwd string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock, extraMeta map[string]any) (acp.SessionId, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return a.fakeAgent.NewSession(ctx, cwd, sink, sysBlocks)
+	return a.fakeAgent.NewSessionWithMeta(ctx, cwd, sink, sysBlocks, extraMeta)
 }
 
 func TestRouter_GetOrCreate_NewSessionSurvivesCallerCancel(t *testing.T) {
@@ -36,7 +36,7 @@ func TestRouter_GetOrCreate_NewSessionSurvivesCallerCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	st, _, err := r.getOrCreate(ctx, "c1", "u", []Turn{{Role: "user", Content: "hi"}})
+	st, _, err := r.getOrCreate(ctx, "c1", "u", []Turn{{Role: "user", Content: "hi"}}, "")
 	if err != nil {
 		t.Fatalf("cold start must survive caller cancellation: %v", err)
 	}

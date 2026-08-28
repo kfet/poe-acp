@@ -15,7 +15,21 @@ import (
 // token so a reserved flag split across chunk boundaries is still caught:
 // a reserved flag is always whitespace- or end-terminated, so emitting
 // only up to the last whitespace guarantees every escaped token is whole.
-type flagEscaper struct{ pending string }
+// withHost extends the reserved set with "--host", for bots that
+// declare the Host dropdown (see poeproto.EscapeReservedFlagsWithHost).
+type flagEscaper struct {
+	pending  string
+	withHost bool
+}
+
+// escape applies the reserved-flag escaping this escaper is configured
+// for.
+func (e *flagEscaper) escape(s string) string {
+	if e.withHost {
+		return poeproto.EscapeReservedFlagsWithHost(s)
+	}
+	return poeproto.EscapeReservedFlags(s)
+}
 
 // feed appends s and returns the escaped, emit-ready prefix (text up to
 // and including the last whitespace). Any trailing partial token is held
@@ -28,7 +42,7 @@ func (e *flagEscaper) feed(s string) string {
 	}
 	emit := e.pending[:i+1]
 	e.pending = e.pending[i+1:]
-	return poeproto.EscapeReservedFlags(emit)
+	return e.escape(emit)
 }
 
 // flush returns the escaped remainder held by feed and clears it. Call at
@@ -36,5 +50,5 @@ func (e *flagEscaper) feed(s string) string {
 func (e *flagEscaper) flush() string {
 	s := e.pending
 	e.pending = ""
-	return poeproto.EscapeReservedFlags(s)
+	return e.escape(s)
 }
