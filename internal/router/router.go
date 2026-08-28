@@ -334,9 +334,12 @@ type sessionState struct {
 	// drain goroutine exits on the next select iteration.
 	drainStop chan struct{}
 
-	// host is the ssh target this session was CREATED on (the resolved
-	// Options.Host at acquisition time), or "" when the bot has no host
-	// list configured. Immutable for the session's lifetime: moving a
+	// host is the ssh target this session was ACQUIRED for: the resolved
+	// Options.Host passed to getOrCreate, or "" when the bot configured
+	// no host. It is what was sent as _meta.host on session/new; on the
+	// RESUME tier no host is sent at all (the agent's pane already
+	// exists wherever it was created) and this records what the
+	// conversation asked for. Immutable for the session's lifetime: moving a
 	// live session would mean destroying its pane and the agent's
 	// context, so a later turn asking for a different host gets a
 	// message instead (noteHostChange). Written once in getOrCreate
@@ -1805,17 +1808,17 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 // load. Returns "" when no host list is configured, which keeps
 // _meta.host off the wire entirely.
 func (r *Router) resolveHost(want string) string {
-	if len(r.cfg.Hosts) == 0 {
+	// No request, or the feature is off for this bot: the operator's
+	// default is the only possible answer (itself "" unless pinned).
+	if want == "" || len(r.cfg.Hosts) == 0 {
 		return r.cfg.Defaults.Host
 	}
 	for _, h := range r.cfg.Hosts {
-		if want != "" && h == want {
+		if h == want {
 			return want
 		}
 	}
-	if want != "" {
-		log.Printf("router: ignoring host %q: not in the configured hosts list", want)
-	}
+	log.Printf("router: ignoring host %q: not in the configured hosts list", want)
 	return r.cfg.Defaults.Host
 }
 
@@ -1839,17 +1842,18 @@ func (r *Router) noteHostChange(st *sessionState, opts Options, sink ChunkSink) 
 	kitlog.Debugf("noteHostChange conv=%s sid=%s: want host %q, session lives on %q — keeping session",
 		st.convID, string(st.sessionID), want, st.host)
 	sink.FirstChunk()
-	_ = sink.Text(fmt.Sprintf("_(host takes effect on the next conversation: this one stays on `%s`)_\n\n",
+	_ = sink.Text(fmt.Sprintf("_(host takes effect on the next conversation: this one stays on %s)_\n\n",
 		hostLabel(st.host)))
 }
 
-// hostLabel renders a session's host for a user-facing notice; a session
-// created before any host was configured has none.
+// hostLabel renders a session's host for a user-facing notice. A session
+// acquired while no host was configured (or resolved) has none, and
+// "“" reads as a typo — name it in prose instead.
 func hostLabel(host string) string {
 	if host == "" {
 		return "the agent's own host"
 	}
-	return host
+	return "`" + host + "`"
 }
 
 // ParseOptions extracts a strongly-typed Options struct from Poe's
