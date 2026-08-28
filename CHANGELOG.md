@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-08-28
+
 ### Added
 
 - **`host` parameter control — pick which ssh host a NEW conversation's
