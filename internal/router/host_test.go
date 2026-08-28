@@ -8,6 +8,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/kfet/acp-kit/client"
 )
 
 // hostRouter builds a router whose agent echoes "ok", with the given
@@ -252,5 +253,72 @@ func TestHost_ReservedFlagEscaping(t *testing.T) {
 		if want := hosts != nil; escaped != want {
 			t.Fatalf("%s: escaped=%v want %v (text %q)", name, escaped, want, sink.text.String())
 		}
+	}
+}
+
+// The resume tier does not send _meta.host: the agent's pane already
+// exists wherever it was created, and session/load carries no placement.
+// The session must still be usable and silent about hosts.
+func TestHost_ResumeSendsNoMeta(t *testing.T) {
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "ok")
+		return acp.StopReasonEndTurn, nil
+	})
+	agent.caps = client.Caps{ListSessions: true, ResumeSession: true}
+	agent.listResult = []client.SessionInfo{{SessionId: "s-old", Cwd: "/c"}}
+
+	r, err := New(Config{
+		Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour,
+		Hosts:    []string{"zboxserver", "boxy"},
+		Defaults: Options{Host: "zboxserver"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sink := &captureSink{}
+	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, r.Defaults(), sink); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if got := atomic.LoadInt32(&agent.newSessCalls); got != 0 {
+		t.Fatalf("resume tier still created a session: %d calls", got)
+	}
+	if _, ok := agent.metaHost(); ok {
+		t.Fatal("_meta.host must not be sent on the resume path")
+	}
+	if strings.Contains(sink.text.String(), "host takes effect") {
+		t.Fatalf("resumed session must be silent about hosts: %q", sink.text.String())
+	}
+}
+
+// A transcript divergence (the user edits or deletes a PAST turn) rebuilds
+// the session from scratch, so the rebuilt one legitimately lands on the
+// currently-selected host — and, being brand new, says nothing about it.
+func TestHost_DivergenceRebuildAdoptsSelectedHost(t *testing.T) {
+	r, agent := hostRouter(t, []string{"zboxserver", "boxy"}, "zboxserver")
+
+	if err := r.Prompt(context.Background(), "c1", "u",
+		[]Turn{{Role: "user", Content: "one", MessageID: "m1"}}, r.Defaults(), &captureSink{}); err != nil {
+		t.Fatalf("Prompt 1: %v", err)
+	}
+	if h, _ := agent.metaHost(); h != "zboxserver" {
+		t.Fatalf("turn 1 _meta.host = %q", h)
+	}
+
+	// Edit turn m1 (same id, different content) while selecting the
+	// other host: the session is discarded and rebuilt.
+	opts := ParseOptions(map[string]any{"host": "boxy"}, r.Defaults(), nil)
+	sink := &captureSink{}
+	if err := r.Prompt(context.Background(), "c1", "u",
+		[]Turn{{Role: "user", Content: "one (edited)", MessageID: "m1"}}, opts, sink); err != nil {
+		t.Fatalf("Prompt 2: %v", err)
+	}
+	if got := atomic.LoadInt32(&agent.newSessCalls); got != 2 {
+		t.Fatalf("divergence did not rebuild the session: NewSession calls = %d", got)
+	}
+	if h, _ := agent.metaHost(); h != "boxy" {
+		t.Fatalf("rebuilt session _meta.host = %q, want boxy", h)
+	}
+	if strings.Contains(sink.text.String(), "host takes effect") {
+		t.Fatalf("a rebuilt session must not warn about hosts: %q", sink.text.String())
 	}
 }
