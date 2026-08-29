@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-08-29
+
 ### Added
 
 - **Reserved `"local"` host value — the agent's own host is selectable
