@@ -352,6 +352,7 @@ func main() {
 		StallThreshold:    *stallThreshold,
 		SSEWriteTimeout:   *sseWriteTO,
 		AnswerTTL:         *answerTTL,
+		StateDir:          stateDir,
 		CoalesceInterval:  stream.CoalesceInterval,
 		CoalesceGrid:      stream.CoalesceGrid,
 		SpinnerStatic:     !stream.SpinnerAnimate,
@@ -756,6 +757,25 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline, maxRe
 			if err != nil {
 				log.Printf("supervisor: swap aborted, keeping worker %d: %v", current.proc.Pid, err)
 				continue
+			}
+			// Any HUP that arrived WHILE spawnReady was running is
+			// already satisfied by the worker it just brought up:
+			// serving it would retire a brand-new generation for
+			// nothing. Drain them. (Hygiene only — in the kopione
+			// 2026-08-28 incident the two reloads were 3s apart and the
+			// first swap had already completed, so this would not have
+			// prevented it.)
+			coalesced := 0
+			for draining := true; draining; {
+				select {
+				case <-hup:
+					coalesced++
+				default:
+					draining = false
+				}
+			}
+			if coalesced > 0 {
+				log.Printf("SIGHUP: coalesced %d redundant swap request(s)", coalesced)
 			}
 			old := current
 			current = nw

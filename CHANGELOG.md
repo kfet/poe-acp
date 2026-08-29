@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Absorbed answers now survive a worker swap — and a mid-flight redrive.**
+  A pre-output transport drop is absorbed and its answer buffered for the
+  Poe redrive, but the buffer was worker-process memory: a `SIGHUP` swap
+  retired the worker holding it, so a redrive landing on the new
+  generation found nothing and re-ran the whole turn. Completion-time
+  persistence alone would not have helped — in the kopione 2026-08-28
+  incident the redrive arrived 45s *before* the absorbed turn finished, so
+  no answer existed in any worker to hand over. The store therefore
+  publishes a *pending marker* at the absorb latch (`<state-dir>/absorbed/`)
+  and a redrive that misses the answer waits for the in-flight turn —
+  wherever it is running — instead of re-prompting. Take-once across
+  generations is a `rename(2)` claim, and holds across the memory/disk
+  pair; writes are tmp+rename; torn files are ignored; the directory is
+  swept and bounded by total entries. No state dir configured keeps the
+  old memory-only behaviour.
+- **The pending marker is bounded by turn liveness, not `-answer-ttl`.**
+  `-answer-ttl` is how long a *finished* answer waits to be redriven; a
+  marker bounds how long a *waiter* should believe the owner is alive,
+  which is `-idle-write-timeout` — the same "maximum tolerable silence"
+  the owner uses to declare its own turn wedged. Turns legitimately run
+  for tens of minutes (cf. `-swap-drain-deadline`), so the owner
+  republishes its marker while the turn is demonstrably alive; a wedged or
+  killed owner stops refreshing and its marker expires, never pinning a
+  waiter.
+- **A redrive whose own client disconnects mid-wait no longer duplicates a
+  turn that is already running.** It used to fall through and re-prompt on
+  the decoupled turn context, invoking the agent a second time — with real
+  side effects — for work already in flight. The wait now reports *why* it
+  stopped; an abort leaves the owner to finish and buffer its answer for
+  the next redrive.
+- A state dir that has become unwritable (disk full, quota, perms) now
+  surfaces the first write failure once at `WARN` instead of degrading
+  silently at debug level.
+
+### Changed
+
+- Supervisor coalesces redundant `SIGHUP` swap requests that arrive while a
+  swap is already bringing up its replacement worker, logging
+  `SIGHUP: coalesced N redundant swap request(s)`.
+
 ## [0.62.0] - 2026-08-29
 
 ### Added

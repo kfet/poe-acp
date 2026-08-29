@@ -218,6 +218,48 @@ attachments are *not* re-downloaded on resume.
 - `/healthz` (public): `ok sessions=N`
 - `/debug/sessions` (bearer-gated): JSON dump for triage
 
+#### Absorbed answers across a worker swap
+
+Poe drops the bot-facing connection pre-output on a transport hiccup. The
+handler *absorbs* that: the turn keeps running on a decoupled context and
+its recorded output is buffered so Poe's redrive of the same
+`message_id` replays it instead of re-running the agent.
+
+That buffer cannot live in worker-process memory alone. A `SIGHUP` swap
+retires the worker holding it while the new generation takes every
+request, so the redrive finds nothing and the whole turn re-runs — and
+in the kopione 2026-08-28 incident the redrive arrived 45s *before* the
+absorbed turn finished, so no completed answer existed in any worker to
+hand over. Two on-disk files under `<state-dir>/absorbed/` close both
+gaps (names are `sha256(conv_id \0 message_id)`, dir `0700`, files
+`0600`):
+
+| file    | written                   | bound                | meaning |
+|---------|---------------------------|----------------------|---------|
+| `<h>.p` | at the absorb latch, then republished every `watchIdle` tick | `-idle-write-timeout` | some worker generation owns this turn and it is alive |
+| `<h>.a` | when the turn completes   | `-answer-ttl`        | the finished answer, claimable once |
+
+A redrive that misses memory and misses `<h>.a` but sees a live `<h>.p`
+**waits** for the owner to publish, wherever it is running, rather than
+re-prompting. The wait is bounded by the marker expiring, the marker
+being cleared, and the redrive's own client context.
+
+The two bounds are different quantities and must not be conflated:
+`-answer-ttl` is how long a *finished* answer waits to be redriven;
+the marker's bound is how long a *waiter* should believe the owner is
+alive, which is the same "maximum tolerable silence" (`-idle-write-timeout`)
+the owner uses to declare its own turn wedged. Because turns legitimately
+run for tens of minutes (cf. `-swap-drain-deadline`, 30m), the owner
+republishes its marker while the turn is demonstrably alive; a wedged or
+killed owner stops republishing and the marker expires.
+
+Take-once across generations is `rename(2)`: a taker renames `<h>.a` to a
+private claim name, so of two racing workers exactly one wins and the
+loser's `ENOENT` is an ordinary miss. Writes are tmp+rename; a torn or
+foreign payload is a miss, never fatal. The directory is swept at
+construction and on every write, bounded in total entries. With no state
+dir configured the store is disabled and buffering is memory-only.
+
 ### `cmd/poe-acp` — entry point
 
 Flags:

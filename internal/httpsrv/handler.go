@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,6 +68,13 @@ type Config struct {
 	// for a redrive before it is discarded. <=0 falls back to
 	// defaultAnswerTTL (2m).
 	AnswerTTL time.Duration
+	// StateDir is the bot's on-disk state root. When set, absorbed turn
+	// answers are mirrored to `<StateDir>/absorbed/` so they survive a
+	// SIGHUP worker swap and so a redrive landing on a NEW worker
+	// generation can wait for a turn still running in the RETIRING one,
+	// instead of re-running it from scratch. Empty degrades to
+	// memory-only buffering (answers do not outlive the worker).
+	StateDir string
 	// IdleWriteTimeout is the per-stream backstop for a WEDGED turn: the
 	// agent has hung, no SSE content byte has been written, and the
 	// client never disconnected. If no user-visible chunk lands within
@@ -191,6 +199,11 @@ type Handler struct {
 	absorbDecidedHook func()
 	// idleWriteCancelHook fires after watchIdle cancels a wedged turn.
 	idleWriteCancelHook func()
+	// idleTickHook fires at the END of every watchIdle tick that did not
+	// cancel — i.e. after the absorbed turn's pending marker has been
+	// refreshed. Tests wait on it instead of sleeping to observe a
+	// refresh.
+	idleTickHook func()
 	// heartbeatTickHook is forwarded to each sink's heartbeat goroutine
 	// (see newSink); it fires after every heartbeat tick so spinner tests
 	// can wait on real ticks instead of wall-clock sleeps.
@@ -215,7 +228,15 @@ func New(cfg Config) *Handler {
 	if cfg.SSEWriteTimeout <= 0 {
 		cfg.SSEWriteTimeout = defaultSSEWriteTimeout
 	}
-	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL), streams: newInflight(), fastCancelThreshold: defaultFastCancelThreshold}
+	dir := ""
+	if cfg.StateDir != "" {
+		dir = filepath.Join(cfg.StateDir, "absorbed")
+	}
+	// Both durations are already defaulted above; passing a zero
+	// pendingTTL here would make every marker instantly dead and silently
+	// disable the cross-generation wait.
+	store := newAnswerStore(dir, cfg.AnswerTTL, cfg.IdleWriteTimeout)
+	return &Handler{cfg: cfg, answers: newAnswerBuffer(cfg.AnswerTTL, store), streams: newInflight(), fastCancelThreshold: defaultFastCancelThreshold}
 }
 
 // ServeHTTP implements http.Handler.
@@ -431,6 +452,30 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 			replay(calls, s)
 			return
 		}
+		// Mid-flight redrive. The absorbed turn that owns this key may
+		// still be RUNNING — commonly in a retiring worker generation
+		// after a SIGHUP swap, which is exactly how the kopione
+		// 2026-08-28 incident lost a 91s turn: the redrive arrived 45s
+		// before the original finished, so no completed answer existed
+		// anywhere to hand over. Wait for it (the spinner keeps the SSE
+		// alive meanwhile) rather than re-prompting the agent.
+		waitStart := time.Now()
+		calls, outcome := h.answers.waitPending(ctx, key)
+		switch outcome {
+		case waitServed:
+			log.Printf("redrive served from absorbed in-flight turn: conv=%s msg=%s waited=%s",
+				req.ConversationID, req.MessageID, time.Since(waitStart).Round(time.Millisecond))
+			replay(calls, s)
+			return
+		case waitAborted:
+			// Our client left, but an owner demonstrably still holds this
+			// turn. Re-running would invoke the agent a SECOND time — with
+			// real side effects — for work already in flight. Leave it to
+			// finish; its answer is buffered for the next redrive.
+			log.Printf("redrive abandoned mid-wait, turn owned elsewhere: conv=%s msg=%s waited=%s",
+				req.ConversationID, req.MessageID, time.Since(waitStart).Round(time.Millisecond))
+			return
+		}
 	}
 
 	// Decouple the prompt turn from the request ctx: Poe drops the
@@ -484,6 +529,11 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 				_ = h.cfg.Router.CancelTurn(context.Background(), req.ConversationID, rec.turnToken())
 			} else {
 				absorbed.Store(true)
+				// Publish the pending marker HERE, at the latch, not at
+				// turn completion: a redrive that arrives while this
+				// turn is still running must be able to see that an
+				// answer is coming and wait for it.
+				h.answers.markPending(key)
 			}
 			if h.absorbDecidedHook != nil {
 				h.absorbDecidedHook()
@@ -500,7 +550,10 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// do not reset the idle clock (see sink.touch), so the spinner
 	// ticking does not mask a wedge. Exits when done is closed.
 	idleDone := make(chan struct{})
-	go func() { defer close(idleDone); h.watchIdle(cancelTurn, s, done, req.ConversationID) }()
+	go func() {
+		defer close(idleDone)
+		h.watchIdle(cancelTurn, s, done, req.ConversationID, key, &absorbed)
+	}()
 
 	err = h.cfg.Router.Prompt(turnCtx, req.ConversationID, req.UserID, turns, opts, rec)
 	close(done)
@@ -510,18 +563,37 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		log.Printf("router prompt (conv=%s): %v", req.ConversationID, err)
 	}
 	if absorbed.Load() && key != "" {
+		// The router terminates the sink on every exit path (Done, or
+		// Error+Done), so a returned Prompt always leaves at least one
+		// recorded call — there is no "nothing to publish" case to
+		// special-case here. The put clears the pending marker, so the
+		// same act that makes the answer visible releases any redrive
+		// waiting on this turn.
 		h.answers.put(key, rec.snapshot())
 		kitlog.Debugf("absorbed pre-output drop: buffered answer conv=%s msg=%s", req.ConversationID, req.MessageID)
 	}
 }
 
-// watchIdle is the wedged-turn backstop goroutine. It polls the sink's
-// idle clock and cancels the turn if no user-visible byte has landed
-// within IdleWriteTimeout. It exits as soon as the turn completes (done
-// closed) — so a turn that ends normally, or is cut by an opt-in
-// TurnTimeout ceiling, never trips the idle path. Handler.idleWriteCancelHook
-// is a test-only seam fired when the idle path cancels.
-func (h *Handler) watchIdle(cancelTurn context.CancelFunc, s *sink, done <-chan struct{}, convID string) {
+// watchIdle is the wedged-turn backstop goroutine AND the absorbed-turn
+// liveness heartbeat. Both derive from the same clock, so they share one
+// ticker rather than running two goroutines per turn.
+//
+// Backstop: it polls the sink's idle clock and cancels the turn if no
+// user-visible byte (or tool-call progress) has landed within
+// IdleWriteTimeout. It exits as soon as the turn completes (done closed)
+// — so a turn that ends normally, or is cut by an opt-in TurnTimeout
+// ceiling, never trips the idle path. Handler.idleWriteCancelHook is a
+// test-only seam fired when the idle path cancels.
+//
+// Heartbeat: while this turn is ABSORBED, every surviving tick
+// republishes its pending marker, extending it by another pendingTTL.
+// Reaching the republish already proves the turn is not wedged — the
+// idle check above cancels and returns first — so a wedged turn stops
+// refreshing and its marker expires, releasing any waiter instead of
+// pinning it. The refresh is gated on absorbed: a marker left behind by a
+// DEAD worker must not be kept alive by an unrelated live turn on the
+// same key, which would never clear it.
+func (h *Handler) watchIdle(cancelTurn context.CancelFunc, s *sink, done <-chan struct{}, convID, key string, absorbed *atomic.Bool) {
 	t := time.NewTicker(idleCheckInterval(h.cfg.IdleWriteTimeout))
 	defer t.Stop()
 	for {
@@ -537,6 +609,12 @@ func (h *Handler) watchIdle(cancelTurn context.CancelFunc, s *sink, done <-chan 
 					h.idleWriteCancelHook()
 				}
 				return
+			}
+			if absorbed.Load() {
+				h.answers.markPending(key)
+			}
+			if h.idleTickHook != nil {
+				h.idleTickHook()
 			}
 		}
 	}

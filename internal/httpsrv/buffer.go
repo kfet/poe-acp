@@ -1,6 +1,7 @@
 package httpsrv
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -157,17 +158,39 @@ func replay(calls []recCall, sink router.ChunkSink) {
 // limit. On overflow the entry with the earliest expiry is dropped.
 const defaultAnswerBufferMax = 4096
 
+// defaultAbsorbPollInterval is how often a redrive that is WAITING on an
+// in-flight absorbed turn (possibly owned by a retiring worker
+// generation) re-checks for the published answer. Short enough that the
+// hand-off is imperceptible next to a turn measured in tens of seconds,
+// long enough to be free.
+const defaultAbsorbPollInterval = 250 * time.Millisecond
+
 // answerBuffer holds completed-but-undelivered turn outputs keyed by
 // conv+message_id, so a Poe redrive of a query whose original response
 // was absorbed (client dropped pre-output) is served from the buffer
 // instead of re-running the agent. Entries are evicted on take (served
 // once) and on TTL expiry; the map is also capped (defaultAnswerBufferMax).
+//
+// The map is worker-process memory, which is not enough on its own: a
+// SIGHUP swap retires the worker holding it while the redrive lands on
+// the new generation. `store`, when configured, is the on-disk mirror
+// that survives a worker generation AND lets a redrive wait on a turn
+// that is still running elsewhere (see answerstore.go and waitPending).
+// A nil store is memory-only — exactly the pre-existing behaviour.
 type answerBuffer struct {
 	mu         sync.Mutex
 	ttl        time.Duration
 	maxEntries int
 	now        func() time.Time
 	m          map[string]bufEntry
+	store      *answerStore
+	// pollInterval is the waitPending poll cadence; a per-instance field
+	// so tests can tighten it without touching a shared global.
+	pollInterval time.Duration
+	// waitTickHook is a test-only seam fired at the top of every
+	// waitPending poll cycle, so a test can change the store's state
+	// exactly between two polls instead of racing the loop's entry.
+	waitTickHook func()
 }
 
 type bufEntry struct {
@@ -175,19 +198,29 @@ type bufEntry struct {
 	expiry time.Time
 }
 
-func newAnswerBuffer(ttl time.Duration) *answerBuffer {
+func newAnswerBuffer(ttl time.Duration, store *answerStore) *answerBuffer {
 	return &answerBuffer{
-		ttl:        ttl,
-		maxEntries: defaultAnswerBufferMax,
-		now:        time.Now,
-		m:          make(map[string]bufEntry),
+		ttl:          ttl,
+		maxEntries:   defaultAnswerBufferMax,
+		now:          time.Now,
+		m:            make(map[string]bufEntry),
+		store:        store,
+		pollInterval: defaultAbsorbPollInterval,
 	}
 }
 
-// put stores calls under key with a fresh TTL. Expired entries are swept
-// first; if the map is still at capacity after the sweep, the entry with
-// the earliest expiry is evicted to make room.
+// put stores calls under key, in memory and (when configured) on disk.
 func (b *answerBuffer) put(key string, calls []recCall) {
+	b.putMem(key, calls)
+	if b.store != nil {
+		b.store.put(key, calls)
+	}
+}
+
+// putMem stores calls under key with a fresh TTL. Expired entries are
+// swept first; if the map is still at capacity after the sweep, the entry
+// with the earliest expiry is evicted to make room.
+func (b *answerBuffer) putMem(key string, calls []recCall) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.sweepLocked()
@@ -198,8 +231,32 @@ func (b *answerBuffer) put(key string, calls []recCall) {
 }
 
 // take returns and removes the buffered answer for key, if present and
-// not expired.
+// not expired. Memory first, then the cross-generation disk store: an
+// answer published by a RETIRING worker is only ever on disk here.
+//
+// put writes BOTH copies, so a memory hit must also retire the disk one
+// — otherwise a later redrive, on this worker or the next generation,
+// claims the leftover file and the same answer is served twice. That
+// closes the sequential case; two SIMULTANEOUS redrives of one
+// message_id, one hitting memory and one claiming disk in the instant
+// before the unlink lands, could still each serve once — which requires
+// Poe to redrive the same message twice concurrently, and costs a
+// duplicate replay rather than a duplicate agent run.
 func (b *answerBuffer) take(key string) ([]recCall, bool) {
+	if calls, ok := b.takeMem(key); ok {
+		if b.store != nil {
+			b.store.discard(key)
+		}
+		return calls, true
+	}
+	if b.store == nil {
+		return nil, false
+	}
+	return b.store.claim(key)
+}
+
+// takeMem is the in-process half of take.
+func (b *answerBuffer) takeMem(key string) ([]recCall, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	e, ok := b.m[key]
@@ -211,6 +268,75 @@ func (b *answerBuffer) take(key string) ([]recCall, bool) {
 		return nil, false
 	}
 	return e.calls, true
+}
+
+// markPending publishes "an absorbed turn owns this key and is still
+// running", at the moment the disconnect watcher latches its absorb
+// decision. Without it a redrive arriving mid-turn — the common case,
+// since Poe redrives seconds after the drop while the turn runs for
+// minutes — would see nothing and re-run from scratch.
+//
+// It doubles as the marker REFRESH: watchIdle re-marks on every tick for
+// as long as the turn is demonstrably alive, which is what decouples the
+// marker's lifetime from AnswerTTL without pinning a waiter behind a
+// wedged or killed owner. See answerstore.go's package comment.
+func (b *answerBuffer) markPending(key string) {
+	if key != "" && b.store != nil {
+		b.store.markPending(key)
+	}
+}
+
+// waitOutcome is why waitPending stopped. The three arms mean genuinely
+// different things to the caller, and collapsing them is what caused a
+// redrive whose own client went away to start a DUPLICATE of a turn
+// already running elsewhere.
+type waitOutcome int
+
+const (
+	// waitMiss: nobody owns this key (no marker, or it expired or was
+	// cleared without an answer). Proceed exactly as before the store
+	// existed — run the turn.
+	waitMiss waitOutcome = iota
+	// waitServed: the owner published; the answer is returned.
+	waitServed
+	// waitAborted: an owner demonstrably holds this turn, but OUR client
+	// went away while we waited. Running it again would be a second agent
+	// invocation — with real side effects — of a turn already in flight.
+	// The owner's answer stays buffered for the next redrive.
+	waitAborted
+)
+
+// waitPending blocks until the absorbed turn that owns key publishes its
+// answer. It returns waitMiss immediately when no live pending marker
+// exists, and gives up when the marker is cleared or expires, or when
+// this request's own client goes away — every exit is bounded, so a
+// redrive can never wedge on it.
+//
+// The marker IS refreshed while the owning turn is alive (watchIdle), so
+// this wait tracks a genuinely long turn instead of timing out at
+// AnswerTTL. A wedged owner stops refreshing and the marker expires.
+func (b *answerBuffer) waitPending(ctx context.Context, key string) ([]recCall, waitOutcome) {
+	if key == "" || b.store == nil || !b.store.pendingLive(key) {
+		return nil, waitMiss
+	}
+	t := time.NewTicker(b.pollInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, waitAborted
+		case <-t.C:
+			if b.waitTickHook != nil {
+				b.waitTickHook()
+			}
+			if calls, ok := b.take(key); ok {
+				return calls, waitServed
+			}
+			if !b.store.pendingLive(key) {
+				return nil, waitMiss
+			}
+		}
+	}
 }
 
 // sweepLocked removes all expired entries. Caller holds b.mu.
