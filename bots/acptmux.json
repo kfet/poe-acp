@@ -24,9 +24,17 @@
   },
   "config": {
     "bot_name": "sea-zbox",
+    "hosts": [
+      { "value": "local", "name": "zbox (local)" },
+      { "value": "miki" },
+      { "value": "ko1" },
+      { "value": "rn" },
+      { "value": "airm1", "name": "air m1" }
+    ],
     "defaults": {
       "model": "fir",
       "thinking": "medium",
+      "host": "local",
       "hide_thinking": false,
       "show_plans": true,
       "show_tools": true
