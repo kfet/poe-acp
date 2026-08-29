@@ -308,6 +308,11 @@ type Router struct {
 	// goroutines; set once in New and never written afterwards.
 	evictDrainGrace   time.Duration
 	endTurnAckTimeout time.Duration
+
+	// releaseUnsupported fires the "this agent cannot reclaim sessions"
+	// warning at most once per Router (i.e. per agent process), not once
+	// per reaped session — the condition is a property of the agent.
+	releaseUnsupported sync.Once
 }
 
 // sessionState tracks one conv_id.
@@ -2833,7 +2838,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 				rctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
 				defer cancel()
 				if rerr := r.cfg.Agent.ReleaseSession(rctx, staleSID); rerr != nil {
-					kitlog.Debugf("getOrCreate conv=%s: ReleaseSession(%s): %v", convID, string(staleSID), rerr)
+					r.noteReleaseError("getOrCreate conv="+convID, staleSID, rerr)
 				}
 			}()
 		}
@@ -3050,7 +3055,7 @@ func (r *Router) gcOnce() {
 	for _, sid := range evicted {
 		rctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
 		if err := r.cfg.Agent.ReleaseSession(rctx, sid); err != nil {
-			kitlog.Debugf("gcOnce: ReleaseSession(%s): %v", string(sid), err)
+			r.noteReleaseError("gcOnce", sid, err)
 		}
 		cancel()
 	}
@@ -3059,6 +3064,47 @@ func (r *Router) gcOnce() {
 // releaseTimeout bounds the best-effort session/release RPC issued when a
 // session is garbage-collected.
 const releaseTimeout = 10 * time.Second
+
+// methodNotFoundCode is the JSON-RPC "method not found" error code. An agent
+// answering session/release with it does not implement the method at all.
+const methodNotFoundCode = -32601
+
+// isMethodNotFound reports whether err is a JSON-RPC method-not-found error.
+func isMethodNotFound(err error) bool {
+	var re *acp.RequestError
+	if errors.As(err, &re) {
+		return re.Code == methodNotFoundCode
+	}
+	return false
+}
+
+// noteReleaseError classifies a failed best-effort session/release and logs it
+// at the right volume.
+//
+//   - method-not-found: the agent implements no session release at all, so
+//     every idle session the relay reaps stays alive inside the agent process
+//     forever. That is a standing memory leak an operator must see, so warn —
+//     but exactly once per agent, since it is a property of the agent, not of
+//     the session.
+//   - session-not-found: normal. The agent already dropped the session; there
+//     was nothing to release. Stays quiet.
+//   - anything else: transient/unclassified, debug as before.
+func (r *Router) noteReleaseError(where string, sid acp.SessionId, err error) {
+	switch {
+	case client.IsSessionNotFound(err):
+		kitlog.Debugf("%s: ReleaseSession(%s): already gone: %v", where, string(sid), err)
+	case isMethodNotFound(err):
+		r.releaseUnsupported.Do(func() {
+			log.Printf("WARN: agent does not implement the session/release ACP method (%v); "+
+				"poe-acp cannot reclaim idle sessions, so they will accumulate inside the agent "+
+				"process (hundreds of MB each) until it is restarted. This warning is logged once.",
+				err)
+		})
+		kitlog.Debugf("%s: ReleaseSession(%s): unsupported by agent", where, string(sid))
+	default:
+		kitlog.Debugf("%s: ReleaseSession(%s): %v", where, string(sid), err)
+	}
+}
 
 // defaultSessionCreateTimeout bounds session acquisition (list/resume/new)
 // in getOrCreate when Config.SessionCreateTimeout is unset.
