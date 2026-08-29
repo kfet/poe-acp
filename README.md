@@ -260,6 +260,7 @@ keep working.
     "spinner_animate": false
   },
   "hosts": [
+    { "value": "local", "name": "this box (local)" },
     { "value": "zboxserver", "name": "zbox (server)" },
     { "value": "boxy" }
   ],
@@ -357,10 +358,20 @@ keep working.
   (the default) = no `Host` dropdown, no host ever sent, i.e. every
   session runs wherever the agent runs. Only meaningful with an agent
   that understands the create-time `_meta.host` hint (acp-tmux).
+  The value **`"local"`** (exact, case-sensitive) is RESERVED and means
+  "wherever the agent itself runs" — list it to offer the agent's own
+  host as a dropdown option (`{"value": "local", "name": "zbox
+  (local)"}`). It is a relay-side sentinel: when it is the resolved
+  host, no `_meta.host` is sent at all, exactly as if no list were
+  configured. The literal string never reaches the agent. If you have a
+  real ssh host named `local`, alias it to something else in
+  `~/.ssh/config` — the sentinel shadows it.
 - **`defaults.host`** — the ssh target new conversations run on. Must
   appear in `hosts` when that list is non-empty (rejected at boot
   otherwise); set on its own it pins every conversation to one host
-  with no user-facing dropdown. **Create-time only:** the value is sent
+  with no user-facing dropdown. Use `"local"` to default new chats to
+  the agent's own host while still offering remote ones.
+  **Create-time only:** the value is sent
   once, as `_meta.host` on ACP `session/new`. Changing the `Host`
   dropdown mid-conversation deliberately does NOT move the live session
   — that would destroy the agent's pane and its accumulated context —

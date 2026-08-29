@@ -132,3 +132,53 @@ func TestHosts_JSONShape(t *testing.T) {
 		t.Fatalf("empty config emitted hosts: %s", b)
 	}
 }
+
+// The reserved "local" sentinel validates like any other host value —
+// both as a list entry and as defaults.host — while an empty value
+// stays an error (empty is a typo, "local" is the sentinel).
+func TestHosts_LocalSentinel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg     Config
+		wantErr string
+	}{
+		"listed": {Config{Hosts: []Host{{Value: LocalHost, Name: "zbox (local)"}, {Value: "boxy"}}}, ""},
+		"as default": {Config{
+			Hosts:    []Host{{Value: LocalHost}, {Value: "boxy"}},
+			Defaults: Defaults{Host: LocalHost},
+		}, ""},
+		"default not listed": {Config{
+			Hosts:    []Host{{Value: "boxy"}},
+			Defaults: Defaults{Host: LocalHost},
+		}, "not in the `hosts` list"},
+		"duplicate sentinel": {Config{
+			Hosts: []Host{{Value: LocalHost}, {Value: LocalHost}},
+		}, "duplicate"},
+		"empty still rejected": {Config{Hosts: []Host{{Value: ""}}}, "must not be empty"},
+	} {
+		err := tc.cfg.Validate()
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Fatalf("%s: Validate: %v", name, err)
+		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+			t.Fatalf("%s: err = %v, want %q", name, err, tc.wantErr)
+		}
+	}
+	if LocalHost != "local" {
+		t.Fatalf("LocalHost = %q: the reserved value is part of the config contract", LocalHost)
+	}
+}
+
+// The sentinel round-trips through JSON like any other entry.
+func TestHosts_LocalSentinelJSONShape(t *testing.T) {
+	b, err := json.Marshal(Config{
+		Hosts:    []Host{{Value: LocalHost, Name: "zbox (local)"}, {Value: "miki"}},
+		Defaults: Defaults{Host: LocalHost},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(b); !strings.Contains(got, `"hosts":[{"value":"local","name":"zbox (local)"},{"value":"miki"}]`) ||
+		!strings.Contains(got, `"host":"local"`) {
+		t.Fatalf("json = %s", got)
+	}
+}

@@ -87,11 +87,30 @@ type Config struct {
 	PinnedModels []string `json:"pinned_models,omitempty"`
 }
 
+// LocalHost is the RESERVED `hosts[i].value` meaning "the agent's own
+// host" — wherever the agent process itself runs. Listing it lets an
+// operator offer "run here" as a normal dropdown option alongside ssh
+// targets; without it, configuring any `hosts` would force every new
+// conversation onto a remote host.
+//
+// It is a relay-side sentinel only: when the resolved host is
+// LocalHost the relay sends NO `_meta.host` on session/new, exactly as
+// if no host list were configured. The literal string never reaches the
+// agent, whose own contract for "run here" is an absent/empty hint.
+const LocalHost = "local"
+
 // Host is one selectable ssh target in the curated `hosts` list.
 type Host struct {
 	// Value is what the relay sends to the agent as `_meta.host` — an
 	// ssh destination the agent host can reach (a ~/.ssh/config alias,
 	// user@host, an IP). Required.
+	//
+	// The exact, case-sensitive value "local" (LocalHost) is reserved
+	// and means "the agent's own host": it is offered in the dropdown
+	// like any other option but sends no host hint at all. An operator
+	// with a real ssh host named "local" must alias it to something
+	// else — the sentinel shadows it, and no validation can tell the
+	// two apart.
 	Value string `json:"value"`
 	// Name is the label shown in the Poe dropdown. Empty means "use
 	// Value".

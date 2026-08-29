@@ -113,3 +113,47 @@ func TestResolve_Host(t *testing.T) {
 		t.Fatalf("host with models = %q, want boxy", got)
 	}
 }
+
+// The reserved "local" value is just another dropdown option to the
+// schema builder: it keeps its exact wire value (the relay, not Poe,
+// translates it into "no host hint") and takes its label from `name`.
+func TestBuild_LocalSentinelIsANormalOption(t *testing.T) {
+	t.Parallel()
+	hosts := []config.Host{{Value: config.LocalHost, Name: "zbox (local)"}, {Value: "boxy"}}
+	for name, tc := range map[string]struct{ def, wantDefault string }{
+		"local as default": {config.LocalHost, "local"},
+		"remote default":   {"boxy", "boxy"},
+		"unset default":    {"", "local"}, // first option wins
+	} {
+		pc := Build(nil, hosts, router.Options{Host: tc.def})
+		c, ok := hostControl(pc)
+		if !ok {
+			t.Fatalf("%s: Host control missing", name)
+		}
+		want := []poeproto.ValueNamePair{
+			{Value: "local", Name: "zbox (local)"},
+			{Value: "boxy", Name: "boxy"},
+		}
+		if len(c.Options) != len(want) {
+			t.Fatalf("%s: options = %#v", name, c.Options)
+		}
+		for i, w := range want {
+			if c.Options[i] != w {
+				t.Fatalf("%s: options[%d] = %#v, want %#v", name, i, c.Options[i], w)
+			}
+		}
+		// Unset falls back to the first option, which here is local.
+		if c.DefaultValue != tc.wantDefault {
+			t.Fatalf("%s: default_value = %#v, want %q", name, c.DefaultValue, tc.wantDefault)
+		}
+	}
+}
+
+// defaults.host = "local" survives Resolve untouched — the sentinel is
+// dropped at the wire, not at config resolution.
+func TestResolve_LocalHost(t *testing.T) {
+	t.Parallel()
+	if got := Resolve(config.Defaults{Host: config.LocalHost}, nil, "").Host; got != "local" {
+		t.Fatalf("host = %q, want local", got)
+	}
+}

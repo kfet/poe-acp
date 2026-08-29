@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Reserved `"local"` host value — the agent's own host is selectable
+  again.** With any `hosts` list configured, every entry had to be an ssh
+  destination, so a bot offering remote hosts made "run right here"
+  unreachable: every new conversation was forced onto a remote box. The
+  exact, case-sensitive value `"local"` is now reserved and means
+  "wherever the agent itself runs" — list it like any other entry
+  (`{"value": "local", "name": "zbox (local)"}`), optionally as
+  `defaults.host`. It is a relay-side sentinel: when it is the resolved
+  host, `session/new` carries no `_meta.host` at all, byte-identical to
+  an unconfigured bot, because the agent's own contract for "run here" is
+  an absent hint and the literal `"local"` would fail its allowlist.
+  Switching to or from it on a live conversation behaves like any other
+  host change — the notice, never a torn-down pane. Empty `value` remains
+  a config error.
+
 ## [0.62.1] - 2026-08-29
 
 ### Fixed

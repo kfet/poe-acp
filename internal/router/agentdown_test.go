@@ -87,16 +87,25 @@ func TestPromptRPCFailureOnDeadAgentTellsTheUser(t *testing.T) {
 	}
 }
 
-// The write to a dying agent can fail a beat BEFORE the reaper observes
-// the exit. agentGone must wait out that window rather than misreport a
-// dead agent as a generic relay error.
+// The write to a dying agent can fail a beat BEFORE the reaper records
+// the exit status. agentGone must wait out that window rather than
+// misreport a dead agent as a generic relay error: with Err() still nil
+// the closed Done() channel is the only evidence, and it must be taken.
+//
+// Driven deterministically — a `go agent.die()` race would let Err() win
+// the check often enough to make the Done() branch's coverage a coin
+// flip, and the cover gate is 100%.
 func TestAgentGoneWaitsOutTheExitRace(t *testing.T) {
 	t.Parallel()
 	agent := newFakeAgent(nil)
+	// A 5s grace means a false "not gone" cannot be masked by the timer:
+	// the only way this returns promptly is through the Done() case.
 	r := mustRouterWithConfig(t, agent, Config{AgentDeathGrace: 5 * time.Second})
 
-	// Err() is still nil; the exit lands while agentGone is waiting.
-	go agent.die(&exec.ExitError{})
+	agent.closeDone() // exit visible on Done(), Err() not yet set
+	if agent.Err() != nil {
+		t.Fatal("Err() must still be nil for this to exercise the Done() branch")
+	}
 	if !r.agentGone() {
 		t.Fatal("agentGone = false, want true once the exit lands")
 	}
