@@ -136,6 +136,12 @@ type Agent interface {
 	// AvailableCommands returns the agent's advertised slash-command
 	// catalog (snapshotted from session/update). Empty until advertised.
 	AvailableCommands() []client.CommandInfo
+	// Done is closed once the agent process has exited; Err reports why
+	// (nil while it is running). Together they let the router state
+	// plainly that the backing agent is gone, instead of relaying a
+	// `write |1: broken pipe` that Poe renders as an empty bubble.
+	Done() <-chan struct{}
+	Err() error
 }
 
 // Options is the per-prompt set of user-selected parameter values
@@ -180,6 +186,15 @@ type Config struct {
 	// aborting it; the user's retry lands on a hot session. Zero falls
 	// back to defaultSessionCreateTimeout (60s).
 	SessionCreateTimeout time.Duration
+
+	// AgentDeathGrace is how long a FAILED turn waits for the agent's
+	// exit to be observed before deciding the failure was an ordinary
+	// error rather than the agent dying. The write to a dead agent's
+	// stdin fails a beat before the reaper's cmd.Wait returns, so
+	// without this window the very turn that noticed the outage would
+	// report it as a generic relay error. Only failing turns ever wait.
+	// Zero means defaultAgentDeathGrace (250ms).
+	AgentDeathGrace time.Duration
 	// Defaults are the values the Poe UI shows when the user hasn't
 	// touched the Options panel. ParseOptions overlays user-supplied
 	// keys on top of these so the agent always converges to the
@@ -768,6 +783,9 @@ func New(cfg Config) (*Router, error) {
 	if cfg.SessionCreateTimeout == 0 {
 		cfg.SessionCreateTimeout = defaultSessionCreateTimeout
 	}
+	if cfg.AgentDeathGrace == 0 {
+		cfg.AgentDeathGrace = defaultAgentDeathGrace
+	}
 	if cfg.AttachmentTTL == 0 {
 		cfg.AttachmentTTL = defaultAttachmentTTL
 	}
@@ -1261,8 +1279,7 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 
 	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query, opts.Host)
 	if err != nil {
-		_ = sink.Error(fmt.Sprintf("relay: %v", err), "user_caused_error")
-		_ = sink.Done()
+		r.failTurn(sink, "relay", err)
 		return err
 	}
 
@@ -1307,6 +1324,51 @@ func (r *Router) buildPromptBlocks(ctx context.Context, cwd string, query []Turn
 // recoverable session-not-found failure (the agent released or idle-reaped the
 // session) it evicts the stale session, re-creates one, and replays the turn
 // exactly once (recovered guards against retry loops).
+// defaultAgentDeathGrace is the fallback for Config.AgentDeathGrace.
+const defaultAgentDeathGrace = 250 * time.Millisecond
+
+// agentDownMsg is what a user sees when their turn failed because the
+// backing agent process is gone. It is deliberately a `text` frame, not
+// a Poe `error` event: Poe does not surface the error event's text to
+// the user, which is exactly how the 2026-08-28 incident produced silent
+// empty replies for hours.
+const agentDownMsg = "⚠️ The backing agent is not running — the relay is restarting it. Please send that again in a moment."
+
+// agentGone reports whether the agent process has exited. It is only
+// consulted on a failed turn: the ACP error itself is useless for this
+// (a dead child surfaces as JSON-RPC -32603 carrying a stringified
+// "write |1: broken pipe", so errors.Is against syscall.EPIPE cannot
+// work), whereas the process's own exit is unambiguous. A short grace
+// closes the race where the failing write beats the wait() by a
+// millisecond.
+func (r *Router) agentGone() bool {
+	if r.cfg.Agent.Err() != nil {
+		return true
+	}
+	t := time.NewTimer(r.cfg.AgentDeathGrace)
+	defer t.Stop()
+	select {
+	case <-r.cfg.Agent.Done():
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
+// failTurn terminates a failed turn on the user's stream. When the agent
+// process is gone it says so in plain language as visible text; anything
+// else keeps the existing `error` event with its diagnostic prefix.
+func (r *Router) failTurn(sink ChunkSink, prefix string, err error) {
+	if r.agentGone() {
+		log.Printf("agent is gone (%v); reporting the outage to the user instead of %q", r.cfg.Agent.Err(), err)
+		_ = sink.Text(agentDownMsg)
+		_ = sink.Done()
+		return
+	}
+	_ = sink.Error(fmt.Sprintf("%s: %v", prefix, err), "user_caused_error")
+	_ = sink.Done()
+}
+
 func (r *Router) submitTurn(ctx context.Context, convID, userID string, query []Turn, latestTurn Turn, latestText string, opts Options, sink ChunkSink, st *sessionState, blocks []acp.ContentBlock, isCommand, recovered bool) error {
 	req := &turnReq{
 		kind:       turnUser,
@@ -1378,8 +1440,7 @@ func (r *Router) recoverAndReplay(ctx context.Context, convID, userID string, qu
 	// in-memory session, which session/release + the idle reaper now reclaim.
 	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query, opts.Host)
 	if err != nil {
-		_ = sink.Error(fmt.Sprintf("relay: %v", err), "user_caused_error")
-		_ = sink.Done()
+		r.failTurn(sink, "relay", err)
 		return err
 	}
 	blocks := r.buildPromptBlocks(ctx, st.cwd, query, latestTurn, latestText, freshSeed, isCommand)
@@ -1747,8 +1808,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 			req.err = err
 			return
 		}
-		_ = sink.Error(fmt.Sprintf("acp prompt: %v", err), "user_caused_error")
-		_ = sink.Done()
+		r.failTurn(sink, "acp prompt", err)
 		req.err = err
 		return
 	}

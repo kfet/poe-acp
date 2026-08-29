@@ -69,6 +69,8 @@ func (f *fakeAgent) SetConfigOption(_ context.Context, _ acp.SessionId, _, _ str
 }
 func (f *fakeAgent) Models() ([]client.ModelInfo, string)    { return nil, "" }
 func (f *fakeAgent) AvailableCommands() []client.CommandInfo { return nil }
+func (f *fakeAgent) Done() <-chan struct{}                   { return nil }
+func (f *fakeAgent) Err() error                              { return nil }
 
 func TestHandler_Query(t *testing.T) {
 	rtr, err := router.New(router.Config{
