@@ -120,7 +120,7 @@ func TestAnswerKey(t *testing.T) {
 }
 
 func TestAnswerBuffer_PutTakeEvictsOnServe(t *testing.T) {
-	b := newAnswerBuffer(time.Minute)
+	b := newAnswerBuffer(time.Minute, nil)
 	calls := []recCall{{op: opText, s1: "x"}}
 	b.put("k", calls)
 	got, ok := b.take("k")
@@ -134,7 +134,7 @@ func TestAnswerBuffer_PutTakeEvictsOnServe(t *testing.T) {
 }
 
 func TestAnswerBuffer_TakeMiss(t *testing.T) {
-	b := newAnswerBuffer(time.Minute)
+	b := newAnswerBuffer(time.Minute, nil)
 	if _, ok := b.take("nope"); ok {
 		t.Fatal("miss must return ok=false")
 	}
@@ -142,7 +142,7 @@ func TestAnswerBuffer_TakeMiss(t *testing.T) {
 
 func TestAnswerBuffer_TTLExpiry(t *testing.T) {
 	now := time.Unix(1000, 0)
-	b := newAnswerBuffer(time.Minute)
+	b := newAnswerBuffer(time.Minute, nil)
 	b.now = func() time.Time { return now }
 	b.put("k", []recCall{{op: opDone}})
 	// Advance past the TTL: take must report expired (and the put sweep too).
@@ -154,7 +154,7 @@ func TestAnswerBuffer_TTLExpiry(t *testing.T) {
 
 func TestAnswerBuffer_SweepOnPut(t *testing.T) {
 	now := time.Unix(0, 0)
-	b := newAnswerBuffer(time.Minute)
+	b := newAnswerBuffer(time.Minute, nil)
 	b.now = func() time.Time { return now }
 	b.put("old", []recCall{{op: opDone}})
 	now = now.Add(2 * time.Minute)
@@ -170,7 +170,7 @@ func TestAnswerBuffer_SweepOnPut(t *testing.T) {
 
 func TestAnswerBuffer_CapEvictsOldest(t *testing.T) {
 	base := time.Unix(0, 0)
-	b := newAnswerBuffer(time.Hour)
+	b := newAnswerBuffer(time.Hour, nil)
 	b.maxEntries = 2
 	cur := base
 	b.now = func() time.Time { return cur }
@@ -192,7 +192,7 @@ func TestAnswerBuffer_CapEvictsOldest(t *testing.T) {
 }
 
 func TestAnswerBuffer_PutOverwriteKeepsCap(t *testing.T) {
-	b := newAnswerBuffer(time.Hour)
+	b := newAnswerBuffer(time.Hour, nil)
 	b.maxEntries = 1
 	b.put("k", []recCall{{op: opText, s1: "1"}})
 	b.put("k", []recCall{{op: opText, s1: "2"}}) // same key: overwrite, no evict
