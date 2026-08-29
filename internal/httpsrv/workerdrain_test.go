@@ -58,6 +58,8 @@ func (a *wedgedAgent) SetConfigOption(context.Context, acp.SessionId, string, st
 }
 func (a *wedgedAgent) Models() ([]client.ModelInfo, string)    { return nil, "" }
 func (a *wedgedAgent) AvailableCommands() []client.CommandInfo { return nil }
+func (a *wedgedAgent) Done() <-chan struct{}                   { return nil }
+func (a *wedgedAgent) Err() error                              { return nil }
 
 // TestWorkerDrain_BoundedByDeadlineWithWedgedStream is the fail-first
 // regression for the stale-worker leak. A real HTTP server serves a real

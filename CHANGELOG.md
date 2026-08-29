@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Agent-process death is now self-healing.** The worker watches the ACP
+  agent child (`acp-kit` `AgentProc.Done`/`Err`); an unexpected exit is logged
+  as `agent exited unexpectedly: …` and the worker exits so the supervisor's
+  existing respawn path rebuilds worker + agent. Previously a dropped agent
+  (e.g. an ssh pipe to a flapping host) bricked the bot until a human ran
+  `systemctl --user restart` — every turn failed with `write |1: broken pipe`.
+- **`agent.restart` config knob** (`{"agent":{"restart":{"enabled":true,
+  "max_backoff":"60s"}}}`). Enabled by default; `enabled:false` keeps the
+  worker up with a dead agent for debugging, and `max_backoff` caps the
+  supervisor's respawn delay.
+- `test/agentdeath_integration.sh`: end-to-end proof of the three behaviours
+  (respawn after an agent kill, honest user-facing turn, capped backoff
+  against an unroutable agent host).
+
+### Fixed
+
+- **A turn that fails because the agent is gone now says so.** The relay used
+  to emit only a Poe `error` event, which Poe does not render — the user saw
+  an empty reply and the log said `WARN empty turn`. Both the session-create
+  and the session/prompt failure paths now emit visible text
+  ("the backing agent is not running…") when the agent process has exited.
+- **The supervisor no longer dies when a respawn fails.** A worker that cannot
+  come up (typically because the agent's remote host is down) used to be
+  `log.Fatalf`, killing the whole bot. Respawns now retry on an exponential,
+  jittered schedule (1s → `agent.restart.max_backoff`, default 60s) while the
+  supervisor keeps the listening socket and stays responsive to signals.
+
 ## [0.61.1] - 2026-08-29
 
 ### Fixed

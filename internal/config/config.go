@@ -259,6 +259,52 @@ type Agent struct {
 	// auto-detect from --agent-cmd. Used to pick which set_config_option
 	// controls the relay exposes. Reserved; today only "fir" is wired.
 	Profile string `json:"profile,omitempty"`
+
+	// Restart governs what happens when the agent child process dies
+	// unexpectedly. Omitted means "restart, with the default backoff":
+	// an agent that never comes back is never what an operator wants.
+	Restart Restart `json:"restart,omitempty"`
+}
+
+// Restart is the agent-death policy. The relay cannot rebuild an agent
+// in place (the process handle is shared by the router, the command
+// broker and the MCP host), so "restart" means: the worker exits and
+// the supervisor forks a fresh worker + agent pair.
+type Restart struct {
+	// Enabled, when nil, means enabled — see Agent.Restart. Set it to
+	// false only to debug a dying agent: the worker then keeps running
+	// with a dead agent and every turn reports the outage.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// MaxBackoff caps the supervisor's respawn delay as a Go duration
+	// string ("60s", "5m"). Empty means DefaultRestartMaxBackoff.
+	MaxBackoff string `json:"max_backoff,omitempty"`
+}
+
+// DefaultRestartMaxBackoff is the built-in cap for the respawn delay
+// when `agent.restart.max_backoff` is unset. Mirrors
+// supervisor.DefaultRespawnMaxBackoff; kept as a duration string-free
+// constant so config does not import the supervisor.
+const DefaultRestartMaxBackoff = 60 * time.Second
+
+// RestartEnabled reports whether an unexpectedly dead agent should take
+// the worker down for a supervisor respawn. Default true.
+func (a Agent) RestartEnabled() bool {
+	return a.Restart.Enabled == nil || *a.Restart.Enabled
+}
+
+// RestartMaxBackoff returns the configured respawn backoff cap, or
+// DefaultRestartMaxBackoff when unset. Validate rejects unparseable and
+// non-positive values, so this never has to report an error.
+func (a Agent) RestartMaxBackoff() time.Duration {
+	if a.Restart.MaxBackoff == "" {
+		return DefaultRestartMaxBackoff
+	}
+	d, err := time.ParseDuration(a.Restart.MaxBackoff)
+	if err != nil || d <= 0 {
+		return DefaultRestartMaxBackoff
+	}
+	return d
 }
 
 // OrderPinned returns models reordered so that any model whose ID
@@ -356,6 +402,15 @@ func (c Config) Validate() error {
 	if c.Defaults.Host != "" && len(c.Hosts) > 0 {
 		if _, ok := seen[c.Defaults.Host]; !ok {
 			return fmt.Errorf("defaults.host: %q is not in the `hosts` list", c.Defaults.Host)
+		}
+	}
+	if s := c.Agent.Restart.MaxBackoff; s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("agent.restart.max_backoff: invalid %q (want a Go duration, e.g. \"60s\")", s)
+		}
+		if d <= 0 {
+			return fmt.Errorf("agent.restart.max_backoff: must be positive, got %q", s)
 		}
 	}
 	return nil

@@ -64,6 +64,10 @@ type fakeAgent struct {
 	lastSetModel     string
 	lastPromptBlocks []acp.ContentBlock
 	lastSysBlocks    []acp.ContentBlock
+
+	// Process liveness, mirroring client.AgentProc.Done/Err.
+	agentDone chan struct{}
+	agentErr  error
 }
 
 func newFakeAgent(onPrompt func(ctx context.Context, a *fakeAgent, sid acp.SessionId, text string) (acp.StopReason, error)) *fakeAgent {
@@ -148,6 +152,35 @@ func (f *fakeAgent) Models() ([]client.ModelInfo, string) {
 	return f.models, f.currentModelID
 }
 func (f *fakeAgent) AvailableCommands() []client.CommandInfo { return f.agentCmds }
+
+// Liveness. agentDone is nil for the ordinary "agent is alive" fake;
+// tests that simulate a dead agent close it and set agentErr.
+func (f *fakeAgent) Done() <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.agentDone == nil {
+		f.agentDone = make(chan struct{})
+	}
+	return f.agentDone
+}
+
+func (f *fakeAgent) Err() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.agentErr
+}
+
+// die marks the fake agent's process as exited with err, exactly as the
+// acp-kit reaper would.
+func (f *fakeAgent) die(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.agentErr = err
+	if f.agentDone == nil {
+		f.agentDone = make(chan struct{})
+	}
+	close(f.agentDone)
+}
 
 func (f *fakeAgent) emit(sid acp.SessionId, chunk string) {
 	f.mu.Lock()
