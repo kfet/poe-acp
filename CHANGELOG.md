@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-08-29
+
 ### Added
 
 - **Agent-process death is now self-healing.** The worker watches the ACP
