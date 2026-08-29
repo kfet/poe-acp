@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Agents that cannot release sessions are no longer silent.** A
+  `session/release` answered with method-not-found (-32601) now logs a WARN
+  once per agent explaining that idle sessions accumulate until the agent is
+  restarted; session-not-found (-32001) and other errors stay at debug.
+
 ## [0.61.0] - 2026-08-28
 
 ### Added
