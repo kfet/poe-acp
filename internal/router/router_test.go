@@ -182,6 +182,19 @@ func (f *fakeAgent) die(err error) {
 	close(f.agentDone)
 }
 
+// closeDone marks the process as exited on the Done() channel only,
+// WITHOUT recording an exit status — the real window between the child
+// dying and the reaper storing its error, where Done() is the sole
+// evidence agentGone has.
+func (f *fakeAgent) closeDone() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.agentDone == nil {
+		f.agentDone = make(chan struct{})
+	}
+	close(f.agentDone)
+}
+
 func (f *fakeAgent) emit(sid acp.SessionId, chunk string) {
 	f.mu.Lock()
 	sink := f.sinks[sid]

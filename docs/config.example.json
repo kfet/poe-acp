@@ -10,9 +10,10 @@
     "coalesce_ms": 0,
     "coalesce_grid": true,
     "spinner_animate": true,
-    "host": "host-a"
+    "host": "local"
   },
   "hosts": [
+    { "value": "local", "name": "this box (local)" },
     { "value": "host-a", "name": "hosta (server)" },
     { "value": "boxy" }
   ],

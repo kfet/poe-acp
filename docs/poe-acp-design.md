@@ -157,6 +157,13 @@ of processes:
   wherever the agent runs" — today's behaviour. That single key is the
   WHOLE contract with the agent (acp-tmux places the session's tmux pane
   accordingly); nothing else about placement crosses the boundary.
+- The reserved `hosts[i].value` `"local"` (exact, case-sensitive) means
+  "the agent's own host". It is a RELAY-SIDE sentinel: it appears in the
+  dropdown like any other option, but resolving to it sends no
+  `_meta.host` at all, because the agent's own contract for "run here"
+  is an absent/empty hint and the literal `"local"` would fail its
+  allowlist. Without it, configuring any `hosts` would make the agent's
+  own host unselectable.
 - **Create-time only.** `sessionState.host` is immutable for the life of
   the session. A live conversation whose dropdown changes keeps its
   session and gets a one-off notice (`Router.noteHostChange`): moving it

@@ -322,3 +322,139 @@ func TestHost_DivergenceRebuildAdoptsSelectedHost(t *testing.T) {
 		t.Fatalf("a rebuilt session must not warn about hosts: %q", sink.text.String())
 	}
 }
+
+// The reserved "local" value is a normal dropdown option to the relay
+// but MUST NOT reach the agent: acp-tmux's contract for "run here" is an
+// absent/empty `_meta.host`, and the literal "local" would fail its own
+// allowlist. Every resolution path is checked against the wire frame.
+func TestHost_LocalSentinelKeepsMetaOffTheWire(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hosts    []string
+		def      string
+		param    map[string]any
+		wantHost string // "" = _meta must be absent entirely
+	}{
+		{"unconfigured", nil, "", map[string]any{}, ""},
+		{"local selected", []string{"local", "boxy"}, "local", map[string]any{"host": "local"}, ""},
+		{"local as default", []string{"local", "boxy"}, "local", map[string]any{}, ""},
+		{"local default, real host selected", []string{"local", "boxy"}, "local", map[string]any{"host": "boxy"}, "boxy"},
+		{"unlisted falls back to local default", []string{"local", "boxy"}, "local", map[string]any{"host": "attacker@evil"}, ""},
+		{"real default, local selected", []string{"local", "boxy"}, "boxy", map[string]any{"host": "local"}, ""},
+		{"local pinned without a list", nil, "local", map[string]any{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, agent := hostRouter(t, tc.hosts, tc.def)
+			opts := ParseOptions(tc.param, r.Defaults(), nil)
+			if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, opts, &captureSink{}); err != nil {
+				t.Fatalf("Prompt: %v", err)
+			}
+			h, ok := agent.metaHost()
+			if tc.wantHost == "" {
+				if ok {
+					t.Fatalf("_meta.host = %q, want absent", h)
+				}
+				agent.mu.Lock()
+				meta := agent.lastMeta
+				agent.mu.Unlock()
+				if meta != nil {
+					t.Fatalf("extraMeta must be nil, got %#v", meta)
+				}
+				return
+			}
+			if !ok || h != tc.wantHost {
+				t.Fatalf("_meta.host = %q ok=%v, want %q", h, ok, tc.wantHost)
+			}
+		})
+	}
+}
+
+// Flipping the dropdown to or from "local" on a LIVE conversation is the
+// same create-time-only story as any other host: keep the session, print
+// the notice once, and never tear down the pane.
+func TestHost_LocalLiveChangeNotice(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		def        string // host the session is created on
+		pick       string // host selected on turn 2
+		wantNotice string // "" = must stay silent
+	}{
+		{"local to remote", "local", "boxy", "the agent's own host"},
+		{"remote to local", "boxy", "local", "`boxy`"},
+		{"local to local", "local", "local", ""},
+		{"remote to same remote", "boxy", "boxy", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, agent := hostRouter(t, []string{"local", "boxy"}, tc.def)
+			if err := r.Prompt(context.Background(), "c1", "u",
+				[]Turn{{Role: "user", Content: "one", MessageID: "m1"}}, r.Defaults(), &captureSink{}); err != nil {
+				t.Fatalf("Prompt 1: %v", err)
+			}
+			sidBefore := sessionIDOf(t, r, "c1")
+			created := atomic.LoadInt32(&agent.newSessCalls)
+
+			opts := ParseOptions(map[string]any{"host": tc.pick}, r.Defaults(), nil)
+			sink := &captureSink{}
+			if err := r.Prompt(context.Background(), "c1", "u",
+				[]Turn{{Role: "user", Content: "one", MessageID: "m1"}, {Role: "user", Content: "two", MessageID: "m2"}}, opts, sink); err != nil {
+				t.Fatalf("Prompt 2: %v", err)
+			}
+			if got := atomic.LoadInt32(&agent.newSessCalls); got != created {
+				t.Fatalf("host change created a new session: %d -> %d", created, got)
+			}
+			if sid := sessionIDOf(t, r, "c1"); sid != sidBefore {
+				t.Fatalf("session id changed: %q -> %q", sidBefore, sid)
+			}
+			txt := sink.text.String()
+			if tc.wantNotice == "" {
+				if strings.Contains(txt, "host takes effect") {
+					t.Fatalf("expected silence, got %q", txt)
+				}
+				return
+			}
+			if !strings.Contains(txt, "host takes effect on the next conversation") || !strings.Contains(txt, tc.wantNotice) {
+				t.Fatalf("notice = %q, want mention of %q", txt, tc.wantNotice)
+			}
+			// The literal sentinel must never appear as a place name.
+			if strings.Contains(txt, "`local`") {
+				t.Fatalf("notice named the sentinel as an ssh target: %q", txt)
+			}
+		})
+	}
+}
+
+// A conversation created while no host resolved (st.host "") must not be
+// told it is "moving" when a later turn selects the local sentinel —
+// both name the same place.
+func TestHost_HostlessSessionIsSilentAboutLocal(t *testing.T) {
+	// Host list configured, but no default: turn 1 resolves to "".
+	r, _ := hostRouter(t, []string{"local", "boxy"}, "")
+	if err := r.Prompt(context.Background(), "c1", "u",
+		[]Turn{{Role: "user", Content: "one", MessageID: "m1"}}, Options{}, &captureSink{}); err != nil {
+		t.Fatalf("Prompt 1: %v", err)
+	}
+	if h := hostOf(t, r, "c1"); h != "" {
+		t.Fatalf("session host = %q, want empty", h)
+	}
+	sink := &captureSink{}
+	opts := ParseOptions(map[string]any{"host": "local"}, Options{}, nil)
+	if err := r.Prompt(context.Background(), "c1", "u",
+		[]Turn{{Role: "user", Content: "one", MessageID: "m1"}, {Role: "user", Content: "two", MessageID: "m2"}}, opts, sink); err != nil {
+		t.Fatalf("Prompt 2: %v", err)
+	}
+	if strings.Contains(sink.text.String(), "host takes effect") {
+		t.Fatalf("local is where the session already is: %q", sink.text.String())
+	}
+}
+
+// hostOf returns the host a live conversation's session was created on.
+func hostOf(t *testing.T, r *Router, convID string) string {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st, ok := r.sessions[convID]
+	if !ok {
+		t.Fatalf("no session for conv %q", convID)
+	}
+	return st.host
+}

@@ -30,6 +30,7 @@ import (
 
 	"github.com/kfet/acp-kit/client"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/poeupload"
 
@@ -166,7 +167,9 @@ type Options struct {
 	// sent to the agent as `_meta.host` on session/new. CREATE-TIME
 	// ONLY: a live session is never moved (that would tear down the
 	// pane and lose the agent's context) — see Router.noteHostChange.
-	// "" = no host hint, i.e. wherever the agent itself runs.
+	// "" = no host hint, i.e. wherever the agent itself runs. The
+	// reserved value config.LocalHost ("local") means the same thing
+	// while still being a selectable dropdown option.
 	Host string
 }
 
@@ -225,7 +228,9 @@ type Config struct {
 	// the config `hosts` list). It is the ENFORCEMENT point for the
 	// untrusted `host` Poe parameter: a value not in this list is
 	// dropped and Defaults.Host is used instead. Empty disables the
-	// feature — no `_meta.host` is ever sent (today's behaviour).
+	// feature — no `_meta.host` is ever sent (today's behaviour). The
+	// reserved entry config.LocalHost ("local") is allowlisted like any
+	// other, but resolving to it also sends no `_meta.host`.
 	Hosts []string
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
@@ -1897,11 +1902,11 @@ func (r *Router) resolveHost(want string) string {
 // isn't nagged on every turn.
 func (r *Router) noteHostChange(st *sessionState, opts Options, sink ChunkSink) {
 	want := r.resolveHost(opts.Host)
-	if want == "" || want == st.applied.Host {
+	if want == "" || sameHost(want, st.applied.Host) {
 		return
 	}
 	st.applied.Host = want
-	if want == st.host {
+	if sameHost(want, st.host) {
 		return
 	}
 	kitlog.Debugf("noteHostChange conv=%s sid=%s: want host %q, session lives on %q — keeping session",
@@ -1911,11 +1916,26 @@ func (r *Router) noteHostChange(st *sessionState, opts Options, sink ChunkSink) 
 		hostLabel(st.host)))
 }
 
+// isLocalHost reports whether a resolved host means "wherever the agent
+// itself runs": either no host at all (unconfigured bot) or the reserved
+// config.LocalHost sentinel. Both keep _meta.host off the wire.
+func isLocalHost(host string) bool {
+	return host == "" || host == config.LocalHost
+}
+
+// sameHost compares two resolved hosts, treating every spelling of
+// "local" as one place — so a bot that gains a `hosts` list mid-session
+// doesn't tell a local conversation it is moving to itself.
+func sameHost(a, b string) bool {
+	return a == b || (isLocalHost(a) && isLocalHost(b))
+}
+
 // hostLabel renders a session's host for a user-facing notice. A session
-// acquired while no host was configured (or resolved) has none, and
+// acquired while no host was configured (or resolved), or one pinned to
+// the reserved "local" value, has no ssh destination to name and
 // "“" reads as a typo — name it in prose instead.
 func hostLabel(host string) string {
-	if host == "" {
+	if isLocalHost(host) {
 		return "the agent's own host"
 	}
 	return "`" + host + "`"
@@ -2981,9 +3001,11 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	// agent that multiplexes tmux panes over ssh (acp-tmux) reads it at
 	// session create; absent/empty means "local to wherever the agent
 	// runs". Nothing else about placement crosses the boundary, and it
-	// is never sent again for the life of the session.
+	// is never sent again for the life of the session. The reserved
+	// "local" value resolves to that same absent hint — the literal
+	// string is relay-side only and would fail the agent's allowlist.
 	var extraMeta map[string]any
-	if host != "" {
+	if !isLocalHost(host) {
 		extraMeta = map[string]any{poeproto.ParamHost: host}
 	}
 	sid, nerr := r.cfg.Agent.NewSessionWithMeta(acqCtx, cwd, st, sysBlocks, extraMeta)
