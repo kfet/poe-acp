@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.61.1] - 2026-08-29
+
 ### Fixed
 
 - **Agents that cannot release sessions are no longer silent.** A
