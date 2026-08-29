@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.62.1] - 2026-08-29
+
 ### Fixed
 
 - **Absorbed answers now survive a worker swap — and a mid-flight redrive.**
