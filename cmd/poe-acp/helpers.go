@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -249,4 +250,43 @@ func buildSkillsCatalog(cfgPath string) string {
 	log.Printf("skills: %d builtin + %d host -> injected %d (%s)",
 		len(builtin), len(host), len(merged), strings.Join(names, ","))
 	return skills.FormatCatalog(merged)
+}
+
+// agentLiveness is the slice of *client.AgentProc the agent watchdog
+// needs. An interface so the watchdog is unit-testable without spawning
+// a real agent.
+type agentLiveness interface {
+	Done() <-chan struct{}
+	Err() error
+}
+
+// watchAgent is the worker's agent-death policy. The agent child is
+// invisible to the supervisor — it is the WORKER's child — so nothing
+// else can notice it die. Before this existed, a dropped agent (an ssh
+// pipe to a flapping host, an agent crash) left the worker alive and
+// every subsequent turn failing with `write |1: broken pipe` until a
+// human restarted the unit.
+//
+// The relay cannot rebuild the agent in place: the *client.AgentProc is
+// held by the router, the command broker and the MCP host. So the
+// policy is deliberately blunt — exit non-zero and let the supervisor's
+// respawn path (which already backs off) fork a fresh worker + agent
+// pair.
+//
+// A deliberate Close (drain, shutdown) is not an outage and is ignored.
+// exit is a seam for tests; production passes os.Exit.
+func watchAgent(a agentLiveness, restart bool, exit func(int)) {
+	go func() {
+		<-a.Done()
+		err := a.Err()
+		if errors.Is(err, client.ErrAgentClosed) {
+			return
+		}
+		if !restart {
+			log.Printf("agent exited unexpectedly: %v (agent.restart.enabled=false; turns will report the outage)", err)
+			return
+		}
+		log.Printf("agent exited unexpectedly: %v; exiting for a supervisor respawn", err)
+		exit(1)
+	}()
 }

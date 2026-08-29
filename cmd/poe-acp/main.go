@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -173,7 +174,7 @@ func main() {
 	// inherited listener and runs all the relay logic below. The
 	// supervisor is tiny and never reaches the agent/router setup.
 	if !supervisor.IsWorker() {
-		runSupervisor(*httpAddr, version, *drainDeadline, *swapDrainDL)
+		runSupervisor(*httpAddr, version, *drainDeadline, *swapDrainDL, cfg.Agent.RestartMaxBackoff())
 		return
 	}
 	log.Printf("worker mode (pid=%d, supervisor=%d)", os.Getpid(), os.Getppid())
@@ -245,6 +246,13 @@ func main() {
 	}
 	defer agent.Close()
 	log.Printf("agent started: %s", *agentCmd)
+	// Nothing but this worker can see the agent die: it is our child,
+	// not the supervisor's. Watch it and convert an unexpected exit into
+	// a worker exit, which the supervisor already knows how to respawn.
+	watchAgent(agent, cfg.Agent.RestartEnabled(), os.Exit)
+	if !cfg.Agent.RestartEnabled() {
+		log.Printf("agent restart DISABLED by config; an agent death will not recycle this worker")
+	}
 	if _, ok := agent.Caps().Extensions[statusline.ExtensionID]; ok {
 		log.Printf("agent advertises %s", statusline.ExtensionID)
 	}
@@ -566,7 +574,7 @@ type worker struct {
 // allows that worker the same value plus supervisor.RetireGrace before
 // escalating to SIGKILL, so a wedged worker generation can never survive
 // its retirement.
-func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.Duration) {
+func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline, maxRespawnBackoff time.Duration) {
 	sup, err := supervisor.New(supervisor.Config{Addr: addr})
 	if err != nil {
 		log.Fatalf("supervisor: %v", err)
@@ -664,20 +672,63 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 		}
 	}
 
-	current, err := spawnReady()
-	if err != nil {
-		log.Fatalf("supervisor: initial worker: %v", err)
-	}
-	sup.SetCurrent(current.proc)
-	log.Printf("supervisor: worker pid=%d serving", current.proc.Pid)
+	// Respawn schedule. A spawn failure is NEVER fatal here: the usual
+	// cause is that the agent's backing host is down (the agent-cmd is an
+	// ssh pipe), which is transient and outside our control. Fatalf'ing
+	// on it hands the bot's death to the init system's restart policy,
+	// which either gives up (systemd start-limit) or hot-loops. Instead
+	// the supervisor stays alive, keeps the listening socket, and retries
+	// on an exponential, jittered schedule until a worker comes up.
+	respawn := &supervisor.Backoff{Max: maxRespawnBackoff}
+	retry := time.NewTimer(time.Hour)
+	stopTimer(retry)
 
-	// Now that a worker is serving, tell systemd we are up (Type=notify).
-	// No-op when NOTIFY_SOCKET is unset (launchd / bare process).
-	if sent, err := sdnotify.Ready(); err != nil {
-		log.Printf("sdnotify: readiness notify failed: %v", err)
-	} else if sent {
-		log.Printf("sdnotify: notified systemd ready")
+	// notifyReady tells systemd we are up (Type=notify) the first time a
+	// worker serves. No-op when NOTIFY_SOCKET is unset (launchd / bare
+	// process). Once only: a later respawn must not re-notify.
+	var readyOnce sync.Once
+	notifyReady := func() {
+		readyOnce.Do(func() {
+			if sent, err := sdnotify.Ready(); err != nil {
+				log.Printf("sdnotify: readiness notify failed: %v", err)
+			} else if sent {
+				log.Printf("sdnotify: notified systemd ready")
+			}
+		})
 	}
+
+	// current is nil exactly while no worker is serving — the window
+	// between a worker's death and a successful respawn. Every case
+	// below has to tolerate that.
+	var current *worker
+
+	// trySpawn attempts one spawn. On success the worker takes over; on
+	// failure it arms the retry timer and logs the retry state, leaving
+	// current nil.
+	trySpawn := func(what string) {
+		nw, err := spawnReady()
+		if err != nil {
+			d := respawn.Next()
+			log.Printf("supervisor: WARN %s failed (attempt %d): %v; retrying in %s",
+				what, respawn.Attempts(), err, d.Round(time.Millisecond))
+			retry.Reset(d)
+			// Tell systemd we are up even though no worker is serving.
+			// Under Type=notify a supervisor that never sends READY=1 is
+			// SIGKILLed at TimeoutStartSec (90s by default) — which would
+			// undo the whole point of backing off when the agent's remote
+			// host is down for minutes. The supervisor holds the listening
+			// socket and is retrying: that IS the service being up.
+			notifyReady()
+			return
+		}
+		respawn.Reset()
+		current = nw
+		sup.SetCurrent(nw.proc)
+		log.Printf("supervisor: worker pid=%d serving", nw.proc.Pid)
+		notifyReady()
+	}
+
+	trySpawn("initial worker")
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
@@ -691,6 +742,16 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 		case <-hup:
 			log.Printf("SIGHUP: worker swap")
 			logPileup()
+			if current == nil {
+				// No worker to swap: we are mid-backoff. Treat the HUP
+				// as "try again now" rather than ignoring it — an
+				// operator who reloads after fixing the remote host
+				// should not wait out the backoff.
+				log.Printf("supervisor: no worker serving; retrying spawn now")
+				stopTimer(retry)
+				trySpawn("respawn")
+				continue
+			}
 			nw, err := spawnReady()
 			if err != nil {
 				log.Printf("supervisor: swap aborted, keeping worker %d: %v", current.proc.Pid, err)
@@ -706,18 +767,22 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 			// it, so a healthy multi-minute turn is left alone.
 			go retire(old, swapOrder)
 		case <-usr2:
-			log.Printf("SIGUSR2: supervisor self-upgrade (retiring worker %d first)", current.proc.Pid)
+			log.Printf("SIGUSR2: supervisor self-upgrade (retiring worker %s first)", workerDesc(current))
 			// A self-upgrade is NOT a swap: no replacement worker is
 			// serving and the supervisor blocks here, so this drain is
 			// externally bounded exactly like a stop.
-			retire(current, stopOrder)
+			if current != nil {
+				retire(current, stopOrder)
+			}
 			log.Printf("supervisor: quiescent; re-exec self")
 			if err := sup.SelfReexec(); err != nil {
 				log.Fatalf("supervisor: self-reexec: %v", err)
 			}
 		case s := <-stop:
-			log.Printf("supervisor: %v; retiring worker %d then exiting", s, current.proc.Pid)
-			retire(current, stopOrder)
+			log.Printf("supervisor: %v; retiring worker %s then exiting", s, workerDesc(current))
+			if current != nil {
+				retire(current, stopOrder)
+			}
 			// Anything still retiring from an earlier swap gets the same
 			// treatment: no worker generation outlives its supervisor.
 			// That also bounds a swap drain that a stop landed in the
@@ -731,21 +796,39 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline time.D
 			}
 			log.Printf("supervisor: bye")
 			os.Exit(0)
+		case <-retry.C:
+			trySpawn("respawn")
 		case pid := <-exitCh:
-			if pid != current.proc.Pid {
+			if current == nil || pid != current.proc.Pid {
 				log.Printf("supervisor: reaped worker %d", pid)
 				continue
 			}
 			log.Printf("supervisor: serving worker %d died unexpectedly; respawning", pid)
-			nw, err := spawnReady()
-			if err != nil {
-				log.Fatalf("supervisor: respawn failed: %v", err)
-			}
-			current = nw
-			sup.SetCurrent(nw.proc)
-			log.Printf("supervisor: worker pid=%d serving", nw.proc.Pid)
+			current = nil
+			sup.SetCurrent(nil)
+			trySpawn("respawn")
 		}
 	}
+}
+
+// stopTimer stops t and drains a already-fired tick, so a later Reset
+// cannot deliver a stale one.
+func stopTimer(t *time.Timer) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+}
+
+// workerDesc renders a worker pid for logs, tolerating the no-worker
+// window (supervisor mid-backoff).
+func workerDesc(w *worker) string {
+	if w == nil {
+		return "(none)"
+	}
+	return strconv.Itoa(w.proc.Pid)
 }
 
 // runUpdate implements the `poe-acp update` subcommand: download the

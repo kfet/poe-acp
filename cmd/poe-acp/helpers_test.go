@@ -457,3 +457,71 @@ func TestBuildControls_AppliesPins(t *testing.T) {
 		t.Fatal("buildControls is not idempotent: pinned vs double-pinned schemas differ")
 	}
 }
+
+// fakeLiveness is an agentLiveness whose exit is driven by the test.
+type fakeLiveness struct {
+	done chan struct{}
+	err  error
+}
+
+func newFakeLiveness() *fakeLiveness { return &fakeLiveness{done: make(chan struct{})} }
+
+func (f *fakeLiveness) Done() <-chan struct{} { return f.done }
+func (f *fakeLiveness) Err() error            { return f.err }
+func (f *fakeLiveness) die(err error)         { f.err = err; close(f.done) }
+
+func TestWatchAgentExitsOnUnexpectedDeath(t *testing.T) {
+	a := newFakeLiveness()
+	codes := make(chan int, 1)
+	watchAgent(a, true, func(c int) { codes <- c })
+	a.die(errors.New("signal: killed"))
+	if got := <-codes; got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+}
+
+// A deliberate Close is an orderly shutdown, not an outage: the watchdog
+// must not take the worker down mid-drain.
+func TestWatchAgentIgnoresDeliberateClose(t *testing.T) {
+	a := newFakeLiveness()
+	codes := make(chan int, 1)
+	stopped := make(chan struct{})
+	watchAgent(a, true, func(c int) { codes <- c })
+	go func() { defer close(stopped); a.die(client.ErrAgentClosed) }()
+	<-stopped
+	// Drive a second, unexpected death through a fresh watcher to prove
+	// the first watcher's silence is not just a lost race.
+	b := newFakeLiveness()
+	watchAgent(b, true, func(c int) { codes <- c })
+	b.die(errors.New("boom"))
+	if got := <-codes; got != 1 {
+		t.Fatalf("exit code = %d, want 1 (from the second agent)", got)
+	}
+	select {
+	case c := <-codes:
+		t.Fatalf("deliberate close triggered exit(%d)", c)
+	default:
+	}
+}
+
+// agent.restart.enabled=false keeps the worker up so an operator can
+// inspect a dying agent; turns then report the outage instead.
+func TestWatchAgentRestartDisabled(t *testing.T) {
+	a := newFakeLiveness()
+	codes := make(chan int, 1)
+	watchAgent(a, false, func(c int) { codes <- c })
+	a.die(errors.New("boom"))
+	// No exit; give the watcher a chance to run by waiting on a second
+	// watcher that IS allowed to exit.
+	b := newFakeLiveness()
+	watchAgent(b, true, func(c int) { codes <- c })
+	b.die(errors.New("boom"))
+	if got := <-codes; got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+	select {
+	case c := <-codes:
+		t.Fatalf("restart-disabled agent triggered exit(%d)", c)
+	default:
+	}
+}

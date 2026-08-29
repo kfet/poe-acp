@@ -335,3 +335,72 @@ func ids(ms []client.ModelInfo) []string {
 	}
 	return out
 }
+
+func TestAgentRestartDefaults(t *testing.T) {
+	var a Agent
+	if !a.RestartEnabled() {
+		t.Fatal("restart must default to enabled")
+	}
+	if got := a.RestartMaxBackoff(); got != DefaultRestartMaxBackoff {
+		t.Fatalf("max backoff = %s, want %s", got, DefaultRestartMaxBackoff)
+	}
+	off := false
+	a.Restart.Enabled = &off
+	if a.RestartEnabled() {
+		t.Fatal("explicit false must disable restart")
+	}
+	on := true
+	a.Restart.Enabled = &on
+	if !a.RestartEnabled() {
+		t.Fatal("explicit true must enable restart")
+	}
+	a.Restart.MaxBackoff = "5m"
+	if got := a.RestartMaxBackoff(); got != 5*time.Minute {
+		t.Fatalf("max backoff = %s, want 5m", got)
+	}
+	// Validate rejects these, but the accessor must still be total.
+	a.Restart.MaxBackoff = "nonsense"
+	if got := a.RestartMaxBackoff(); got != DefaultRestartMaxBackoff {
+		t.Fatalf("unparseable max backoff = %s, want the default", got)
+	}
+	a.Restart.MaxBackoff = "0s"
+	if got := a.RestartMaxBackoff(); got != DefaultRestartMaxBackoff {
+		t.Fatalf("zero max backoff = %s, want the default", got)
+	}
+}
+
+func TestValidateAgentRestartMaxBackoff(t *testing.T) {
+	for _, tc := range []struct {
+		val     string
+		wantErr string
+	}{
+		{"60s", ""},
+		{"", ""},
+		{"later", "invalid"},
+		{"-1s", "must be positive"},
+	} {
+		c := Config{Agent: Agent{Restart: Restart{MaxBackoff: tc.val}}}
+		err := c.Validate()
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Fatalf("%q: unexpected error %v", tc.val, err)
+		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+			t.Fatalf("%q: err = %v, want %q", tc.val, err, tc.wantErr)
+		}
+	}
+}
+
+func TestLoadAgentRestartSection(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.json")
+	if err := os.WriteFile(p, []byte(`{"agent":{"restart":{"enabled":true,"max_backoff":"30s"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, ok, err := Load(p)
+	if err != nil || !ok {
+		t.Fatalf("Load: ok=%v err=%v", ok, err)
+	}
+	if !cfg.Agent.RestartEnabled() || cfg.Agent.RestartMaxBackoff() != 30*time.Second {
+		t.Fatalf("parsed restart = %+v", cfg.Agent.Restart)
+	}
+}
