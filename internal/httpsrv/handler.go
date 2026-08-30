@@ -270,7 +270,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// unrecoverable when the only per-turn line was FRAMESTATS at the
 		// END of a turn. Paired with FRAMESTATS it also yields per-turn
 		// latency for free (timestamp delta).
-		log.Printf("RECV conv=%s msg=%s bytes=%d", req.ConversationID, req.MessageID, cr.n)
+		//
+		// umsg is the latest USER message_id — the absorbed-answer buffer
+		// key. Unlike msg (unique per HTTP query, hence useless for
+		// correlating a redrive) it repeats across a redrive pair, so two
+		// RECV lines sharing conv+umsg ARE the same user message served
+		// twice. Do not confuse the two fields.
+		log.Printf("RECV conv=%s msg=%s umsg=%s bytes=%d", req.ConversationID, req.MessageID, req.LatestUserMessageID(), cr.n)
 		h.handleQuery(r.Context(), w, req)
 
 	case poeproto.TypeReportReaction:
@@ -445,10 +451,11 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// we absorbed (client dropped pre-output) and we buffered, serve the
 	// completed answer from the buffer instead of re-running the agent.
 	// Keyed by conv + latest user message_id (stable across a redrive).
-	key := answerKey(req.ConversationID, latestUserMessageID(turns))
+	umsgID := latestUserMessageID(turns)
+	key := answerKey(req.ConversationID, umsgID)
 	if key != "" {
 		if calls, ok := h.answers.take(key); ok {
-			kitlog.Debugf("redrive served from buffer: conv=%s msg=%s", req.ConversationID, req.MessageID)
+			log.Printf("redrive served from buffer: conv=%s msg=%s umsg=%s", req.ConversationID, req.MessageID, umsgID)
 			replay(calls, s)
 			return
 		}
@@ -463,8 +470,8 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		calls, outcome := h.answers.waitPending(ctx, key)
 		switch outcome {
 		case waitServed:
-			log.Printf("redrive served from absorbed in-flight turn: conv=%s msg=%s waited=%s",
-				req.ConversationID, req.MessageID, time.Since(waitStart).Round(time.Millisecond))
+			log.Printf("redrive served from absorbed in-flight turn: conv=%s msg=%s umsg=%s waited=%s",
+				req.ConversationID, req.MessageID, umsgID, time.Since(waitStart).Round(time.Millisecond))
 			replay(calls, s)
 			return
 		case waitAborted:
@@ -472,8 +479,8 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 			// turn. Re-running would invoke the agent a SECOND time — with
 			// real side effects — for work already in flight. Leave it to
 			// finish; its answer is buffered for the next redrive.
-			log.Printf("redrive abandoned mid-wait, turn owned elsewhere: conv=%s msg=%s waited=%s",
-				req.ConversationID, req.MessageID, time.Since(waitStart).Round(time.Millisecond))
+			log.Printf("redrive abandoned mid-wait, turn owned elsewhere: conv=%s msg=%s umsg=%s waited=%s",
+				req.ConversationID, req.MessageID, umsgID, time.Since(waitStart).Round(time.Millisecond))
 			return
 		}
 	}
@@ -529,6 +536,13 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 				_ = h.cfg.Router.CancelTurn(context.Background(), req.ConversationID, rec.turnToken())
 			} else {
 				absorbed.Store(true)
+				// Always-on: this is the only proof that a turn was
+				// absorbed rather than cancelled, and it was previously
+				// debug-only — i.e. invisible in production, which cost
+				// four rounds of investigation on 2026-08-28. WARN
+				// because it IS a user-visible failure (the user saw
+				// their answer vanish); the turn itself is handled.
+				log.Printf("WARN absorbed pre-output client drop: conv=%s umsg=%s elapsed=%s — turn continues decoupled, answer buffered for redrive", req.ConversationID, umsgID, elapsed.Round(time.Millisecond))
 				// Publish the pending marker HERE, at the latch, not at
 				// turn completion: a redrive that arrives while this
 				// turn is still running must be able to see that an
@@ -570,7 +584,9 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		// same act that makes the answer visible releases any redrive
 		// waiting on this turn.
 		h.answers.put(key, rec.snapshot())
-		kitlog.Debugf("absorbed pre-output drop: buffered answer conv=%s msg=%s", req.ConversationID, req.MessageID)
+		// Always-on companion to the latch line: without it you can see a
+		// turn was absorbed but not whether its answer ever landed.
+		log.Printf("absorbed turn complete: conv=%s umsg=%s duration=%s — answer buffered", req.ConversationID, umsgID, time.Since(start).Round(time.Millisecond))
 	}
 }
 
