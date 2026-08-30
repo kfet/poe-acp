@@ -451,7 +451,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// we absorbed (client dropped pre-output) and we buffered, serve the
 	// completed answer from the buffer instead of re-running the agent.
 	// Keyed by conv + latest user message_id (stable across a redrive).
-	umsgID := latestUserMessageID(turns)
+	umsgID := req.LatestUserMessageID()
 	key := answerKey(req.ConversationID, umsgID)
 	if key != "" {
 		if calls, ok := h.answers.take(key); ok {
@@ -542,7 +542,17 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 				// four rounds of investigation on 2026-08-28. WARN
 				// because it IS a user-visible failure (the user saw
 				// their answer vanish); the turn itself is handled.
-				log.Printf("WARN absorbed pre-output client drop: conv=%s umsg=%s elapsed=%s — turn continues decoupled, answer buffered for redrive", req.ConversationID, umsgID, elapsed.Round(time.Millisecond))
+				//
+				// The tail states the buffering outcome rather than
+				// assuming it: with no user message_id there is no
+				// buffer key, so nothing is buffered and no "absorbed
+				// turn complete" line will follow. Saying so here keeps
+				// the absence from reading as a lost answer.
+				outcome := "answer buffered for redrive"
+				if key == "" {
+					outcome = "no user message_id: answer NOT buffered, a redrive will re-run the turn"
+				}
+				log.Printf("WARN absorbed pre-output client drop: conv=%s umsg=%s elapsed=%s — turn continues decoupled, %s", req.ConversationID, umsgID, elapsed.Round(time.Millisecond), outcome)
 				// Publish the pending marker HERE, at the latch, not at
 				// turn completion: a redrive that arrives while this
 				// turn is still running must be able to see that an
@@ -1669,19 +1679,6 @@ func latestUserTurn(turns []router.Turn) string {
 	for i := len(turns) - 1; i >= 0; i-- {
 		if turns[i].Role == "user" {
 			return turns[i].Content
-		}
-	}
-	return ""
-}
-
-// latestUserMessageID returns the Poe message_id of the most recent user
-// turn, or "" if there isn't one (or it carries no id). Used to key the
-// answer buffer so a redrive of the same query maps to its buffered
-// response.
-func latestUserMessageID(turns []router.Turn) string {
-	for i := len(turns) - 1; i >= 0; i-- {
-		if turns[i].Role == "user" {
-			return turns[i].MessageID
 		}
 	}
 	return ""
