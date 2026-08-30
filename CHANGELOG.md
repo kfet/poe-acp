@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-08-30
+
 ### Changed
 
 - **The Options panel is now a consistent "Show X" family, and all four
