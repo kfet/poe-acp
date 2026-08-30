@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-08-30
+
 ### Added
 
 - **The absorbed-turn path is now legible at default verbosity.** A
