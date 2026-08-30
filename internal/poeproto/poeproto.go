@@ -95,6 +95,22 @@ func (r *Request) LatestUserText() string {
 	return ""
 }
 
+// LatestUserMessageID returns the message_id of the last `user` message
+// in the query, or "" if there is none (or it carries no id).
+//
+// This is NOT Request.MessageID: that one is the per-HTTP-query id and is
+// unique on every request, including a redrive of the same user message.
+// The latest user message_id is stable across a redrive, which is why the
+// relay keys its absorbed-answer buffer on it — and why it is logged.
+func (r *Request) LatestUserMessageID() string {
+	for i := len(r.Query) - 1; i >= 0; i-- {
+		if r.Query[i].Role == "user" {
+			return r.Query[i].MessageID
+		}
+	}
+	return ""
+}
+
 // Decode parses a Poe request from the HTTP body.
 func Decode(body io.Reader) (*Request, error) {
 	var (

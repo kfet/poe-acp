@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The absorbed-turn path is now legible at default verbosity.** A
+  pre-output client drop is absorbed (turn continues decoupled, answer
+  buffered for Poe's redrive), but the whole path logged only at debug —
+  off in production — so an incident could not be settled from logs.
+  Three always-on lines now cover it: `WARN absorbed pre-output client
+  drop` at the latch (with elapsed), `absorbed turn complete` when the
+  answer is buffered (with duration), and `redrive served from buffer`
+  (promoted from debug) when it is replayed.
+- **`RECV` carries `umsg=`, the latest *user* message id.** That is the
+  answer-buffer key and is stable across a redrive, unlike `msg=` (the
+  per-HTTP-query id, unique on every request — counting duplicates of it
+  can never reveal a redrive). `msg=` is unchanged. All redrive lines
+  carry `umsg=` too.
+
 ## [0.63.0] - 2026-08-29
 
 ### Added

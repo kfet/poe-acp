@@ -13,6 +13,23 @@ import (
 	kitlog "github.com/kfet/acp-kit/log"
 )
 
+// LatestUserMessageID is the absorbed-answer buffer key and must track the
+// LAST user turn — not Request.MessageID, which is per-HTTP-query.
+func TestLatestUserMessageID(t *testing.T) {
+	r := &Request{MessageID: "query-id", Query: []Message{
+		{Role: "user", MessageID: "u1"},
+		{Role: "bot", MessageID: "b1"},
+		{Role: "user", MessageID: "u2"},
+	}}
+	if got := r.LatestUserMessageID(); got != "u2" {
+		t.Fatalf("got %q want u2", got)
+	}
+	r2 := &Request{Query: []Message{{Role: "bot", MessageID: "b1"}}}
+	if got := r2.LatestUserMessageID(); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+}
+
 func TestLatestUserText(t *testing.T) {
 	r := &Request{Query: []Message{
 		{Role: "user", Content: "first"},
