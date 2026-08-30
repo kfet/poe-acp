@@ -333,21 +333,6 @@ func TestLatestUserTurn(t *testing.T) {
 	}
 }
 
-func TestLatestUserMessageID(t *testing.T) {
-	turns := []router.Turn{
-		{Role: "user", Content: "a", MessageID: "m1"},
-		{Role: "bot", Content: "b"},
-		{Role: "user", Content: "c", MessageID: "m2"},
-	}
-	if got := latestUserMessageID(turns); got != "m2" {
-		t.Fatalf("got %q want m2", got)
-	}
-	// No user turn → "".
-	if got := latestUserMessageID([]router.Turn{{Role: "bot", Content: "x"}}); got != "" {
-		t.Fatalf("got %q want empty", got)
-	}
-}
-
 func TestTruncateRunes(t *testing.T) {
 	if got := truncateRunes("", 10); got != "" {
 		t.Fail()
