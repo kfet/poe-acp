@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The Options panel is now a consistent "Show X" family, and all four
+  visibility toggles default to OFF.** `Hide thinking output` became
+  `Show thinking` with parameter_name `show_thinking` (inverted
+  polarity); `Plan` / `Tools` / `Tool details` became `Show plan` /
+  `Show tools` / `Show tool details`; `Thinking` became `Thinking
+  effort`. `show_plans` and `show_tools` previously defaulted ON —
+  a clean chat is now the default and users opt into progress noise per
+  chat when they start a longer task. The old `hide_thinking`
+  parameter_name is still ACCEPTED on the wire forever (Poe stores
+  per-chat parameter values keyed by parameter_name, so chats that
+  predate the rename would otherwise silently lose an explicit "show
+  thinking" choice) but is never declared and never emitted — and is
+  therefore deliberately absent from the reserved-flag escaper, while
+  `--show_thinking` is now escaped. An explicit `show_thinking` wins
+  when both arrive.
+- **Config: `defaults.show_thinking` replaces `defaults.hide_thinking`.**
+  Existing configs keep working untouched: `hide_thinking` is still read
+  and inverted, with a one-line deprecation warning at boot. Setting
+  BOTH keys is now a hard config error rather than silent precedence.
+
 ### Fixed
 
 - **`converge.sh` survives a swap that a second SIGHUP supersedes.** A unit

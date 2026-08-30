@@ -1,6 +1,6 @@
 # Parameter Controls — design
 
-Status: **shipped in v0.5.0.** Original draft retained below for historical context. Operator-facing surface (config file, defaults resolution, schema cache invalidation) extends what was originally drafted — see "v0.5.0 additions" at the end.
+Status: **shipped in v0.5.0.** Original draft retained below for historical context. **Note:** the `hide_thinking` toggle referenced throughout this document was renamed to `show_thinking` (inverted polarity, off by default) along with the rest of the "Show X" toggle family; the old parameter_name is still accepted inbound but never declared. See the README for the current surface. Operator-facing surface (config file, defaults resolution, schema cache invalidation) extends what was originally drafted — see "v0.5.0 additions" at the end.
 
 ## Goal
 
@@ -332,7 +332,7 @@ boot-time probe; flat layout; no `condition` block) is unchanged.
 `paramctl.Build` adapts the schema to provider count:
 
 - **0 providers** (probe failed / unauthed) — Provider+Model dropdowns
-  omitted; only Thinking + Hide thinking render.
+  omitted; only Thinking effort + the Show toggles render.
 - **1 provider** — UI collapses to a single flat `Model` drop_down with
   `parameter_name: "model"` (the legacy/back-compat shape). No Provider
   dropdown, no `condition` wrapper. Bots wired to a single provider

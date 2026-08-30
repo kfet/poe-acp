@@ -388,7 +388,7 @@ func TestDrainProcessChunk_ToolCallSuppressed(t *testing.T) {
 }
 
 func TestDrainProcessChunk_HiddenThought(t *testing.T) {
-	td := &turnDef{sink: &captureSink{}, hideThinking: true}
+	td := &turnDef{sink: &captureSink{}, showThinking: false}
 	first := false
 	mode := chunkNone
 	drainProcessChunk(acp.SessionNotification{Update: acp.SessionUpdate{
@@ -401,7 +401,7 @@ func TestDrainProcessChunk_HiddenThought(t *testing.T) {
 
 func TestDrainProcessChunk_ThoughtFormatting(t *testing.T) {
 	cs := &captureSink{}
-	td := &turnDef{sink: cs}
+	td := &turnDef{sink: cs, showThinking: true}
 	first := false
 	mode := chunkNone
 

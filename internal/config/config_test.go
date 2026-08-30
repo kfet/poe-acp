@@ -63,7 +63,7 @@ func TestLoad_Valid(t *testing.T) {
 		"defaults": {
 			"model": "anthropic/claude-sonnet-4-6",
 			"thinking": "medium",
-			"hide_thinking": false,
+			"show_thinking": true,
 			"show_plans": false,
 			"show_tools": true,
 			"show_tool_details": false
@@ -85,8 +85,8 @@ func TestLoad_Valid(t *testing.T) {
 	if cfg.Defaults.Thinking != "medium" {
 		t.Errorf("thinking: %q", cfg.Defaults.Thinking)
 	}
-	if cfg.Defaults.HideThinking == nil || *cfg.Defaults.HideThinking != false {
-		t.Errorf("hide_thinking: %v", cfg.Defaults.HideThinking)
+	if cfg.Defaults.ShowThinking == nil || *cfg.Defaults.ShowThinking != true {
+		t.Errorf("show_thinking: %v", cfg.Defaults.ShowThinking)
 	}
 	if cfg.Defaults.ShowPlans == nil || *cfg.Defaults.ShowPlans != false {
 		t.Errorf("show_plans: %v", cfg.Defaults.ShowPlans)
@@ -402,5 +402,59 @@ func TestLoadAgentRestartSection(t *testing.T) {
 	}
 	if !cfg.Agent.RestartEnabled() || cfg.Agent.RestartMaxBackoff() != 30*time.Second {
 		t.Fatalf("parsed restart = %+v", cfg.Agent.Restart)
+	}
+}
+
+// TestLoad_HideThinkingDeprecatedAlias covers config files deployed
+// before the rename — several hosts carry `"hide_thinking": false` and
+// must keep working untouched.
+func TestLoad_HideThinkingDeprecatedAlias(t *testing.T) {
+	t.Parallel()
+	p := writeFile(t, `{"defaults": {"hide_thinking": false}}`)
+	cfg, ok, err := Load(p)
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	v := cfg.Defaults.ShowThinkingValue()
+	if v == nil || !*v {
+		t.Fatalf("hide_thinking=false should resolve to show_thinking=true, got %v", v)
+	}
+
+	p = writeFile(t, `{"defaults": {"hide_thinking": true}}`)
+	cfg, _, err = Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if v := cfg.Defaults.ShowThinkingValue(); v == nil || *v {
+		t.Fatalf("hide_thinking=true should resolve to show_thinking=false, got %v", v)
+	}
+
+	// Neither key set → nil, i.e. "use the built-in default".
+	if v := (Defaults{}).ShowThinkingValue(); v != nil {
+		t.Fatalf("unset should resolve to nil, got %v", *v)
+	}
+
+	// New key alone.
+	p = writeFile(t, `{"defaults": {"show_thinking": true}}`)
+	cfg, _, err = Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if v := cfg.Defaults.ShowThinkingValue(); v == nil || !*v {
+		t.Fatalf("show_thinking=true should resolve to true, got %v", v)
+	}
+}
+
+// TestValidate_BothThinkingKeys: silent precedence in a config file is
+// how an operator's edit gets ignored, so setting both is a hard error.
+func TestValidate_BothThinkingKeys(t *testing.T) {
+	t.Parallel()
+	p := writeFile(t, `{"defaults": {"show_thinking": true, "hide_thinking": false}}`)
+	_, ok, err := Load(p)
+	if err == nil {
+		t.Fatalf("expected an error, got ok=%v", ok)
+	}
+	if !strings.Contains(err.Error(), "show_thinking") || !strings.Contains(err.Error(), "hide_thinking") {
+		t.Fatalf("error should name both keys: %v", err)
 	}
 }

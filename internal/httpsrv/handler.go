@@ -403,10 +403,10 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		latestPJ, _ := json.Marshal(req.LatestParameters())
 		defaults := h.cfg.Router.Defaults()
 		kitlog.Debugf("  latest_params=%s", string(latestPJ))
-		kitlog.Debugf("  defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
-			defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails)
-		kitlog.Debugf("  parsed_opts: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
-			opts.Model, opts.Thinking, opts.HideThinking, opts.ShowPlans, opts.ShowTools, opts.ShowToolDetails)
+		kitlog.Debugf("  defaults: model=%q thinking=%q show_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
+			defaults.Model, defaults.Thinking, defaults.ShowThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails)
+		kitlog.Debugf("  parsed_opts: model=%q thinking=%q show_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v",
+			opts.Model, opts.Thinking, opts.ShowThinking, opts.ShowPlans, opts.ShowTools, opts.ShowToolDetails)
 	}
 
 	// Sink: SSE writer + heartbeat coordination + disconnect → cancel.
@@ -414,8 +414,8 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// mood + plan + running tool + Thinking…, plus the show_plans
 	// checklist) that the orderedWriter strips the moment the next real
 	// chunk lands, re-arming on every subsequent stall for the whole
-	// turn. (hide_thinking is a router-level concern: it suppresses
-	// agent_thought_chunk content from the stream, not the spinner.)
+	// turn. (show_thinking is a router-level concern: it gates
+	// agent_thought_chunk content in the stream, not the spinner.)
 	s := newSinkOpts(sse, sinkOpts{
 		heartbeat:     h.cfg.HeartbeatInterval,
 		stall:         h.cfg.StallThreshold,

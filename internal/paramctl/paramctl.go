@@ -64,30 +64,29 @@ var ThinkingLevels = []poeproto.ValueNamePair{
 // configured `defaults.thinking` in config.json.
 const DefaultThinking = "medium"
 
-// DefaultHideThinking is the built-in fallback when the operator has not
-// configured `defaults.hide_thinking` in config.json.
-const DefaultHideThinking = true
+// The four progress/visibility toggles (`show_thinking`, `show_plans`,
+// `show_tools`, `show_tool_details`) all default OFF. A clean chat is
+// the honest default: most turns are short and the answer is the whole
+// point, so progress noise is opt-in per chat via the Poe Options
+// panel (or per bot via config.json) when a user knowingly starts a
+// long task.
+
+// DefaultShowThinking is the built-in fallback when the operator has not
+// configured `defaults.show_thinking` in config.json.
+const DefaultShowThinking = false
 
 // DefaultShowPlans is the built-in fallback when the operator has not
-// configured `defaults.show_plans` in config.json. On by default: a
-// long tool-heavy turn is otherwise silent, and the plan checklist is
-// transient (it lives in the keepalive frame, not the answer body), so
-// it costs nothing once the answer lands.
-const DefaultShowPlans = true
+// configured `defaults.show_plans` in config.json.
+const DefaultShowPlans = false
 
 // DefaultShowTools is the built-in fallback when the operator has not
-// configured `defaults.show_tools` in config.json. On by default: the
-// per-tool_call transcript line is the only durable record of what the
-// agent actually did during a turn.
-const DefaultShowTools = true
+// configured `defaults.show_tools` in config.json.
+const DefaultShowTools = false
 
 // DefaultShowToolDetails is the built-in fallback when the operator has
 // not configured `defaults.show_tool_details` in config.json. Off by
-// default: the per-tool_call line from ShowTools is already the durable
-// record of what the agent did, while the content/result rendering
-// underneath it is verbose enough to bury the answer in a tool-heavy
-// turn. Operators (and users, via the Poe toggle) opt in when they want
-// the full command and outcome. Only has effect when ShowTools is on.
+// default (see the note above); additionally, it only has effect when
+// ShowTools is on.
 const DefaultShowToolDetails = false
 
 // OtherProvider is the bucket label for models whose ID has no '/'
@@ -122,7 +121,7 @@ func ProviderParamName(provider string) string { return router.ProviderParamName
 func Resolve(cfg config.Defaults, models []client.ModelInfo, probeCurrent string) router.Options {
 	o := router.Options{
 		Thinking:        DefaultThinking,
-		HideThinking:    DefaultHideThinking,
+		ShowThinking:    DefaultShowThinking,
 		ShowPlans:       DefaultShowPlans,
 		ShowTools:       DefaultShowTools,
 		ShowToolDetails: DefaultShowToolDetails,
@@ -130,8 +129,8 @@ func Resolve(cfg config.Defaults, models []client.ModelInfo, probeCurrent string
 	if cfg.Thinking != "" {
 		o.Thinking = cfg.Thinking
 	}
-	if cfg.HideThinking != nil {
-		o.HideThinking = *cfg.HideThinking
+	if v := cfg.ShowThinkingValue(); v != nil {
+		o.ShowThinking = *v
 	}
 	if cfg.ShowPlans != nil {
 		o.ShowPlans = *cfg.ShowPlans
@@ -215,8 +214,8 @@ func Providers(models []client.ModelInfo) []string {
 // UI's `default_value`s match what the relay applies at runtime.
 //
 // If models is empty (probe failed or agent is unauthed) the
-// provider+model dropdowns are omitted entirely; only Thinking, Hide
-// thinking, Plan and Tools remain.
+// provider+model dropdowns are omitted entirely; only Thinking effort
+// and the four Show toggles remain.
 //
 // If the model list resolves to exactly one provider, the schema
 // collapses to a single bare `model` drop_down (no Provider picker, no
@@ -306,32 +305,32 @@ func Build(models []client.ModelInfo, hosts []config.Host, defaults router.Optio
 	controls = append(controls,
 		poeproto.Control{
 			Control:       "drop_down",
-			Label:         "Thinking",
+			Label:         "Thinking effort",
 			ParameterName: poeproto.ParamThinking,
 			DefaultValue:  defaults.Thinking,
 			Options:       append([]poeproto.ValueNamePair(nil), ThinkingLevels...),
 		},
 		poeproto.Control{
 			Control:       "toggle_switch",
-			Label:         "Hide thinking output",
-			ParameterName: poeproto.ParamHideThinking,
-			DefaultValue:  defaults.HideThinking,
+			Label:         "Show thinking",
+			ParameterName: poeproto.ParamShowThinking,
+			DefaultValue:  defaults.ShowThinking,
 		},
 		poeproto.Control{
 			Control:       "toggle_switch",
-			Label:         "Plan",
+			Label:         "Show plan",
 			ParameterName: poeproto.ParamShowPlans,
 			DefaultValue:  defaults.ShowPlans,
 		},
 		poeproto.Control{
 			Control:       "toggle_switch",
-			Label:         "Tools",
+			Label:         "Show tools",
 			ParameterName: poeproto.ParamShowTools,
 			DefaultValue:  defaults.ShowTools,
 		},
 		poeproto.Control{
 			Control:       "toggle_switch",
-			Label:         "Tool details",
+			Label:         "Show tool details",
 			ParameterName: poeproto.ParamShowToolDetails,
 			DefaultValue:  defaults.ShowToolDetails,
 		},

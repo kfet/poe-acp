@@ -251,9 +251,9 @@ keep working.
   "defaults": {
     "model": "anthropic/claude-sonnet-4-6",
     "thinking": "medium",
-    "hide_thinking": true,
-    "show_plans": true,
-    "show_tools": true,
+    "show_thinking": false,
+    "show_plans": false,
+    "show_tools": false,
     "show_tool_details": false,
     "coalesce_ms": 3000,
     "coalesce_grid": true,
@@ -284,18 +284,19 @@ keep working.
   current model so it stays stable across restarts.
 - **`defaults.thinking`** — one of `off`, `minimal`, `low`, `medium`,
   `high`. Empty = built-in default (`medium`).
-- **`defaults.hide_thinking`** — relay-side filter for
-  `agent_thought_chunk`. Omitted = built-in default (`true`); set
-  explicitly to `false` to stream thoughts as a blockquote.
+- **`defaults.show_thinking`** — stream `agent_thought_chunk` back as a
+  blockquote. Omitted = built-in default (`false`). The pre-rename key
+  `hide_thinking` is still accepted (read inverted, with a deprecation
+  warning); setting both keys is a boot error.
 - **`defaults.show_plans`** — render the agent's current plan (ACP
   `plan` session update) as a checklist inside the live keepalive
-  frame. Omitted = built-in default (`true`). Transient: the checklist
+  frame. Omitted = built-in default (`false`). Transient: the checklist
   is replaced on every plan revision and wiped when the final answer
   lands, so it never accumulates in the answer body.
 - **`defaults.show_tools`** — emit one durable blockquote line per ACP
   `tool_call` (e.g. ``> `🔧 go test ./...` ``) so a tool-heavy turn
   leaves a readable trace of what the agent did. Omitted = built-in
-  default (`true`). By itself only the START of each call is recorded;
+  default (`false`). By itself only the START of each call is recorded;
   `show_tool_details` adds the rest.
 - **`defaults.show_tool_details`** — under each tool line, render the
   tool call's `content` blocks (for a remote-exec tool: the host and the
@@ -471,7 +472,7 @@ the config file.
   frames at `coalesce_ms: 0` to 54 (37×) at the default `coalesce_ms:
   3000` with a static spinner.
 - **Agent → Poe surface.** Agent-emitted attachments and thoughts
-  (when `hide_thinking=true`) are not forwarded back to the Poe user;
+  (unless `show_thinking` is on) are not forwarded back to the Poe user;
   non-terminal `tool_call_update` is spinner-only. Beyond
   `AgentMessageChunk` text, the SSE stream carries tool-call lines
   (`show_tools`), their bounded content/result detail

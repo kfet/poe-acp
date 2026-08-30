@@ -77,7 +77,7 @@ func TestToolLines_DurableAndNewlineDelimited(t *testing.T) {
 // transitions in both directions: message → tool, tool → thought, and
 // thought → tool.
 func TestToolLines_SpacingAroundMessagesAndThoughts(t *testing.T) {
-	sink := promptWith(t, "c-mix", Options{ShowTools: true}, func(a *fakeAgent, sid acp.SessionId) {
+	sink := promptWith(t, "c-mix", Options{ShowTools: true, ShowThinking: true}, func(a *fakeAgent, sid acp.SessionId) {
 		a.emit(sid, "before ")
 		a.emitUpdate(sid, toolCall("t1", "", acp.ToolKindSearch))
 		a.emitUpdate(sid, acp.SessionUpdate{AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{
