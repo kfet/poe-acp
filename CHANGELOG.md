@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`converge.sh` no longer calls a host converged while it still SERVES
+  the old binary.** It short-circuited on zero *file* changes, so a bot
+  sharing `~/.local/bin/poe-acp` with an already-converged bot on the same
+  host never recycled and kept its old worker running indefinitely. The
+  running worker's version is now probed before that short-circuit and a
+  mismatch forces the recycle. An unreadable version (macOS: no `/proc`)
+  is never treated as evidence of staleness, and a supervisor left on the
+  old image by a graceful swap is not stale — only the workers serve.
+
 ## [0.64.0] - 2026-08-30
 
 ### Added

@@ -172,6 +172,26 @@ expect hard     "launchd: plist changed"                launchd 1 1 ''     1 1
 expect hard     "launchd: no worker child (pre-0.36)"   launchd 0 1 ''     0 1
 expect hard     "launchd: not running"                  launchd 0 0 ''     0 1
 
+echo "== running-version staleness (files can match while the worker does not)"
+stale() { "$CONVERGE" plan-stale "$@"; }
+xstale() { # <expected-verdict> <label> <args...>
+  local want=$1 label=$2; shift 2
+  local got; got=$(stale "$@")
+  case "$got" in
+    "$want|"*) ok "$label ($got)" ;;
+    *) bad "$label: wanted $want, got $got" ;;
+  esac
+}
+#                                                      running want    supver  workers
+xstale current "worker already on the wanted version"  1 0.64.0 0.63.0 0.64.0
+xstale stale   "worker still on the previous release"  1 0.64.0 0.64.0 0.63.0
+xstale stale   "one of several workers is behind"      1 0.64.0 0.64.0 0.64.0,0.63.0
+xstale current "supervisor left behind by a swap is fine" 1 0.64.0 0.36.0 0.64.0
+xstale stale   "single-process host on the old binary" 1 0.64.0 0.63.0 ''
+xstale current "single-process host already current"   1 0.64.0 0.64.0 ''
+xstale current "unreadable version is never evidence"  1 0.64.0 ''     ''
+xstale current "a stopped bot is not stale"            0 0.64.0 ''     ''
+
 echo "== fake-target recycle (stubbed systemd: graceful swap vs hard restart)"
 # Stub systemd + ps so the whole recycle/verify path runs offline. The stub
 # supervisor pid never moves; each `reload` advances the worker pid, which is
