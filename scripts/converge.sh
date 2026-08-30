@@ -334,10 +334,15 @@ EOS
 # read counts: an unreadable one (macOS has no /proc) is never evidence of
 # staleness — silence must not manufacture a restart.
 #
-# The workers are what serve traffic, so they decide. The supervisor is
-# consulted only when there are none (pre-0.36 single-process model): a
-# supervisor left on the old image with a correct new worker is the normal,
-# intended outcome of a graceful SIGHUP swap and is NOT stale.
+# The workers are what serve traffic, so they decide, and ONE worker on the
+# wanted version is enough: after a swap the supervisor always hands new
+# requests to the newest worker while the previous one keeps running — for
+# up to the 30m drain deadline — to finish its in-flight streams. Demanding
+# that every worker match would call a healthy host stale for half an hour
+# after each converge (observed on two-fir, 2026-08-30). The supervisor is
+# consulted only when there are no workers at all (pre-0.36 single-process
+# model): a supervisor left on the old image is the normal, intended
+# outcome of a graceful SIGHUP swap and is NOT stale.
 # Exposed as the `plan-stale` subcommand for tests.
 stale_decision() {
   local running=$1 want=$2 supver=$3 wvers=$4 v
@@ -347,9 +352,9 @@ stale_decision() {
   if [ -n "$wvers" ]; then
     local IFS=,
     for v in $wvers; do
-      [ "$v" = "$want" ] || { echo "stale|worker executes $v, wanted $want"; return 0; }
+      [ "$v" = "$want" ] && { echo "current|a worker executes $want"; return 0; }
     done
-    echo "current|worker executes $want"; return 0
+    echo "stale|no worker executes $want (workers: $wvers)"; return 0
   fi
   if [ -n "$supver" ]; then
     [ "$supver" = "$want" ] \

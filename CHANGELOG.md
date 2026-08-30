@@ -19,8 +19,10 @@
   host never recycled and kept its old worker running indefinitely. The
   running worker's version is now probed before that short-circuit and a
   mismatch forces the recycle. An unreadable version (macOS: no `/proc`)
-  is never treated as evidence of staleness, and a supervisor left on the
-  old image by a graceful swap is not stale — only the workers serve.
+  is never treated as evidence of staleness; a supervisor left on the old
+  image by a graceful swap is not stale — only the workers serve; and one
+  worker on the wanted version is enough, since the worker it replaced
+  keeps draining its in-flight streams for up to 30 minutes.
 
 ## [0.64.0] - 2026-08-30
 

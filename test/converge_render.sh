@@ -185,7 +185,8 @@ xstale() { # <expected-verdict> <label> <args...>
 #                                                      running want    supver  workers
 xstale current "worker already on the wanted version"  1 0.64.0 0.63.0 0.64.0
 xstale stale   "worker still on the previous release"  1 0.64.0 0.64.0 0.63.0
-xstale stale   "one of several workers is behind"      1 0.64.0 0.64.0 0.64.0,0.63.0
+xstale current "an old worker still draining is fine"  1 0.64.0 0.64.0 0.64.0,0.62.0
+xstale stale   "every worker behind is stale"          1 0.64.0 0.64.0 0.63.0,0.62.0
 xstale current "supervisor left behind by a swap is fine" 1 0.64.0 0.36.0 0.64.0
 xstale stale   "single-process host on the old binary" 1 0.64.0 0.63.0 ''
 xstale current "single-process host already current"   1 0.64.0 0.64.0 ''
