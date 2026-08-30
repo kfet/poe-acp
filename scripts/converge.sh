@@ -17,6 +17,9 @@
 #   converge.sh plan-recycle <supervisor> <unit_changed> <running> <version> \
 #               <has_worker> <has_reload>      print the recycle mechanism that
 #                                              state selects (test hook)
+#   converge.sh plan-stale <running> <want> <supervisor_ver> \
+#               <worker_vers-csv>              print whether the RUNNING binary is
+#                                              stale w.r.t. want (test hook)
 #
 # Conventions:
 #   - a spec.server key that is absent (or false/null) emits no flag at all;
@@ -321,6 +324,42 @@ esac
 EOS
 }
 
+# stale_decision <running> <want> <supervisor_ver> <worker_vers-csv>
+# Answers "is this host still SERVING an old binary?" from the running
+# state alone, so a bot whose files already match (because a co-located bot
+# on the same host shares the binary path) is not declared converged while
+# its worker executes the previous release.
+#
+# Prints "stale|<why>" or "current|<why>". Only a version we could actually
+# read counts: an unreadable one (macOS has no /proc) is never evidence of
+# staleness — silence must not manufacture a restart.
+#
+# The workers are what serve traffic, so they decide. The supervisor is
+# consulted only when there are none (pre-0.36 single-process model): a
+# supervisor left on the old image with a correct new worker is the normal,
+# intended outcome of a graceful SIGHUP swap and is NOT stale.
+# Exposed as the `plan-stale` subcommand for tests.
+stale_decision() {
+  local running=$1 want=$2 supver=$3 wvers=$4 v
+  if [ "$running" != 1 ]; then
+    echo "current|not running"; return 0
+  fi
+  if [ -n "$wvers" ]; then
+    local IFS=,
+    for v in $wvers; do
+      [ "$v" = "$want" ] || { echo "stale|worker executes $v, wanted $want"; return 0; }
+    done
+    echo "current|worker executes $want"; return 0
+  fi
+  if [ -n "$supver" ]; then
+    [ "$supver" = "$want" ] \
+      && echo "current|single process executes $want" \
+      || echo "stale|single process executes $supver, wanted $want"
+    return 0
+  fi
+  echo "current|running version unreadable"
+}
+
 # probe_state <supervisor> <unit-or-label>
 # Prints one line: <running>|<pid>|<version>|<worker-pids>|<has_reload>
 #   running     1 if the supervisor process is up
@@ -607,25 +646,41 @@ converge() {
   rm -f "$want_file"
 
   # -- 6. recycle + verify --------------------------------------------------
-  if [ "$changes" = 0 ]; then
-    echo "== $bot: already converged, nothing to do"
-    return 0
-  fi
-
   local unit label sup_unit
   case "$supervisor" in
     systemd-user) unit="$(jqs '.unit').service"; sup_unit="$unit" ;;
     launchd)      label=$(jqs '.unit'); sup_unit="$label" ;;
   esac
 
-  # Decide the recycle mechanism from what is RUNNING (not what is on disk),
-  # and say it out loud — in dry run too, so an operator knows up front
-  # whether the bot will blink.
+  # Probe what is RUNNING (not what is on disk) BEFORE deciding there is
+  # nothing to do: two bots can share one poe-acp path, so converging the
+  # first rewrites the binary for BOTH and the second then sees zero file
+  # changes while its worker still executes the old image. On-disk equality
+  # is not convergence — the running worker is.
   local state run_before pid_before ver_before workers_before has_reload
   local has_worker plan mech reason
   state=$(probe_state "$supervisor" "$sup_unit")
   IFS='|' read -r run_before pid_before ver_before workers_before has_reload <<<"$state"
   has_worker=0; [ -n "$workers_before" ] && has_worker=1
+
+  local running_vers='' w wv
+  for w in $workers_before; do
+    wv=$(worker_version "$w")
+    [ -n "$wv" ] && running_vers="$running_vers${running_vers:+,}$wv"
+  done
+  local stale
+  stale=$(stale_decision "$run_before" "$want_pa" "$ver_before" "$running_vers")
+  if [ "${stale%%|*}" = stale ]; then
+    note "running: ${stale#*|} — recycle needed despite matching files"
+  fi
+
+  if [ "$changes" = 0 ] && [ "${stale%%|*}" != stale ]; then
+    echo "== $bot: already converged, nothing to do${running_vers:+ (worker runs $running_vers)}"
+    return 0
+  fi
+
+  # Decide the recycle mechanism from what is RUNNING, and say it out loud —
+  # in dry run too, so an operator knows up front whether the bot will blink.
   plan=$(recycle_plan "$supervisor" "$unit_changed" "$run_before" "$ver_before" "$has_worker" "$has_reload")
   mech=${plan%%|*}; reason=${plan#*|}
   note "recycle: $(mech_label "$supervisor" "$mech") — $reason"
@@ -809,6 +864,9 @@ usage:
   converge.sh plan-recycle <supervisor> <unit_changed> <running> <version> <has_worker> <has_reload>
                                              print the recycle mechanism the above
                                              state would select (test hook)
+  converge.sh plan-stale <running> <want> <supervisor_ver> <worker_vers-csv>
+                                             print whether the RUNNING state is
+                                             stale w.r.t. want (test hook)
 EOF
   exit 1
 }
@@ -833,6 +891,10 @@ case "$1" in
     # Test hook: exercise the mechanism-selection matrix without a host.
     [ $# -eq 7 ] || usage
     recycle_plan "$2" "$3" "$4" "$5" "$6" "$7" ;;
+  plan-stale)
+    # Test hook: exercise the running-version staleness rule without a host.
+    [ $# -eq 5 ] || usage
+    stale_decision "$2" "$3" "$4" "$5" ;;
   -*) usage ;;
   *)
     BOT=$1; shift
