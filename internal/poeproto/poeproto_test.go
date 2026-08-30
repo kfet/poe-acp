@@ -38,7 +38,7 @@ func TestSettingsResponse_ParameterControlsMarshal(t *testing.T) {
 				Controls: []Control{
 					{Control: "drop_down", Label: "Model", ParameterName: "model", DefaultValue: "x",
 						Options: []ValueNamePair{{Value: "x", Name: "X"}}},
-					{Control: "toggle_switch", Label: "Hide", ParameterName: "hide_thinking", DefaultValue: false},
+					{Control: "toggle_switch", Label: "Show thinking", ParameterName: "show_thinking", DefaultValue: false},
 				},
 			}},
 		},

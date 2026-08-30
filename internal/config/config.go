@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"time"
 
@@ -163,17 +164,22 @@ type Defaults struct {
 	// Thinking is one of "off","minimal","low","medium","high","xhigh","max". Empty
 	// string means "use built-in default" (currently "medium").
 	Thinking string `json:"thinking,omitempty"`
-	// HideThinking suppresses agent_thought_chunk in the SSE stream.
-	// nil means "use built-in default" (currently true).
+	// ShowThinking streams agent_thought_chunk into the answer.
+	// nil means "use built-in default" (currently false).
+	ShowThinking *bool `json:"show_thinking,omitempty"`
+	// HideThinking is the DEPRECATED inverse of ShowThinking, still
+	// read so configs written before the rename keep working. Setting
+	// both keys is a hard error (Validate); use ShowThinkingValue to
+	// get the effective value.
 	HideThinking *bool `json:"hide_thinking,omitempty"`
 	// ShowPlans renders the agent's current plan (ACP `plan`
 	// session/update) as a transient checklist inside the mid-turn
 	// keepalive frame. nil means "use built-in default" (currently
-	// true).
+	// false).
 	ShowPlans *bool `json:"show_plans,omitempty"`
 	// ShowTools emits one durable transcript line per ACP `tool_call`
 	// so a tool-heavy turn leaves a trace of what the agent did. nil
-	// means "use built-in default" (currently true).
+	// means "use built-in default" (currently false).
 	ShowTools *bool `json:"show_tools,omitempty"`
 	// CoalesceMs, when > 0, buffers outbound SSE `text` events and
 	// flushes them on a shared wall-clock grid instead of emitting one
@@ -208,8 +214,25 @@ type Defaults struct {
 	// `tool_call_update` carrying the result text. Bounded per block
 	// (head/tail with an elision marker). Only has effect when
 	// ShowTools is also on. nil means "use built-in default"
-	// (currently true).
+	// (currently false).
 	ShowToolDetails *bool `json:"show_tool_details,omitempty"`
+}
+
+// ShowThinkingValue is the effective `show_thinking` setting: the new
+// key when present, otherwise the negation of the deprecated
+// `hide_thinking` key. nil means "neither key set — use the built-in
+// default". This is the ONE place the config-side polarity inversion
+// lives; Validate rejects configs that set both keys, so there is no
+// silent precedence.
+func (d Defaults) ShowThinkingValue() *bool {
+	if d.ShowThinking != nil {
+		return d.ShowThinking
+	}
+	if d.HideThinking != nil {
+		v := !*d.HideThinking
+		return &v
+	}
+	return nil
 }
 
 // DefaultCoalesceMs is the built-in fallback for
@@ -381,6 +404,10 @@ func Load(path string) (cfg Config, ok bool, err error) {
 	if err := cfg.Validate(); err != nil {
 		return Config{}, false, fmt.Errorf("validate config %s: %w", path, err)
 	}
+	if cfg.Defaults.ShowThinking == nil && cfg.Defaults.HideThinking != nil {
+		log.Printf("config %s: `defaults.hide_thinking` is deprecated; use `defaults.show_thinking` (currently reading show_thinking=%v)",
+			path, !*cfg.Defaults.HideThinking)
+	}
 	return cfg, true, nil
 }
 
@@ -399,6 +426,9 @@ const MaxCoalesceMs = 60_000
 // the agent's runtime state (e.g. "is Defaults.Model in the probed
 // list?") happen in main.go after the probe completes.
 func (c Config) Validate() error {
+	if c.Defaults.ShowThinking != nil && c.Defaults.HideThinking != nil {
+		return fmt.Errorf("defaults: set either `show_thinking` or the deprecated `hide_thinking`, not both")
+	}
 	if c.Defaults.CoalesceMs != nil && (*c.Defaults.CoalesceMs < 0 || *c.Defaults.CoalesceMs > MaxCoalesceMs) {
 		return fmt.Errorf("defaults.coalesce_ms: invalid %d (want 0..%d, 0 = disabled)",
 			*c.Defaults.CoalesceMs, MaxCoalesceMs)

@@ -148,9 +148,11 @@ type Agent interface {
 // Options is the per-prompt set of user-selected parameter values
 // extracted from Poe's `parameters` dict.
 type Options struct {
-	Model        string // "" = leave as-is
-	Thinking     string // "" = leave as-is; one of "off","minimal","low","medium","high","xhigh","max"
-	HideThinking bool   // suppress agent_thought_chunk in the SSE stream
+	Model    string // "" = leave as-is
+	Thinking string // "" = leave as-is; one of "off","minimal","low","medium","high","xhigh","max"
+	// ShowThinking streams agent_thought_chunk content into the SSE
+	// output; off (the default) suppresses it. Relay-side only.
+	ShowThinking bool
 	// ShowPlans renders the agent's latest ACP `plan` update as a
 	// transient checklist inside the keepalive frame. Relay-side only:
 	// nothing is sent to the agent.
@@ -441,7 +443,7 @@ type turnReq struct {
 	// opts carries the resolved per-turn parameter values. User turns
 	// only: a reaction turn leaves this zero, which is exactly the
 	// right display policy for one (its output goes to a discardSink).
-	// The relay-side display knobs (HideThinking / ShowPlans /
+	// The relay-side display knobs (ShowThinking / ShowPlans /
 	// ShowTools) are forwarded to the drain goroutine via beginTurn.
 	opts   Options
 	blocks []acp.ContentBlock // prompt content blocks
@@ -686,7 +688,7 @@ type chunkMsg struct {
 // turnDef carries per-turn configuration forwarded to the drain goroutine.
 type turnDef struct {
 	sink         ChunkSink
-	hideThinking bool
+	showThinking bool
 	// showPlans renders ACP `plan` updates into the transient keepalive
 	// frame (never the answer body — plans are replaced wholesale on
 	// every update, so appending each revision would spam the answer).
@@ -978,7 +980,7 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 		// available_commands_update etc. suppressed in v1.
 		return
 	}
-	if text == "" || (kind == chunkThought && td.hideThinking) {
+	if text == "" || (kind == chunkThought && !td.showThinking) {
 		return
 	}
 	var prefix string
@@ -1727,7 +1729,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	select {
 	case st.chunkCh <- chunkMsg{beginTurn: &turnDef{
 		sink:            sink,
-		hideThinking:    req.opts.HideThinking,
+		showThinking:    req.opts.ShowThinking,
 		showPlans:       req.opts.ShowPlans,
 		showTools:       req.opts.ShowTools,
 		showToolDetails: req.opts.ShowTools && req.opts.ShowToolDetails,
@@ -1836,8 +1838,8 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 // and issues set_model / set_config_option to the agent for each changed
 // agent-facing field. Updates st.applied only on success.
 func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Options) error {
-	kitlog.Debugf("applyOptions conv=%s sid=%s incoming={model=%q thinking=%q hide=%v} applied={model=%q thinking=%q}",
-		st.convID, string(st.sessionID), opts.Model, opts.Thinking, opts.HideThinking,
+	kitlog.Debugf("applyOptions conv=%s sid=%s incoming={model=%q thinking=%q show_thinking=%v} applied={model=%q thinking=%q}",
+		st.convID, string(st.sessionID), opts.Model, opts.Thinking, opts.ShowThinking,
 		st.applied.Model, st.applied.Thinking)
 	if opts.Model != "" && opts.Model != st.applied.Model {
 		kitlog.Debugf("  -> set_model %q (was %q)", opts.Model, st.applied.Model)
@@ -1862,7 +1864,7 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 			st.applied.Thinking = opts.Thinking
 		}
 	}
-	// HideThinking is forwarded into turnDef.hideThinking via the
+	// ShowThinking is forwarded into turnDef.showThinking via the
 	// beginTurn message in Prompt; drainProcessChunk reads it to
 	// suppress agent_thought_chunk content. Nothing to apply on the
 	// agent side.
@@ -1980,14 +1982,24 @@ func ParseOptions(params map[string]any, defaults Options, models []client.Model
 	if m, ok := resolveModel(params, defaults, models); ok {
 		o.Model = m
 	}
-	if v, ok := params["thinking"].(string); ok {
+	if v, ok := params[poeproto.ParamThinking].(string); ok {
 		switch v {
 		case "off", "minimal", "low", "medium", "high", "xhigh", "max":
 			o.Thinking = v
 		}
 	}
-	if v, ok := params["hide_thinking"].(bool); ok {
-		o.HideThinking = v
+	// Thinking visibility: `show_thinking` is the declared control.
+	// `hide_thinking` is the deprecated pre-rename parameter_name,
+	// accepted forever (Poe stores per-chat parameter values keyed by
+	// parameter_name, so a chat where the user explicitly turned
+	// thinking on keeps sending the old key) but never declared and
+	// never emitted. Explicit `show_thinking` wins when both arrive.
+	// This is the ONE place the wire-side polarity inversion lives.
+	if v, ok := params[poeproto.ParamHideThinking].(bool); ok {
+		o.ShowThinking = !v
+	}
+	if v, ok := params[poeproto.ParamShowThinking].(bool); ok {
+		o.ShowThinking = v
 	}
 	if v, ok := params[poeproto.ParamShowPlans].(bool); ok {
 		o.ShowPlans = v
@@ -2015,7 +2027,7 @@ func resolveModel(params map[string]any, defaults Options, models []client.Model
 	// not blank out defaults.Model (Options.Model == "" means "leave
 	// the agent as-is") nor shadow the provider fallback below. Same
 	// guard as the per-provider key.
-	if v, ok := params["model"].(string); ok && v != "" {
+	if v, ok := params[poeproto.ParamModel].(string); ok && v != "" {
 		return v, true
 	}
 	provider, ok := params["provider"].(string)

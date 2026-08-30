@@ -21,9 +21,17 @@ import (
 // both the schema and the escaper pick it up. (poeproto cannot import
 // paramctl/router, so this is the lowest shared point.)
 const (
-	ParamModel        = "model"
-	ParamProvider     = "provider"
-	ParamThinking     = "thinking"
+	ParamModel    = "model"
+	ParamProvider = "provider"
+	ParamThinking = "thinking"
+	// ParamShowThinking streams the agent's thought chunks into the
+	// answer. This is the DECLARED control.
+	ParamShowThinking = "show_thinking"
+	// ParamHideThinking is the deprecated inverse of ParamShowThinking.
+	// It is still ACCEPTED on the wire (Poe stores per-chat parameter
+	// values keyed by parameter_name, so chats that predate the rename
+	// keep sending it) but it is never declared and never emitted —
+	// hence it is deliberately absent from reservedAlternatives.
 	ParamHideThinking = "hide_thinking"
 	ParamShowPlans    = "show_plans"
 	ParamShowTools    = "show_tools"
@@ -47,7 +55,7 @@ const (
 const reservedAlternatives = ProviderParamPrefix + `[A-Za-z0-9_]+` +
 	`|` + ParamModel +
 	`|` + ParamProvider +
-	`|` + ParamHideThinking +
+	`|` + ParamShowThinking +
 	`|` + ParamShowPlans +
 	`|` + ParamShowToolDetails +
 	`|` + ParamShowTools +

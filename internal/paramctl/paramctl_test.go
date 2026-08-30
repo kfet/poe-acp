@@ -24,50 +24,50 @@ var twoModels = []client.ModelInfo{
 
 func TestResolve_ConfigWins(t *testing.T) {
 	t.Parallel()
-	d := Resolve(config.Defaults{Model: "openai/gpt-5", Thinking: "high", HideThinking: boolPtr(true)},
+	d := Resolve(config.Defaults{Model: "openai/gpt-5", Thinking: "high", ShowThinking: boolPtr(true)},
 		twoModels, "anthropic/sonnet")
-	if d.Model != "openai/gpt-5" || d.Thinking != "high" || !d.HideThinking {
+	if d.Model != "openai/gpt-5" || d.Thinking != "high" || !d.ShowThinking {
 		t.Fatalf("got %+v", d)
 	}
 }
 
 // TestResolve_ProgressKnobDefaults pins the built-in defaults for the
-// progress knobs (show_plans and show_tools ON, show_tool_details OFF)
-// and the operator's ability to flip any of them from config.json.
+// four visibility knobs (ALL off) and the operator's ability to flip
+// any of them from config.json.
 func TestResolve_ProgressKnobDefaults(t *testing.T) {
 	t.Parallel()
 	d := Resolve(config.Defaults{}, twoModels, "")
-	if !d.ShowPlans || !d.ShowTools {
-		t.Fatalf("nil show_plans/show_tools should default to true, got %+v", d)
+	if d.ShowThinking || d.ShowPlans || d.ShowTools || d.ShowToolDetails {
+		t.Fatalf("all four show_* knobs should default to false, got %+v", d)
 	}
-	if d.ShowToolDetails {
-		t.Fatalf("nil show_tool_details should default to false, got %+v", d)
+	d = Resolve(config.Defaults{ShowThinking: boolPtr(true), ShowPlans: boolPtr(true), ShowTools: boolPtr(true), ShowToolDetails: boolPtr(true)}, twoModels, "")
+	if !d.ShowThinking || !d.ShowPlans || !d.ShowTools || !d.ShowToolDetails {
+		t.Fatalf("explicit true should override defaults, got %+v", d)
 	}
-	d = Resolve(config.Defaults{ShowPlans: boolPtr(false), ShowTools: boolPtr(false), ShowToolDetails: boolPtr(false)}, twoModels, "")
-	if d.ShowPlans || d.ShowTools || d.ShowToolDetails {
+	d = Resolve(config.Defaults{ShowPlans: boolPtr(false), ShowTools: boolPtr(false)}, twoModels, "")
+	if d.ShowPlans || d.ShowTools {
 		t.Fatalf("explicit false should override defaults, got %+v", d)
 	}
-	d = Resolve(config.Defaults{ShowToolDetails: boolPtr(true)}, twoModels, "")
-	if !d.ShowToolDetails {
-		t.Fatalf("explicit true should override the off-by-default, got %+v", d)
-	}
 }
 
-func TestResolve_HideThinkingDefault(t *testing.T) {
+// TestResolve_ShowThinkingDeprecatedAlias covers configs written before
+// the rename: `hide_thinking` is still read, inverted.
+func TestResolve_ShowThinkingDeprecatedAlias(t *testing.T) {
 	t.Parallel()
-	// nil (unset) → built-in default = true
-	d := Resolve(config.Defaults{}, twoModels, "")
-	if !d.HideThinking {
-		t.Fatalf("nil HideThinking should default to true, got %v", d.HideThinking)
-	}
-}
-
-func TestResolve_HideThinkingExplicitFalse(t *testing.T) {
-	t.Parallel()
-	// operator explicitly sets false → must override the default
+	// The shape deployed on real hosts today.
 	d := Resolve(config.Defaults{HideThinking: boolPtr(false)}, twoModels, "")
-	if d.HideThinking {
-		t.Fatalf("explicit HideThinking=false should override default, got %v", d.HideThinking)
+	if !d.ShowThinking {
+		t.Fatalf("hide_thinking=false should mean show_thinking=true, got %+v", d)
+	}
+	d = Resolve(config.Defaults{HideThinking: boolPtr(true)}, twoModels, "")
+	if d.ShowThinking {
+		t.Fatalf("hide_thinking=true should mean show_thinking=false, got %+v", d)
+	}
+	// New key wins outright (Validate rejects both being set, so this
+	// path only exercises the accessor's precedence).
+	d = Resolve(config.Defaults{ShowThinking: boolPtr(true), HideThinking: boolPtr(true)}, twoModels, "")
+	if !d.ShowThinking {
+		t.Fatalf("show_thinking should win over hide_thinking, got %+v", d)
 	}
 }
 
@@ -420,8 +420,8 @@ func TestBuildAndResolveAgree_SingleProvider(t *testing.T) {
 	if got, want := schemaDefaults["thinking"], d.Thinking; got != want {
 		t.Errorf("thinking: schema=%v defaults=%v", got, want)
 	}
-	if got, want := schemaDefaults["hide_thinking"], d.HideThinking; got != want {
-		t.Errorf("hide_thinking: schema=%v defaults=%v", got, want)
+	if got, want := schemaDefaults["show_thinking"], d.ShowThinking; got != want {
+		t.Errorf("show_thinking: schema=%v defaults=%v", got, want)
 	}
 	if got, want := schemaDefaults["show_plans"], d.ShowPlans; got != want {
 		t.Errorf("show_plans: schema=%v defaults=%v", got, want)
@@ -496,8 +496,8 @@ func TestBuildAndResolveAgree(t *testing.T) {
 			if got, want := schemaDefaults["thinking"], d.Thinking; got != want {
 				t.Errorf("thinking: schema=%v defaults=%v", got, want)
 			}
-			if got, want := schemaDefaults["hide_thinking"], d.HideThinking; got != want {
-				t.Errorf("hide_thinking: schema=%v defaults=%v", got, want)
+			if got, want := schemaDefaults["show_thinking"], d.ShowThinking; got != want {
+				t.Errorf("show_thinking: schema=%v defaults=%v", got, want)
 			}
 			if got, want := schemaDefaults["show_plans"], d.ShowPlans; got != want {
 				t.Errorf("show_plans: schema=%v defaults=%v", got, want)
@@ -690,4 +690,40 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// TestBuild_ToggleFamilyGolden pins the user-visible toggle family: the
+// exact labels Poe renders, their parameter_names, and the all-off
+// defaults. Labels are part of the settings response Poe caches, so a
+// change here is a deliberate act, not a refactor side effect.
+func TestBuild_ToggleFamilyGolden(t *testing.T) {
+	t.Parallel()
+	d := Resolve(config.Defaults{}, nil, "")
+	pc := Build(nil, nil, d)
+	type ctl struct {
+		control, label, param string
+		def                   any
+	}
+	var got []ctl
+	for _, c := range pc.Sections[0].Controls {
+		got = append(got, ctl{c.Control, c.Label, c.ParameterName, c.DefaultValue})
+	}
+	want := []ctl{
+		{"drop_down", "Thinking effort", "thinking", "medium"},
+		{"toggle_switch", "Show thinking", "show_thinking", false},
+		{"toggle_switch", "Show plan", "show_plans", false},
+		{"toggle_switch", "Show tools", "show_tools", false},
+		{"toggle_switch", "Show tool details", "show_tool_details", false},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("controls =\n%+v\nwant\n%+v", got, want)
+	}
+	// And the serialised form Poe actually receives.
+	b, err := json.Marshal(pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(b); strings.Contains(s, "hide_thinking") {
+		t.Fatalf("deprecated hide_thinking must never be declared: %s", s)
+	}
 }

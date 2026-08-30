@@ -68,8 +68,8 @@ cases in one tested place; `coalesce_ms` is a `*int` so an explicit
 (`config.go:233`) rather than silently disabling the feature.
 
 **No CLI flags.** The existing pattern for `defaults{}` knobs is
-config-only — `show_plans`, `show_tools`, `hide_thinking`,
-`hide_thinking` have no flags; only ops concerns (addresses, timeouts,
+config-only — `show_plans`, `show_tools`, `show_thinking`,
+`show_tool_details` have no flags; only ops concerns (addresses, timeouts,
 state dir) do. README says this explicitly: "CLI flags only cover ops
 concerns … anything that's 'what kind of bot is this' goes in the
 config file." These are bot-shape knobs, so they follow that rule.

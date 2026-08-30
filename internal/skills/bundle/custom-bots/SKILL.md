@@ -25,8 +25,8 @@ One Poe bot = one `poe-acp` process with its own Poe access key, config dir, loo
 - **Bot slug**: exact Poe server-bot slug for `bot_name`.
 - **Poe access key**: server-bot secret; store as `POEACP_ACCESS_KEY`, mode `0600`.
 - **Public path + port**: e.g. `/sakana` → `127.0.0.1:8347`; each bot gets a free port (`8347`, `8348`, ... by convention).
-- **Model defaults**: `defaults.model`, `defaults.thinking`, `defaults.hide_thinking`.
-- **Progress defaults**: `defaults.show_plans`, `defaults.show_tools` (both default `true` — plan checklist in the live keepalive frame, one durable line per tool call).
+- **Model defaults**: `defaults.model`, `defaults.thinking`, `defaults.show_thinking`.
+- **Visibility defaults**: `defaults.show_thinking`, `defaults.show_plans`, `defaults.show_tools`, `defaults.show_tool_details` — all default `false` (clean chat; users opt in per chat from the Poe Options panel). The deprecated `defaults.hide_thinking` is still accepted (inverted) but setting it alongside `show_thinking` is a hard error.
 - **Credential boundary**: shared fir creds or a per-bot fir root such as `~/.config/fir-sakana`.
 - **Agent command**: default `fir --mode acp`.
 - **Introduction**.
@@ -100,9 +100,9 @@ umask 022
   "defaults": {
     "model": "<model-id>",
     "thinking": "medium",
-    "hide_thinking": false,
-    "show_plans": true,
-    "show_tools": true
+    "show_thinking": false,
+    "show_plans": false,
+    "show_tools": false
   },
   "agent": {"profile": "fir"}
 }

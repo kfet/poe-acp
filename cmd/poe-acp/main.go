@@ -284,8 +284,8 @@ func main() {
 	}
 	models = pin(models)
 	defaults := paramctl.Resolve(cfg.Defaults, models, current)
-	log.Printf("resolved defaults: model=%q thinking=%q hide_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v host=%q (%d selectable)",
-		defaults.Model, defaults.Thinking, defaults.HideThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails,
+	log.Printf("resolved defaults: model=%q thinking=%q show_thinking=%v show_plans=%v show_tools=%v show_tool_details=%v host=%q (%d selectable)",
+		defaults.Model, defaults.Thinking, defaults.ShowThinking, defaults.ShowPlans, defaults.ShowTools, defaults.ShowToolDetails,
 		defaults.Host, len(cfg.Hosts))
 
 	// Router

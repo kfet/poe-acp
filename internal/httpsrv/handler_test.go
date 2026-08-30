@@ -172,10 +172,10 @@ func TestHandler_Settings_ParameterControls(t *testing.T) {
 					Controls: []poeproto.Control{
 						{Control: "drop_down", Label: "Model", ParameterName: "model",
 							DefaultValue: "anthropic/claude-sonnet-4-5", Options: opts},
-						{Control: "drop_down", Label: "Thinking", ParameterName: "thinking",
+						{Control: "drop_down", Label: "Thinking effort", ParameterName: "thinking",
 							DefaultValue: "medium"},
-						{Control: "toggle_switch", Label: "Hide thinking output",
-							ParameterName: "hide_thinking", DefaultValue: false},
+						{Control: "toggle_switch", Label: "Show thinking",
+							ParameterName: "show_thinking", DefaultValue: false},
 					},
 				}},
 			}
@@ -219,7 +219,7 @@ func TestHandler_Settings_ParameterControls(t *testing.T) {
 			names[n] = true
 		}
 	}
-	for _, want := range []string{"model", "thinking", "hide_thinking"} {
+	for _, want := range []string{"model", "thinking", "show_thinking"} {
 		if !names[want] {
 			t.Fatalf("missing control %q; got %v\nbody=%s", want, names, raw)
 		}
@@ -423,13 +423,13 @@ func (a *slowAgent) Prompt(ctx context.Context, sid acp.SessionId, _ []acp.Conte
 }
 
 func TestHandler_SpinnerAnimatesUntilFirstChunk(t *testing.T) {
-	// The animated `> _Thinking._` spinner runs in BOTH hide_thinking
+	// The animated `> _Thinking._` spinner runs in BOTH show_thinking
 	// modes — there's no separate "invisible heartbeat" path. The
 	// spinner doubles as keepalive and gives the user liveness during
 	// the gap between submit and first chunk; orderedWriter clears it
 	// the moment the first real chunk lands.
-	for _, hide := range []bool{true, false} {
-		t.Run(fmt.Sprintf("hide_thinking=%v", hide), func(t *testing.T) {
+	for _, show := range []bool{true, false} {
+		t.Run(fmt.Sprintf("show_thinking=%v", show), func(t *testing.T) {
 			sa := &slowAgent{fakeAgent: &fakeAgent{}, release: make(chan struct{}), chunk: "answer"}
 			rtr, err := router.New(router.Config{Agent: sa, StateDir: t.TempDir(), SessionTTL: time.Hour})
 			if err != nil {
@@ -441,7 +441,7 @@ func TestHandler_SpinnerAnimatesUntilFirstChunk(t *testing.T) {
 				"type": "query", "conversation_id": "c1", "user_id": "u", "message_id": "m",
 				"query": []map[string]any{{
 					"role": "user", "content": "hi",
-					"parameters": map[string]any{"hide_thinking": hide},
+					"parameters": map[string]any{"show_thinking": show},
 				}},
 			})
 

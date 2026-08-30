@@ -51,16 +51,16 @@ func TestParseOptions(t *testing.T) {
 		{
 			"nil params with defaults",
 			nil,
-			Options{Model: "anth/sonnet", Thinking: "medium", HideThinking: false},
+			Options{Model: "anth/sonnet", Thinking: "medium", ShowThinking: false},
 			catalog,
-			Options{Model: "anth/sonnet", Thinking: "medium", HideThinking: false},
+			Options{Model: "anth/sonnet", Thinking: "medium", ShowThinking: false},
 		},
 		{
 			"all valid overrides defaults",
-			map[string]any{"model": "anthropic/claude-sonnet-4-5", "thinking": "high", "hide_thinking": true},
+			map[string]any{"model": "anthropic/claude-sonnet-4-5", "thinking": "high", "show_thinking": true},
 			Options{Model: "anth/sonnet", Thinking: "medium"},
 			catalog,
-			Options{Model: "anthropic/claude-sonnet-4-5", Thinking: "high", HideThinking: true},
+			Options{Model: "anthropic/claude-sonnet-4-5", Thinking: "high", ShowThinking: true},
 		},
 		{
 			"thinking off accepted",
@@ -92,7 +92,7 @@ func TestParseOptions(t *testing.T) {
 		},
 		{
 			"wrong types dropped — defaults survive",
-			map[string]any{"model": 42, "thinking": true, "hide_thinking": "yes"},
+			map[string]any{"model": 42, "thinking": true, "show_thinking": "yes"},
 			Options{Model: "anth/sonnet", Thinking: "medium"},
 			nil,
 			Options{Model: "anth/sonnet", Thinking: "medium"},
@@ -319,7 +319,7 @@ func TestRouter_AppliesOptionsAndDiffs(t *testing.T) {
 	agent.mu.Unlock()
 }
 
-func TestRouter_HideThinkingSuppressesThoughtChunks(t *testing.T) {
+func TestRouter_ShowThinkingGatesThoughtChunks(t *testing.T) {
 	t.Parallel()
 	agent := newOptsAgent()
 	// Override prompt to emit a thought chunk + a message chunk.
@@ -336,23 +336,23 @@ func TestRouter_HideThinkingSuppressesThoughtChunks(t *testing.T) {
 	r := mustRouter(t, agent)
 	turns := []Turn{{Role: "user", Content: "hi"}}
 
-	// hide_thinking=true → only "answer" should reach the sink.
+	// show_thinking=false (the default) → only "answer" reaches the sink.
 	sink := &captureSink{}
-	if err := r.Prompt(context.Background(), "c1", "u", turns, Options{HideThinking: true}, sink); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", turns, Options{ShowThinking: false}, sink); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	if got := sink.text.String(); got != "answer" {
-		t.Fatalf("hide_thinking=true: got %q want %q", got, "answer")
+		t.Fatalf("show_thinking=false: got %q want %q", got, "answer")
 	}
 
-	// hide_thinking=false → both should reach the sink.
+	// show_thinking=true → both should reach the sink.
 	sink2 := &captureSink{}
-	if err := r.Prompt(context.Background(), "c2", "u", turns, Options{HideThinking: false}, sink2); err != nil {
+	if err := r.Prompt(context.Background(), "c2", "u", turns, Options{ShowThinking: true}, sink2); err != nil {
 		t.Fatalf("prompt2: %v", err)
 	}
 	got := sink2.text.String()
 	if !strings.Contains(got, "deep thoughts") || !strings.Contains(got, "answer") {
-		t.Fatalf("hide_thinking=false: got %q want both", got)
+		t.Fatalf("show_thinking=true: got %q want both", got)
 	}
 }
 
@@ -379,7 +379,7 @@ func TestRouter_MultiChunkThoughtsRenderAsOneBlockquote(t *testing.T) {
 	}
 	r := mustRouter(t, agent)
 	sink := &captureSink{}
-	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, Options{}, sink); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, Options{ShowThinking: true}, sink); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	got := sink.text.String()
@@ -402,7 +402,7 @@ func TestRouter_ThoughtChunkPreservesNewlinesAsBlockquote(t *testing.T) {
 	}
 	r := mustRouter(t, agent)
 	sink := &captureSink{}
-	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, Options{}, sink); err != nil {
+	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, Options{ShowThinking: true}, sink); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	if got, want := sink.text.String(), "> _Thinking…_\n> line1\n> line2"; got != want {
@@ -563,5 +563,37 @@ func TestRelayInfo(t *testing.T) {
 	}
 	if up := r2.RelayInfo("x").Uptime; up != "" {
 		t.Fatalf("uptime should be empty with zero StartTime, got %q", up)
+	}
+}
+
+// TestParseOptions_ThinkingVisibilityAlias pins the wire-side polarity
+// rule: `show_thinking` is the declared control, `hide_thinking` is the
+// deprecated pre-rename key that Poe keeps sending for chats whose
+// stored parameters predate the rename, and an explicit show_thinking
+// wins when both arrive.
+func TestParseOptions_ThinkingVisibilityAlias(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		params   map[string]any
+		defaults Options
+		want     bool
+	}{
+		{"neither — default survives (off)", map[string]any{}, Options{}, false},
+		{"neither — default survives (on)", map[string]any{}, Options{ShowThinking: true}, true},
+		{"show_thinking alone true", map[string]any{"show_thinking": true}, Options{}, true},
+		{"show_thinking alone false", map[string]any{"show_thinking": false}, Options{ShowThinking: true}, false},
+		{"hide_thinking alone false → show", map[string]any{"hide_thinking": false}, Options{}, true},
+		{"hide_thinking alone true → hide", map[string]any{"hide_thinking": true}, Options{ShowThinking: true}, false},
+		{"both: show_thinking wins (true)", map[string]any{"hide_thinking": true, "show_thinking": true}, Options{}, true},
+		{"both: show_thinking wins (false)", map[string]any{"hide_thinking": false, "show_thinking": false}, Options{ShowThinking: true}, false},
+		{"wrong type ignored", map[string]any{"hide_thinking": "yes", "show_thinking": 1}, Options{ShowThinking: true}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ParseOptions(tc.params, tc.defaults, nil).ShowThinking; got != tc.want {
+				t.Fatalf("ShowThinking = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
