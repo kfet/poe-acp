@@ -192,6 +192,24 @@ xstale current "single-process host already current"   1 0.64.0 0.64.0 ''
 xstale current "unreadable version is never evidence"  1 0.64.0 ''     ''
 xstale current "a stopped bot is not stale"            0 0.64.0 ''     ''
 
+echo "== post-swap verdict when the observed worker is gone"
+xswap() { # <expected-verdict> <label> <args...>
+  local want=$1 label=$2; shift 2
+  local got; got=$("$CONVERGE" plan-swap "$@")
+  case "$got" in
+    "$want|"*) ok "$label ($got)" ;;
+    *) bad "$label: wanted $want, got $got" ;;
+  esac
+}
+#                                                        repl ver    want
+xswap fail "no live replacement means the worker died"   ''   ''     0.64.0
+xswap ok   "a later swap superseded ours"                777  0.64.0 0.64.0
+xswap fail "replacement runs the wrong version"          777  0.63.0 0.64.0
+xswap ok   "unreadable version cannot condemn a live worker" 777 ''  0.64.0
+
+expect graceful "systemd: duplicated ExecReload still reloads" systemd-user 0 1 0.53.0 1 2
+expect hard     "systemd: zero ExecReload cannot reload"       systemd-user 0 1 0.53.0 1 0
+
 echo "== fake-target recycle (stubbed systemd: graceful swap vs hard restart)"
 # Stub systemd + ps so the whole recycle/verify path runs offline. The stub
 # supervisor pid never moves; each `reload` advances the worker pid, which is

@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **`converge.sh` survives a swap that a second SIGHUP supersedes.** A unit
+  with a duplicated `ExecReload` (a stale `graceful.conf` drop-in repeating
+  what the canonical unit already says — found on kopi-fir, two-fir and
+  sea-fir) fires two SIGHUPs per `systemctl reload`, so the worker converge
+  watched appear was retired seconds later and the run aborted with "new
+  worker did not survive the swap" even though the swap had succeeded. A
+  live replacement running the wanted version is now accepted as a
+  supersession; only the absence of one is a failure. Converge also warns
+  when the loaded unit defines more than one `ExecReload`.
 - **`converge.sh` no longer calls a host converged while it still SERVES
   the old binary.** It short-circuited on zero *file* changes, so a bot
   sharing `~/.local/bin/poe-acp` with an already-converged bot on the same

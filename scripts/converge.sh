@@ -360,6 +360,23 @@ stale_decision() {
   echo "current|running version unreadable"
 }
 
+# swap_verdict <replacement-pid> <replacement-ver> <want>
+# Called only when the worker we watched appear is no longer a child.
+# Prints "ok|<why>" or "fail|<why>". A live replacement running the wanted
+# version means a LATER swap superseded ours (a unit with a duplicated
+# ExecReload fires two SIGHUPs per reload); no replacement means the new
+# worker died on startup, which is a real failure. An unreadable version
+# (macOS has no /proc) cannot condemn a live worker.
+# Exposed as the `plan-swap` subcommand for tests.
+swap_verdict() {
+  local repl=$1 rver=$2 want=$3
+  [ -n "$repl" ] || { echo "fail|did not survive the swap"; return 0; }
+  if [ -n "$rver" ] && [ "$rver" != "$want" ]; then
+    echo "fail|was replaced by worker $repl running $rver, wanted $want"; return 0
+  fi
+  echo "ok|superseded by a later swap, worker → $repl${rver:+ running $rver}"
+}
+
 # probe_state <supervisor> <unit-or-label>
 # Prints one line: <running>|<pid>|<version>|<worker-pids>|<has_reload>
 #   running     1 if the supervisor process is up
@@ -369,7 +386,9 @@ stale_decision() {
 #   worker-pids space-separated child pids of the supervisor that run the
 #               poe-acp image; a non-empty list is itself proof of the
 #               >= 0.36.0 master/worker model
-#   has_reload  1 if the loaded systemd unit defines ExecReload
+#   has_reload  how many ExecReload lines the loaded systemd unit defines
+#               (0 = none; >1 means a drop-in duplicates it, so ONE reload
+#               fires that many SIGHUPs — worth saying out loud)
 probe_state() {
   local supervisor=$1 unit=$2 script
   # A fake root has no supervisor unless the test stubs one; never probe the
@@ -395,7 +414,8 @@ $(running_version_snippet)
 $(workers_snippet)
 $(cat <<'EOS'
 fi
-hr=0; [ -n "$rel" ] && hr=1
+# One ExecReload entry per non-empty line: >1 means a drop-in repeats it.
+hr=0; [ -n "$rel" ] && hr=$(printf '%s\n' "$rel" | grep -c '[^[:space:]]')
 printf '%s|%s|%s|%s|%s\n' "$run" "$pid" "$ver" "$workers" "$hr"
 EOS
 )"
@@ -448,7 +468,7 @@ recycle_plan() {
   if [ "$running" != 1 ]; then
     echo "hard|supervisor not running"; return 0
   fi
-  if [ "$supervisor" = systemd-user ] && [ "$has_reload" != 1 ]; then
+  if [ "$supervisor" = systemd-user ] && [ "${has_reload:-0}" -lt 1 ]; then
     echo "hard|unit defines no ExecReload"; return 0
   fi
   if [ -n "$version" ]; then
@@ -668,6 +688,9 @@ converge() {
     wv=$(worker_version "$w")
     [ -n "$wv" ] && running_vers="$running_vers${running_vers:+,}$wv"
   done
+  if [ "${has_reload:-0}" -gt 1 ]; then
+    note "WARNING: the loaded unit defines $has_reload ExecReload lines (a drop-in repeats it) — one reload fires $has_reload SIGHUPs and swaps the worker $has_reload times"
+  fi
   local stale
   stale=$(stale_decision "$run_before" "$want_pa" "$ver_before" "$running_vers")
   if [ "${stale%%|*}" = stale ]; then
@@ -739,6 +762,19 @@ converge() {
     return 1
   }
 
+  # current_worker <excluded-pid> — a live poe-acp worker of this supervisor
+  # other than <excluded-pid>, or empty. Used to tell "the swap was
+  # superseded by a later one" from "the new worker died".
+  current_worker() {
+    local st run pid ver workers hr w
+    st=$(probe_state "$supervisor" "$sup_unit")
+    IFS='|' read -r run pid ver workers hr <<<"$st"
+    [ "$run" = 1 ] || return 0
+    for w in $workers; do
+      [ "$w" = "$1" ] || { printf '%s\n' "$w"; return 0; }
+    done
+  }
+
   if [ "$mech" = graceful ]; then
     case "$supervisor" in
       systemd-user) rsh "systemctl --user reload $unit" ;;
@@ -757,8 +793,22 @@ converge() {
       fi
     fi
     sleep 1
-    worker_still_child "$wpid_after" \
-      || die "$sup_unit: new worker $wpid_after did not survive the swap"
+    if ! worker_still_child "$wpid_after"; then
+      # A second reload trigger — e.g. a stale drop-in that repeats
+      # ExecReload, so one `systemctl reload` fires TWO SIGHUPs (found on
+      # kopi-fir/two-fir/sea-fir, 2026-08-30) — retires the worker we
+      # watched appear. That is a completed swap, not a failed one, as
+      # long as the supervisor held and a live worker runs the wanted
+      # version. Only "no live replacement" is a real failure.
+      local repl rver verdict
+      repl=$(current_worker "$wpid_after")
+      rver=''
+      [ -n "$repl" ] && [ "$supervisor" = systemd-user ] && rver=$(worker_version "$repl")
+      verdict=$(swap_verdict "$repl" "$rver" "$want_pa")
+      [ "${verdict%%|*}" = ok ] || die "$sup_unit: worker $wpid_after ${verdict#*|}"
+      note "$sup_unit: ${verdict#*|}"
+      wpid_after=$repl; wver=$rver
+    fi
     note "$sup_unit: graceful worker swap (SIGHUP) ✓ (supervisor $pid_before held, worker → $wpid_after${wver:+ running $wver})"
   else
     case "$supervisor" in
@@ -867,6 +917,9 @@ usage:
   converge.sh plan-stale <running> <want> <supervisor_ver> <worker_vers-csv>
                                              print whether the RUNNING state is
                                              stale w.r.t. want (test hook)
+  converge.sh plan-swap <replacement_pid> <replacement_ver> <want>
+                                             print the post-swap verdict when the
+                                             observed worker is gone (test hook)
 EOF
   exit 1
 }
@@ -891,6 +944,10 @@ case "$1" in
     # Test hook: exercise the mechanism-selection matrix without a host.
     [ $# -eq 7 ] || usage
     recycle_plan "$2" "$3" "$4" "$5" "$6" "$7" ;;
+  plan-swap)
+    # Test hook: exercise the post-swap verdict without a host.
+    [ $# -eq 4 ] || usage
+    swap_verdict "$2" "$3" "$4" ;;
   plan-stale)
     # Test hook: exercise the running-version staleness rule without a host.
     [ $# -eq 5 ] || usage
