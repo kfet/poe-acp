@@ -24,8 +24,7 @@
     "bot_name": "sea-fir",
     "defaults": {
       "model": "anthropic/claude-opus-5",
-      "thinking": "medium",
-      "hide_thinking": false
+      "thinking": "medium"
     },
     "poe_mcp": true
   },

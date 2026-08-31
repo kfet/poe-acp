@@ -34,10 +34,7 @@
     "defaults": {
       "model": "fir",
       "thinking": "medium",
-      "host": "local",
-      "hide_thinking": false,
-      "show_plans": true,
-      "show_tools": true
+      "host": "local"
     }
   },
   "credentials": { "env_file": "~/.config/poe-acp/acptmux/env" }

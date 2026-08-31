@@ -25,8 +25,7 @@
     "bot_name": "two-fir",
     "defaults": {
       "model": "anthropic/claude-opus-5",
-      "thinking": "medium",
-      "hide_thinking": false
+      "thinking": "medium"
     }
   },
   "credentials": { "env_file": "~/.config/poe-acp/bot-two-fir/env" }
