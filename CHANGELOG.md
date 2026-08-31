@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.65.1] - 2026-08-31
+
+### Changed
+
+- Release: the Homebrew tap is now pushed over ssh with a write deploy key
+  unique to poe-acp, instead of the shared `HOMEBREW_TAP_TOKEN` PAT. Deploy keys
+  are repo-scoped and never expire; fine-grained PATs are account-wide and
+  cap at a year, so they break silently mid-release. The tap push is now
+  skipped, not failed, when `HOMEBREW_TAP_SSH_KEY` is unset.
+
 ## [0.65.0] - 2026-08-30
 
 ### Changed
