@@ -21,7 +21,6 @@ See [docs/poe-acp-design.md](docs/poe-acp-design.md) for the full design, goals,
 ```
 cmd/poe-acp/             entry point: flags + server wiring
 docs/                    design doc + Poe protocol reference
-internal/command/        relay chat-commands: login, !help, !status, !model, …
 internal/config/         JSON config loader (DisallowUnknownFields)
 internal/httpsrv/        /poe handler with heartbeat + cancel plumbing
 internal/paramctl/       parameter_controls schema builder + Resolve
@@ -31,7 +30,9 @@ internal/skills/         embedded bundle + acp-kit/skills wrapper
 test/smoke.sh            black-box SSE smoke test
 ```
 
-Shared ACP primitives — agent process wrapper, debug log, skill loader/formatter — live in `github.com/kfet/acp-kit` (sibling repo, MIT). The relay imports `acp-kit/client`, `acp-kit/log`, and `acp-kit/skills`.
+Shared ACP primitives — agent process wrapper, debug log, skill loader/formatter, and the **chat-command broker** — live in `github.com/kfet/acp-kit` (sibling repo, MIT). The relay imports `acp-kit/client`, `acp-kit/command`, `acp-kit/log`, and `acp-kit/skills`.
+
+The `!command` surface is `acp-kit/command`, shared with `zulip-acp`. Do not add a command, an alias or a rendering tweak in this repo — it belongs there, and both relays must offer the same surface.
 
 The relay owns `conv_id → session` lifecycle. Agents are spawned via `--agent-cmd` (default `fir --mode acp`). Keep the split clean: HTTP + Poe framing in `httpsrv`/`poeproto`, agent + ACP in `acp-kit/client`, session lifecycle in `router`.
 
