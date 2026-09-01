@@ -23,7 +23,7 @@
   `command.Poster` nor `command.Scheduler` and `relaytool` leaves out what the
   relay cannot do. `zulip-acp`, which streams into an editable message,
   implements both.
-- Requires `acp-kit` v0.9.0.
+- Requires `acp-kit` v0.9.1.
 
 ## [0.66.0] - 2026-09-01
 
