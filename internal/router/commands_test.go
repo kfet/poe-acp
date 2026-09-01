@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -182,5 +183,42 @@ func TestAvailableModels_ModelOrder(t *testing.T) {
 	}
 	if DefaultModelForProvider(m, "openrouter", defs.Model) != opts.Model {
 		t.Fatalf("schema default and runtime fallback disagree")
+	}
+}
+
+// TestOnTurnEndRunsAfterTheSessionIsIdle pins the ordering the
+// agent→relay loopback depends on: a `new_session` the agent asked for
+// mid-turn is applied by the end-of-turn hook, and ResetSession refuses
+// a busy session — so the hook must not run until the turn has left the
+// queue's in-flight state.
+func TestOnTurnEndRunsAfterTheSessionIsIdle(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		convs []string
+		errs  []error
+	)
+	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
+		a.emit(sid, "hi")
+		return acp.StopReasonEndTurn, nil
+	})
+	r := newCmdRouter(t, agent, "p/a")
+	r.cfg.OnTurnEnd = func(convID string) {
+		mu.Lock()
+		convs = append(convs, convID)
+		// The whole point: a reset issued from here must succeed.
+		errs = append(errs, r.ResetSession(convID))
+		mu.Unlock()
+	}
+	if err := r.Prompt(context.Background(), "c-hook", "u",
+		[]Turn{{Role: "user", Content: "hello"}}, Options{}, &captureSink{}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(convs) != 1 || convs[0] != "c-hook" {
+		t.Fatalf("OnTurnEnd calls = %v, want one for c-hook", convs)
+	}
+	if errs[0] != nil {
+		t.Fatalf("reset from the end-of-turn hook failed: %v — the hook ran too early", errs[0])
 	}
 }
