@@ -21,10 +21,10 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/mcphost"
 	"github.com/kfet/poe-acp/internal/agentcfg"
-	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/httpsrv"
 	"github.com/kfet/poe-acp/internal/paramctl"

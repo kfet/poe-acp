@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
-	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 	"github.com/kfet/poe-acp/internal/statusline"
@@ -161,6 +161,14 @@ const defaultSSEWriteTimeout = 30 * time.Second
 // odd combinations the real one can't produce.
 type CommandHandler interface {
 	HasPending(convID string) bool
+
+	// IsCommand reports whether text is a relay command this broker
+	// handles. A method rather than a package function because the
+	// answer depends on the wired Controller — acp-kit's !stop exists
+	// only where the relay can actually stop a turn, which poe cannot:
+	// it answers one HTTP request per turn, so there is no in-flight
+	// turn a later message could reach.
+	IsCommand(text string) bool
 	Handle(ctx context.Context, convID, text string) (*command.Outcome, error)
 	// Passthrough reports whether text is an allowlisted agent command;
 	// if ok, rewritten is the prompt text to forward to the agent.
@@ -378,7 +386,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	if h.cfg.Commands != nil {
 		latest := latestUserTurn(turns)
 		if latest != "" {
-			if h.cfg.Commands.HasPending(req.ConversationID) || command.IsCommand(latest) {
+			if h.cfg.Commands.HasPending(req.ConversationID) || h.cfg.Commands.IsCommand(latest) {
 				h.handleAuth(ctx, sse, req.ConversationID, latest)
 				return
 			}
