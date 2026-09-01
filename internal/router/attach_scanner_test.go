@@ -39,7 +39,7 @@ func (s *scanSink) Replace(string) error           { return nil }
 func (s *scanSink) Error(string, string) error     { return nil }
 func (s *scanSink) Done() error                    { return nil }
 func (s *scanSink) FirstChunk()                    {}
-func (s *scanSink) SetProviderEmoji(string)        {}
+func (s *scanSink) SetModelInfo(string, string)    {}
 func (s *scanSink) SetStatus(string, string)       {}
 func (s *scanSink) ToolActivity(string)            {}
 func (s *scanSink) SetPlan([]statusline.PlanEntry) {}

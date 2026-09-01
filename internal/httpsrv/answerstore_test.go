@@ -44,7 +44,7 @@ func TestAnswerStore_RoundTripsEveryOp(t *testing.T) {
 	s := newStore(t)
 	want := []recCall{
 		{op: opFirstChunk},
-		{op: opSetProviderEmoji, s1: "🦊"},
+		{op: opSetModelInfo, s1: "🦊"},
 		{op: opSetStatus, s1: "steady", s2: "plan"},
 		{op: opText, s1: "hello"},
 		{op: opReplace, s1: "hello world"},

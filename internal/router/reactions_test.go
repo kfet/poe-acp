@@ -359,7 +359,7 @@ func (s *orderingSink) Error(t, _ string) error {
 	return nil
 }
 func (s *orderingSink) Done() error                    { s.send("done", ""); return nil }
-func (s *orderingSink) SetProviderEmoji(string)        {}
+func (s *orderingSink) SetModelInfo(string, string)    {}
 func (s *orderingSink) SetStatus(string, string)       {}
 func (s *orderingSink) ToolActivity(string)            {}
 func (s *orderingSink) SetPlan([]statusline.PlanEntry) {}
@@ -626,7 +626,7 @@ func TestPrompt_CtxCancelPlusRunnerErr(t *testing.T) {
 // TestRouter_ReactionStatusMetaIgnored: reaction turns use a
 // discardSink. Any dev.acp-kit.status-line/v1 _meta the agent emits
 // during a reaction is silently absorbed (the sink no-ops both
-// SetProviderEmoji and SetStatus). This exercises discardSink's
+// SetModelInfo and SetStatus). This exercises discardSink's
 // status-line stubs.
 func TestRouter_ReactionStatusMetaIgnored(t *testing.T) {
 	done := make(chan struct{})

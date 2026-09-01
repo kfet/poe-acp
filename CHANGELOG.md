@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The status line moved from a header to an italic footer, and now names
+  the model.** It is appended once at the END of the answer
+  (`\n\n_🏛️ opus-4.5 • steady • 2/5_`) instead of being prepended to the
+  first chunk. `mood` and `plan` are agent-supplied and normally arrive
+  mid-turn, so a header rendered on the first chunk showed a status the
+  agent had not published yet; the footer is rendered from the final
+  snapshot. It is suppressed on turns that produced no user-visible content
+  and on error turns, and it is regenerated (not double-emitted) by the
+  redrive replay path. The live keepalive spinner keeps its `> _…_` form and
+  gains the model too.
+- `router.ChunkSink.SetProviderEmoji(emoji)` widened to
+  `SetModelInfo(emoji, model)`, carrying the provider emoji and the short
+  model name that render as one segment. The recorded redrive op is
+  `opSetModelInfo`.
+- acp-kit bumped to v0.10.0 for `statusline.ShortModelName` /
+  `statusline.Status.Model`.
+
 ## [0.67.0] - 2026-09-01
 
 ### Added

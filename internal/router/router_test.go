@@ -270,6 +270,7 @@ type captureSink struct {
 	firstCalled bool
 	// dev.acp-kit.status-line/v1 — last values seen.
 	providerEmoji string
+	modelName     string
 	mood          string
 	plan          string
 	// tool-activity labels seen, in order (Solution B).
@@ -316,9 +317,9 @@ func (s *captureSink) Error(t, et string) error {
 	return nil
 }
 func (s *captureSink) Done() error { s.mu.Lock(); s.done = true; s.mu.Unlock(); return nil }
-func (s *captureSink) SetProviderEmoji(emoji string) {
+func (s *captureSink) SetModelInfo(emoji, model string) {
 	s.mu.Lock()
-	s.providerEmoji = emoji
+	s.providerEmoji, s.modelName = emoji, model
 	s.mu.Unlock()
 }
 func (s *captureSink) SetStatus(mood, plan string) {
@@ -1662,7 +1663,7 @@ func (s *eventSink) Replace(t string) error         { return nil }
 func (s *eventSink) File(a, b, c, d string) error   { return nil }
 func (s *eventSink) Error(t, et string) error       { return nil }
 func (s *eventSink) Done() error                    { return nil }
-func (s *eventSink) SetProviderEmoji(string)        {}
+func (s *eventSink) SetModelInfo(string, string)    {}
 func (s *eventSink) SetStatus(string, string)       {}
 func (s *eventSink) ToolActivity(string)            {}
 func (s *eventSink) SetPlan([]statusline.PlanEntry) {}
@@ -1748,9 +1749,9 @@ func TestRouter_FirstChunkReplaceCannotWipeSubsequentText(t *testing.T) {
 
 // TestRouter_StatusLineMetaForwardedToSink verifies the
 // dev.acp-kit.status-line/v1 _meta on session/update reaches the sink
-// via SetStatus, and that the relay-resolved provider emoji is
-// forwarded via SetProviderEmoji once applyOptions has resolved the
-// model.
+// via SetStatus, and that the relay-resolved model identity (provider
+// emoji + short model name) is forwarded via SetModelInfo once
+// applyOptions has resolved the model.
 func TestRouter_StatusLineMetaForwardedToSink(t *testing.T) {
 	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
 		// Early update with mood only.
@@ -1778,9 +1779,13 @@ func TestRouter_StatusLineMetaForwardedToSink(t *testing.T) {
 	if sink.mood != "steady" || sink.plan != "2/5" {
 		t.Errorf("status: mood=%q plan=%q want steady/2/5", sink.mood, sink.plan)
 	}
-	// Provider emoji resolved from anthropic/ prefix.
+	// Model identity resolved from the applied model id: emoji from
+	// the anthropic/ prefix, short name with the vendor echo dropped.
 	if sink.providerEmoji != "🏛️" {
 		t.Errorf("providerEmoji=%q want 🏛️", sink.providerEmoji)
+	}
+	if sink.modelName != "sonnet-4" {
+		t.Errorf("modelName=%q want sonnet-4", sink.modelName)
 	}
 }
 
@@ -1891,20 +1896,22 @@ func TestRouter_StatusLineUnknownProviderEmpty(t *testing.T) {
 	}
 }
 
-// TestRouter_StatusLineEmojiSetBeforeOptionErrorText verifies the
-// emoji set on the sink reflects the ACTUALLY-active model, not the
-// requested one, when applyOptions fails. Regression guard: an
-// earlier draft set the emoji AFTER emitting the
-// "_(option not applied)_" Text — which had already triggered the
-// header prepend with the handler-seeded (requested-model) emoji.
+// TestRouter_StatusLineModelInfoTracksAppliedModel verifies the model
+// identity on the sink reflects the ACTUALLY-active model, not the
+// requested one, when applyOptions fails.
+//
+// The status line is now a FOOTER rendered from the latest snapshot at
+// Done, so a stale value can no longer be baked into the first chunk —
+// but the router must still correct it, and must still do so BEFORE
+// emitting the "_(option not applied)_" text, because every spinner
+// frame in between renders the identity live.
 //
 // Setup: a fakeAgent that rejects SetModel. Handler-side seeding is
-// simulated by calling SetProviderEmoji on the sink BEFORE Prompt
-// (mirroring httpsrv's `s.SetProviderEmoji(...)` at sink construction).
-// After the failed applyOptions, the router must overwrite the emoji
-// to match st.applied.Model (which stays empty/unchanged on failure)
-// BEFORE the error text reaches the sink.
-func TestRouter_StatusLineEmojiSetBeforeOptionErrorText(t *testing.T) {
+// simulated by calling SetModelInfo on the sink BEFORE Prompt
+// (mirroring httpsrv's `s.SetModelInfo(...)` at sink construction).
+// After the failed applyOptions, the router must overwrite the identity
+// to match st.applied.Model, which stays empty/unchanged on failure.
+func TestRouter_StatusLineModelInfoTracksAppliedModel(t *testing.T) {
 	agent := newFakeAgent(func(_ context.Context, a *fakeAgent, sid acp.SessionId, _ string) (acp.StopReason, error) {
 		a.emit(sid, "ok")
 		return acp.StopReasonEndTurn, nil
@@ -1916,7 +1923,7 @@ func TestRouter_StatusLineEmojiSetBeforeOptionErrorText(t *testing.T) {
 	}
 	sink := &recordingEmojiSink{captureSink: &captureSink{}}
 	// Handler-side pre-seed: requested model is anthropic/X → 🏛️.
-	sink.SetProviderEmoji("🏛️")
+	sink.SetModelInfo("🏛️", "opus-4.5")
 	if err := r.Prompt(context.Background(), "c-emoji-order", "u",
 		[]Turn{{Role: "user", Content: "hi"}},
 		Options{Model: "anthropic/claude-sonnet-4"},
@@ -1937,11 +1944,17 @@ func TestRouter_StatusLineEmojiSetBeforeOptionErrorText(t *testing.T) {
 	if first != "" {
 		t.Errorf("first Text emoji = %q; want %q (applied.Model is empty, emoji must be cleared first)", first, "")
 	}
+	// And the end-of-turn snapshot the footer is rendered from carries
+	// neither the requested emoji nor the requested model name.
+	if sink.providerEmoji != "" || sink.modelName != "" {
+		t.Errorf("final model info = (%q, %q); want both empty (applied.Model is empty)",
+			sink.providerEmoji, sink.modelName)
+	}
 }
 
 // recordingEmojiSink snapshots the providerEmoji at the moment each
 // Text call lands, so tests can assert ordering between
-// SetProviderEmoji and Text on the same sink.
+// SetModelInfo and Text on the same sink.
 type recordingEmojiSink struct {
 	*captureSink
 	textEmojiAtCall []string

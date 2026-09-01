@@ -989,15 +989,16 @@ func (e *errNewSessionAgent) NewSessionWithMeta(_ context.Context, _ string, _ c
 	return "", errors.New("new session boom")
 }
 
-// TestSink_StatusLinePrependsHeaderOnce verifies that a non-empty
-// dev.acp-kit.status-line/v1 status renders into the first user Text
-// chunk exactly once, and that subsequent chunks pass through unchanged.
-func TestSink_StatusLinePrependsHeaderOnce(t *testing.T) {
+// TestSink_StatusLineAppendsFooterOnce verifies that a non-empty
+// dev.acp-kit.status-line/v1 status is appended ONCE, at the end of the
+// answer, in italics after a blank line — and never in front of the
+// body.
+func TestSink_StatusLineAppendsFooterOnce(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	s := newSink(w, 0, time.Hour, nil)
-	s.SetProviderEmoji("🏛️")
+	s.SetModelInfo("🏛️", "opus-4.5")
 	s.SetStatus("steady", "2/5")
 	if err := s.Text("hello"); err != nil {
 		t.Fatal(err)
@@ -1009,78 +1010,176 @@ func TestSink_StatusLinePrependsHeaderOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := rec.Body.String()
-	// Header appears once, on the first chunk only.
-	if strings.Count(body, "🏛️ • steady • 2/5") != 1 {
-		t.Errorf("expected header exactly once in body: %q", body)
+	const want = `\n\n_🏛️ opus-4.5 • steady • 2/5_`
+	if got := strings.Count(body, want); got != 1 {
+		t.Errorf("footer count = %d, want 1, in body: %q", got, body)
 	}
-	// Header is followed by a blank line then the first chunk's text.
-	if !strings.Contains(body, "🏛️ • steady • 2/5\\n\\nhello") {
-		// SSE-escaped newlines — fall back to checking raw assembled order.
-		t.Logf("body: %q", body)
+	// It is a FOOTER: the last text frame carries it, and the answer's
+	// first frame is the bare content.
+	if !strings.Contains(body, `"text": "hello"`) && !strings.Contains(body, `"text":"hello"`) {
+		t.Errorf("first chunk should be unadorned content: %q", body)
+	}
+	if strings.Index(body, "hello") > strings.Index(body, "opus-4.5") {
+		t.Errorf("footer must come after the answer body: %q", body)
 	}
 }
 
-// TestSink_StatusLineNoHeaderWhenAllEmpty: with no provider emoji set
-// and no agent _meta, the first Text chunk is forwarded unchanged.
-func TestSink_StatusLineNoHeaderWhenAllEmpty(t *testing.T) {
+// TestSink_StatusLineFooterUsesLatestSnapshot is the whole point of
+// moving the line to the bottom: mood and plan that arrive AFTER the
+// first chunk still make it into the rendered line.
+func TestSink_StatusLineFooterUsesLatestSnapshot(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	s := newSink(w, 0, time.Hour, nil)
-	// No SetProviderEmoji, no SetStatus.
+	s.SetModelInfo("🏛️", "opus-4.5")
+	if err := s.Text("answer"); err != nil {
+		t.Fatal(err)
+	}
+	// Agent publishes its status only once it is under way.
+	s.SetStatus("engaged", "4/7")
+	_ = s.Done()
+	body := rec.Body.String()
+	if !strings.Contains(body, "engaged • 4/7_") {
+		t.Errorf("footer must carry the LATEST status: %q", body)
+	}
+}
+
+// TestSink_StatusLineNoFooterWhenAllEmpty: with no model info and no
+// agent _meta, nothing is appended — not even a stray blank line.
+func TestSink_StatusLineNoFooterWhenAllEmpty(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	s := newSink(w, 0, time.Hour, nil)
+	// No SetModelInfo, no SetStatus.
 	if err := s.Text("only-content"); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Done()
 	body := rec.Body.String()
 	if strings.Contains(body, " • ") {
-		t.Errorf("unexpected header separator in body: %q", body)
+		t.Errorf("unexpected status separator in body: %q", body)
+	}
+	if strings.Contains(body, `\n\n_`) {
+		t.Errorf("unexpected empty footer in body: %q", body)
 	}
 	if !strings.Contains(body, "only-content") {
 		t.Errorf("missing chunk content: %q", body)
 	}
 }
 
-// TestSink_StatusLineEmojiOnlyWithoutAgentMeta verifies the
-// backwards-compat case: agent doesn't emit _meta, so only the
-// provider emoji segment survives. Header is still prepended.
-func TestSink_StatusLineEmojiOnlyWithoutAgentMeta(t *testing.T) {
+// TestSink_StatusLineNoFooterWithoutContent: a turn that produced no
+// user-visible output has nothing to sign, so no footer is emitted.
+func TestSink_StatusLineNoFooterWithoutContent(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	s := newSink(w, 0, time.Hour, nil)
-	s.SetProviderEmoji("🌐")
+	s.SetModelInfo("🏛️", "opus-4.5")
+	s.SetStatus("steady", "2/5")
+	_ = s.Done()
+	if body := rec.Body.String(); strings.Contains(body, "opus-4.5") {
+		t.Errorf("footer on a contentless turn: %q", body)
+	}
+}
+
+// TestSink_StatusLineNoFooterOnError: an error turn is not signed. The
+// Poe `error` event is followed by a mandatory `done`, so this pins the
+// latch that lets Done tell a failure from a finished answer.
+func TestSink_StatusLineNoFooterOnError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	s := newSink(w, 0, time.Hour, nil)
+	s.SetModelInfo("🏛️", "opus-4.5")
+	s.SetStatus("steady", "2/5")
+	if err := s.Text("partial"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Error("boom", "user_caused_error"); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Done()
+	if body := rec.Body.String(); strings.Contains(body, "opus-4.5") {
+		t.Errorf("error turn must not carry a status footer: %q", body)
+	}
+}
+
+// TestSink_StatusLineModelOnlyWithoutAgentMeta verifies the
+// backwards-compat case: agent doesn't emit _meta, so only the model
+// identity segment survives. The footer is still appended.
+func TestSink_StatusLineModelOnlyWithoutAgentMeta(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	s := newSink(w, 0, time.Hour, nil)
+	s.SetModelInfo("🌐", "gpt-5-codex")
 	if err := s.Text("payload"); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Done()
 	body := rec.Body.String()
-	if !strings.Contains(body, "🌐") {
-		t.Errorf("emoji missing from body: %q", body)
+	if !strings.Contains(body, `\n\n_🌐 gpt-5-codex_`) {
+		t.Errorf("model-only footer missing: %q", body)
 	}
 	// No mood/plan dividers should be present.
-	if strings.Contains(body, "🌐 • ") {
+	if strings.Contains(body, "gpt-5-codex • ") {
 		t.Errorf("unexpected mood/plan segment present: %q", body)
 	}
 }
 
-// TestSink_StatusLineSpinnerCarriesHeader verifies the spinner frame
-// includes the current status — provider emoji + mood + plan + Thinking…
-func TestSink_StatusLineSpinnerCarriesHeader(t *testing.T) {
+// TestSink_StatusLineFooterSurvivesSpinner pins the constraint that
+// made this change delicate: the footer must land AFTER the transient
+// keepalive region (spinner + plan checklist) and must not be eaten by
+// it. The spinner is stripped by the footer's own text write, and Done
+// seals the stream so no later frame can replace it.
+func TestSink_StatusLineFooterSurvivesSpinner(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := poeproto.NewSSEWriter(rec)
+	_ = w.Meta()
+	hook, wait := waitTicks(t, 2)
+	// Zero stall: every tick re-arms the spinner, so one is guaranteed
+	// to be on screen when Done lands.
+	s := newSink(w, 5*time.Millisecond, 0, hook)
+	s.SetModelInfo("🏛️", "opus-4.5")
+	s.SetStatus("steady", "2/5")
+	if err := s.Text("body text"); err != nil {
+		t.Fatal(err)
+	}
+	wait()
+	if err := s.Done(); err != nil {
+		t.Fatal(err)
+	}
+	<-s.hbExited
+	body := rec.Body.String()
+	if strings.Count(body, `\n\n_🏛️ opus-4.5 • steady • 2/5_`) != 1 {
+		t.Errorf("footer must survive the spinner exactly once: %q", body)
+	}
+	// Nothing on the wire after the footer but the terminal done.
+	tail := body[strings.LastIndex(body, "opus-4.5"):]
+	if strings.Contains(tail, "replace_response") {
+		t.Errorf("a spinner frame landed after the footer: %q", tail)
+	}
+}
+
+// TestSink_StatusLineSpinnerCarriesStatus verifies the spinner frame
+// includes the current status — model identity + mood + plan + Thinking…
+func TestSink_StatusLineSpinnerCarriesStatus(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	hook, wait := waitTicks(t, 2)
 	s := newSink(w, 5*time.Millisecond, time.Hour, hook)
-	s.SetProviderEmoji("🏛️")
+	s.SetModelInfo("🏛️", "opus-4.5")
 	s.SetStatus("steady", "2/5")
 	wait()
 	s.FirstChunk()
 	s.stop()
 	<-s.hbExited
 	body := rec.Body.String()
-	if !strings.Contains(body, "🏛️") {
-		t.Errorf("spinner missing emoji: %q", body)
+	if !strings.Contains(body, "🏛️ opus-4.5") {
+		t.Errorf("spinner missing model identity: %q", body)
 	}
 	if !strings.Contains(body, "steady") {
 		t.Errorf("spinner missing mood: %q", body)
@@ -1093,23 +1192,28 @@ func TestSink_StatusLineSpinnerCarriesHeader(t *testing.T) {
 	}
 }
 
-// TestSink_StatusLineHeaderEmittedOnlyForText verifies that the header
-// is not prepended onto Replace / Error paths (those overwrite the
-// body, so a header there would be erased or out of place).
-func TestSink_StatusLineHeaderSkippedOnReplace(t *testing.T) {
+// TestSink_StatusLineFooterAfterReplace verifies that a Replace-only
+// turn (e.g. the cancel path) still gets signed: Replace is
+// user-visible content, and the footer is appended after it rather than
+// being erased by it — which is precisely what the old prepend could
+// not do.
+func TestSink_StatusLineFooterAfterReplace(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	s := newSink(w, 0, time.Hour, nil)
-	s.SetProviderEmoji("🏛️")
+	s.SetModelInfo("🏛️", "opus-4.5")
 	s.SetStatus("steady", "2/5")
 	if err := s.Replace("_(cancelled)_"); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Done()
 	body := rec.Body.String()
-	if strings.Contains(body, "🏛️") {
-		t.Errorf("Replace path must not prepend header: %q", body)
+	if !strings.Contains(body, `\n\n_🏛️ opus-4.5 • steady • 2/5_`) {
+		t.Errorf("footer missing after Replace: %q", body)
+	}
+	if strings.Index(body, "cancelled") > strings.Index(body, "opus-4.5") {
+		t.Errorf("footer must follow the replaced body: %q", body)
 	}
 }
 

@@ -438,12 +438,15 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// the terminal `done`.
 	turnStart := time.Now()
 	defer func() { logFrameStats(req.ConversationID, s.o.snapshotStats(), time.Since(turnStart)) }()
-	// Pre-seed the provider emoji from the handler-resolved model so
+	// Pre-seed the model identity from the handler-resolved model so
 	// tick #1 of the spinner already carries it. The router re-runs
 	// the resolution after applyOptions returns (success or failure)
-	// so the header tracks the actually-applied model, not the
-	// requested one. Unknown providers return "" → segment dropped.
-	s.SetProviderEmoji(statusline.ProviderEmojiForModel(opts.Model))
+	// so the status line tracks the actually-applied model, not the
+	// requested one. Unknown providers return "" → that half dropped.
+	s.SetModelInfo(
+		statusline.ProviderEmojiForModel(opts.Model),
+		statusline.ShortModelName(opts.Model),
+	)
 	// Now that the stream has a sink, let the drain path seal it.
 	h.streams.setSeal(streamID, s.seal)
 	defer s.stop()
@@ -1142,6 +1145,18 @@ func (o *orderedWriter) hasOutput() bool {
 	return o.realWritten
 }
 
+// hasContent reports whether the turn produced user-visible content:
+// either already on the wire, or sitting in the coalescing buffer where
+// userDone is about to flush it. The footer gates on this rather than on
+// realWritten alone, because on a heavily coalesced turn the whole answer
+// can still be buffered at the moment Done lands — and an answer that is
+// about to be written is an answer.
+func (o *orderedWriter) hasContent() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.realWritten || o.pending.Len() > 0
+}
+
 // isClosed reports whether the stream has been sealed (Done emitted).
 func (o *orderedWriter) isClosed() bool {
 	o.mu.Lock()
@@ -1192,7 +1207,11 @@ type sink struct {
 	statusMu      sync.Mutex
 	status        statusline.Status
 	activity      string // transient spinner label from the running tool
-	headerEmitted bool   // true once a final-header prepend has been considered
+	footerEmitted bool   // true once the status footer has been considered
+	// errored is set by Error: an error turn gets no status footer. The
+	// Poe `error` event is followed by a mandatory `done`, so Done alone
+	// cannot tell a finished answer from a failed one.
+	errored bool
 	// plan is the agent's latest ACP plan, rendered as a transient
 	// checklist below the spinner line. Replaced wholesale on every
 	// SetPlan (ACP plans are complete-list updates).
@@ -1507,10 +1526,24 @@ func (s *sink) contentIdleSince() time.Duration {
 	return time.Since(time.Unix(0, s.lastContent.Load()))
 }
 
-func (s *sink) Text(t string) error      { s.touch(); return s.o.userText(s.maybePrependHeader(t)) }
-func (s *sink) Replace(t string) error   { s.touch(); return s.o.userReplace(t) }
-func (s *sink) Error(t, et string) error { s.touch(); s.stop(); return s.o.userError(t, et) }
-func (s *sink) Done() error              { s.touch(); s.stop(); return s.o.userDone() }
+func (s *sink) Text(t string) error    { s.touch(); return s.o.userText(t) }
+func (s *sink) Replace(t string) error { s.touch(); return s.o.userReplace(t) }
+
+func (s *sink) Error(t, et string) error {
+	s.touch()
+	s.stop()
+	s.markErrored()
+	return s.o.userError(t, et)
+}
+
+// Done finalises the turn: the status footer is appended as the last
+// body text, then the terminal `done` seals the stream.
+func (s *sink) Done() error {
+	s.touch()
+	s.stop()
+	s.maybeAppendFooter()
+	return s.o.userDone()
+}
 
 // seal terminates the stream at the protocol level from ANOTHER
 // goroutine (the drain path): a Poe `error` event carrying allow_retry,
@@ -1549,13 +1582,18 @@ func (s *sink) ToolActivity(label string) {
 	s.statusMu.Unlock()
 }
 
-// SetProviderEmoji records the relay-resolved provider emoji for the
-// active turn. Router calls this once after applyOptions resolves the
-// effective model. Empty string means the provider is unknown and the
-// segment will be dropped by the renderer.
-func (s *sink) SetProviderEmoji(emoji string) {
+// SetModelInfo records the relay-resolved identity of the model
+// servicing the active turn: the provider emoji and the short model
+// name, which the renderer joins into one segment ("🏛️ opus-4.5").
+// The handler pre-seeds it from the requested model so the spinner's
+// first tick already names the model; the router re-sets it once
+// applyOptions has settled the applied model. Either half may be empty
+// — an unknown provider or an unnamed model degrades to the other half,
+// and both empty drops the segment.
+func (s *sink) SetModelInfo(emoji, model string) {
 	s.statusMu.Lock()
 	s.status.ProviderEmoji = emoji
+	s.status.Model = model
 	s.statusMu.Unlock()
 }
 
@@ -1616,25 +1654,57 @@ func (s *sink) renderPlan() string {
 	return statusline.PlanChecklist(s.plan)
 }
 
-// maybePrependHeader injects the final-message status header in front
-// of the first user-visible text chunk, exactly once. Subsequent
-// chunks pass through unchanged. If the rendered header is empty
-// (unknown provider + no agent _meta), nothing is prepended. Replace /
-// Error / Done paths intentionally do NOT prepend: they overwrite or
-// terminate the body, so a header there would be erased or out of
-// place.
-func (s *sink) maybePrependHeader(t string) string {
+// markErrored records that this turn failed, so the trailing Done does
+// not sign a failure with a status footer.
+func (s *sink) markErrored() {
 	s.statusMu.Lock()
-	defer s.statusMu.Unlock()
-	if s.headerEmitted {
-		return t
+	s.errored = true
+	s.statusMu.Unlock()
+}
+
+// maybeAppendFooter writes the status line as the LAST body text of the
+// turn: a blank line then the line in italics
+// ("\n\n_🏛️ opus-4.5 • steady • 2/5_"). Called by Done, exactly once.
+//
+// Why the bottom rather than the top (the original design): mood and
+// plan are agent-supplied and typically arrive mid-turn, well after the
+// first chunk. A header rendered on the first chunk therefore showed a
+// status the agent had not published yet — usually the emoji alone. At
+// Done the snapshot is final, which is the whole point of the move.
+//
+// It is suppressed when:
+//   - the turn produced no user-visible content (nothing to sign);
+//   - the turn errored (Error ran — the `error` event is followed by a
+//     mandatory `done`, so Done cannot tell the two apart on its own);
+//   - the rendered line is empty (unknown provider, no model, no agent
+//     _meta) — nothing is appended, not even the blank line.
+//
+// Placement is safe against the transient keepalive region without any
+// special handling: the footer goes out through userText, which strips a
+// visible spinner (Replace(acc)) before appending, and Done seals the
+// stream so no later heartbeat frame can replace it. The footer is
+// therefore the last thing on the wire before `done`.
+//
+// It is also not duplicated by the redrive replay path. answerRecorder
+// wraps this sink, so the footer — produced INSIDE Done, below the
+// recorder — is never recorded as an opText. A replay instead re-runs
+// opSetModelInfo / opSetStatus and then opDone against a fresh sink,
+// which regenerates the identical footer from the replayed status.
+func (s *sink) maybeAppendFooter() {
+	s.statusMu.Lock()
+	if s.footerEmitted || s.errored {
+		s.statusMu.Unlock()
+		return
 	}
-	s.headerEmitted = true
-	h := statusline.Header(s.status)
-	if h == "" {
-		return t
+	s.footerEmitted = true
+	footer := statusline.Footer(s.status)
+	s.statusMu.Unlock()
+	// The wire write happens OUTSIDE statusMu: it can block on a dead
+	// reader, and the heartbeat goroutine takes statusMu on every tick.
+	if footer == "" || !s.o.hasContent() {
+		return
 	}
-	return h + "\n\n" + t
+	_ = s.o.userText(footer)
 }
 
 // handleAuth runs an auth-flow turn end-to-end on the SSE stream. Always
