@@ -17,8 +17,8 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
-	"github.com/kfet/poe-acp/internal/command"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 )
@@ -406,6 +406,7 @@ func TestSink_FirstChunkWhileSpinning(t *testing.T) {
 // fakeBroker returns whatever (out, err) is set.
 type fakeBroker struct {
 	pending bool
+	isCmd   bool
 	out     *command.Outcome
 	err     error
 	passOut string
@@ -413,6 +414,7 @@ type fakeBroker struct {
 }
 
 func (f *fakeBroker) HasPending(string) bool { return f.pending }
+func (f *fakeBroker) IsCommand(string) bool  { return f.isCmd }
 func (f *fakeBroker) Handle(context.Context, string, string) (*command.Outcome, error) {
 	return f.out, f.err
 }

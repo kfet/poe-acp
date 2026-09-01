@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`internal/command` moved to `acp-kit/command`.** The chat-command broker —
+  the `!login` family and its two-call `_meta.auth.interactive` bridge,
+  `!help` / `!status` / `!model` / `!new`, the back-compat aliases, and the
+  agent-command passthrough allowlist — is now shared with `zulip-acp` so the
+  two relays cannot drift. The user-facing surface is unchanged; the tests
+  moved with the code. `router.SessionStatus` and `router.RelayInfo` are now
+  aliases for the acp-kit types, so every call site compiles unchanged.
+- Command names are matched case-insensitively (`!New` works), and
+  `IsCommand` is a `*Broker` method rather than a package function. No
+  behaviour change here: acp-kit's `!stop` is gated on a `TurnStopper`
+  capability this relay deliberately does not implement, since poe-acp answers
+  one HTTP request per turn and has no in-flight turn a later message could
+  reach.
+
 ## [0.65.1] - 2026-08-31
 
 ### Changed

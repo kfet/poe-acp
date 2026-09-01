@@ -29,6 +29,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/poeproto"
@@ -2753,14 +2754,11 @@ func (r *Router) AgentCommands() []client.CommandInfo {
 }
 
 // SessionStatus is a race-free snapshot of a conversation's relay state.
-type SessionStatus struct {
-	EffectiveModel  string // override if set, else the configured default
-	DefaultModel    string
-	OverrideModel   string // "" when no !model override is active
-	Thinking        string
-	HasSession      bool
-	ModelsAvailable int
-}
+//
+// It is an ALIAS for the acp-kit type, not a copy: the command broker
+// moved to acp-kit so poe-acp and zulip-acp cannot drift, and this
+// alias is what keeps every call site here compiling unchanged.
+type SessionStatus = command.SessionStatus
 
 // StatusFor returns a snapshot for convID. It deliberately does not read
 // the session's goroutine-confined applied options; it reports the
@@ -2790,16 +2788,8 @@ func (r *Router) StatusFor(convID string) SessionStatus {
 }
 
 // RelayInfo is a snapshot of relay-process realtime state, surfaced by
-// the !relay chat command.
-type RelayInfo struct {
-	Version         string
-	Uptime          string // pre-formatted (e.g. "3h2m1s"); "" if unknown
-	AgentCmd        string
-	ModelsAvailable int
-	ActiveSessions  int    // live conv sessions tracked by the router
-	SessionID       string // this conv's live agent session id; "" if none
-	EffectiveModel  string // override if set, else configured default
-}
+// the !status chat command. Aliased from acp-kit — see SessionStatus.
+type RelayInfo = command.RelayInfo
 
 // RelayInfo returns a race-free snapshot of relay-process state plus the
 // caller conversation's live session id. Satisfies command.Controller.

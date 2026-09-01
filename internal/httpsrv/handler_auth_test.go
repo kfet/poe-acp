@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/kfet/acp-kit/client"
-	"github.com/kfet/poe-acp/internal/command"
+	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/poe-acp/internal/router"
 )
 
