@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-09-01
+
 ### Changed
 
 - **`internal/command` moved to `acp-kit/command`.** The chat-command broker —
