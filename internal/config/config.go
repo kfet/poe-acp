@@ -57,10 +57,17 @@ type Config struct {
 	DisableSystemPrompt bool `json:"disable_system_prompt,omitempty"`
 
 	// PoeMCP enables the self-hosted `poe` MCP server exposed to the
-	// agent (tool: attach) — the per-bot, config-file way to
-	// turn the feature on without touching the CLI flags. Effective
-	// enablement is this OR the --enable-mcp-attach flag (kept as a
-	// deprecated alias), so existing flag-based deployments keep working.
+	// agent — poe-acp's own `attach` tool plus the shared relay
+	// controls from acp-kit/relaytool (status, list_models, set_model,
+	// new_session). It is the per-bot, config-file way to turn the
+	// feature on without touching the CLI flags. Effective enablement
+	// is this OR the --enable-mcp-attach flag (kept as a deprecated
+	// alias), so existing flag-based deployments keep working.
+	//
+	// The loopback's `post` and scheduling tools are NOT part of this:
+	// poe-acp answers one HTTP request per turn and has nothing to
+	// speak on afterwards, so the Router implements neither
+	// command.Poster nor command.Scheduler.
 	PoeMCP bool `json:"poe_mcp,omitempty"`
 
 	// Hosts is the CURATED list of ssh targets a conversation may run

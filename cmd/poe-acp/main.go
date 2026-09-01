@@ -24,6 +24,7 @@ import (
 	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/mcphost"
+	"github.com/kfet/acp-kit/relaytool"
 	"github.com/kfet/poe-acp/internal/agentcfg"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/httpsrv"
@@ -290,6 +291,11 @@ func main() {
 
 	// Router
 	broker := command.New(agent)
+	// The agent→relay loopback. relaytool needs the Router as the
+	// broker's Controller, and the Router needs relaytool's end-of-turn
+	// hook, so the cycle is broken by capturing tools — assigned below
+	// before any turn can run.
+	var tools *relaytool.Tools
 	rtr, err := router.New(router.Config{
 		Agent:                agent,
 		StateDir:             stateDir,
@@ -305,6 +311,11 @@ func main() {
 		MCPAttachEnabled:     mcpEnabled,
 		ModelOrder:           pin,
 		Hosts:                config.Values(cfg.Hosts),
+		OnTurnEnd: func(convID string) {
+			if tools != nil {
+				tools.EndTurn(convID)
+			}
+		},
 	})
 	if err != nil {
 		log.Fatalf("router: %v", err)
@@ -319,6 +330,17 @@ func main() {
 	// Token-authenticated.
 	if mcpEnabled {
 		poemcp.Register(mcpHost, rtr)
+		// The shared relay controls, from acp-kit: status, list_models,
+		// set_model, new_session. `post` and the scheduling tools are
+		// NOT advertised here and that is not an omission — poe-acp
+		// answers one HTTP request per turn, so it implements neither
+		// command.Poster nor command.Scheduler, and relaytool leaves
+		// out what the relay cannot do.
+		tools, err = relaytool.New(relaytool.Config{Broker: broker, Logf: log.Printf})
+		if err != nil {
+			log.Fatalf("relay tools: %v", err)
+		}
+		tools.Register(mcpHost)
 		if lerr := mcpHost.Listen(); lerr != nil {
 			log.Fatalf("mcp-serve listener: %v", lerr)
 		}

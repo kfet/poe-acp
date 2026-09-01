@@ -237,6 +237,16 @@ type Config struct {
 	Hosts []string
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
+	// OnTurnEnd, if set, is called once per completed turn, AFTER the
+	// turn has left the queue's in-flight state and is therefore no
+	// longer busy.
+	//
+	// It exists for the agent→relay loopback: a `new_session` asked for
+	// from inside a turn must be applied only once that turn is over,
+	// because ResetSession refuses a busy session (ErrSessionBusy) and
+	// resetting mid-turn would destroy the turn that asked. See
+	// acp-kit/relaytool.Tools.EndTurn.
+	OnTurnEnd func(convID string)
 	// HTTPClient is used to fetch attachment bytes (download-to-disk
 	// path, plus the inline ImageBlock for vision-capable models).
 	// Defaults to http.DefaultClient.
@@ -1668,6 +1678,10 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	// immediately evictable, or a gcOnce racing a just-finished turn
 	// sees inFlight and skips it.
 	defer close(req.done)
+	// Registered before finishInFlight, so it runs AFTER it: a deferred
+	// action the agent asked for (today only `new_session`) must see an
+	// idle session, or ResetSession refuses it as busy.
+	defer r.turnEnded(st.convID)
 	defer st.queue.finishInFlight()
 	defer r.touch(st.convID)
 
@@ -2872,6 +2886,13 @@ func (r *Router) ResetSession(convID string) error {
 	close(st.runStop)
 	delete(r.sessions, convID)
 	return nil
+}
+
+// turnEnded runs the relay's end-of-turn hook, if one is wired.
+func (r *Router) turnEnded(convID string) {
+	if r.cfg.OnTurnEnd != nil {
+		r.cfg.OnTurnEnd(convID)
+	}
 }
 
 // ErrSessionBusy is returned by ResetSession when a turn is in flight.

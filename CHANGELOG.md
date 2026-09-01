@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The relay-control tools from `acp-kit/relaytool` are now exposed on the
+  self-hosted `poe` MCP server** (when `poe_mcp` is on), alongside `attach`:
+  `status`, `list_models`, `set_model` and `new_session`. They run the same
+  code as the corresponding `!commands` — one implementation, two front ends
+  — so the two surfaces cannot drift.
+- `router.Config.OnTurnEnd`: a per-turn end hook, called once the turn has
+  left the queue's in-flight state. It is what makes the loopback's
+  `new_session` work: `ResetSession` refuses a busy session, so the reset an
+  agent asks for mid-turn is applied after that turn is over rather than
+  destroying it.
+
+### Notes
+
+- `post` and the scheduling tools are deliberately **not** advertised here,
+  and that is not an omission. poe-acp answers one HTTP request per turn and
+  has no channel to speak on once it is over, so the Router implements neither
+  `command.Poster` nor `command.Scheduler` and `relaytool` leaves out what the
+  relay cannot do. `zulip-acp`, which streams into an editable message,
+  implements both.
+- Requires `acp-kit` v0.9.0.
+
 ## [0.66.0] - 2026-09-01
 
 ### Changed
