@@ -88,7 +88,7 @@ per-conversation control turns out to be wanted.
 ### Coalescing (`internal/httpsrv/coalesce.go`, `handler.go`)
 
 The buffer lives in `orderedWriter`, not in `sink.Text`. `sink.Text`
-does `touch()` (liveness clocks) + header prepend and then delegates;
+does `touch()` (liveness clocks) and then delegates;
 `orderedWriter` is where the mutex, the accumulator `acc`, the spinner
 strip and the wire live, so it is the only place a buffered chunk can
 be ordered against a competing writer. Buffering at `sink.Text` would

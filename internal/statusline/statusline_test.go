@@ -57,6 +57,13 @@ func TestHeaderRendering(t *testing.T) {
 		{"mood-plan-no-emoji", Status{Mood: "steady", Plan: "2/5"}, "steady • 2/5"},
 		// Whitespace fields are equivalent to absent.
 		{"whitespace-mood", Status{ProviderEmoji: "🏛️", Mood: "   "}, "🏛️"},
+		// Emoji and model share ONE segment, space-joined, no bullet.
+		{"emoji-model", Status{ProviderEmoji: "🏛️", Model: "opus-4.5"}, "🏛️ opus-4.5"},
+		{"emoji-model-mood-plan",
+			Status{ProviderEmoji: "🏛️", Model: "opus-4.5", Mood: "steady", Plan: "2/5"},
+			"🏛️ opus-4.5 • steady • 2/5"},
+		{"model-only", Status{Model: "gpt-5-codex"}, "gpt-5-codex"},
+		{"model-mood-no-emoji", Status{Model: "gpt-5-codex", Mood: "steady"}, "gpt-5-codex • steady"},
 	}
 	for _, tc := range cases {
 		if got := Header(tc.in); got != tc.want {
@@ -98,6 +105,45 @@ func TestHeaderMultiByteRuneCap(t *testing.T) {
 	}
 }
 
+// TestFooterRendering pins the final-answer surface: a blank line then
+// the status line in italics, and nothing at all when there is nothing
+// to say.
+func TestFooterRendering(t *testing.T) {
+	cases := []struct {
+		name string
+		in   Status
+		want string
+	}{
+		// Nothing to show → nothing appended, not even the blank line.
+		{"all-empty", Status{}, ""},
+		{"whitespace-only", Status{ProviderEmoji: " ", Model: "  ", Mood: " ", Plan: "  "}, ""},
+		{"full",
+			Status{ProviderEmoji: "🏛️", Model: "opus-4.5", Mood: "steady", Plan: "2/5"},
+			"\n\n_🏛️ opus-4.5 • steady • 2/5_"},
+		{"model-identity-only",
+			Status{ProviderEmoji: "🌐", Model: "gpt-5-codex"},
+			"\n\n_🌐 gpt-5-codex_"},
+		{"agent-meta-only", Status{Mood: "steady", Plan: "2/5"}, "\n\n_steady • 2/5_"},
+	}
+	for _, tc := range cases {
+		if got := Footer(tc.in); got != tc.want {
+			t.Errorf("%s: Footer(%#v) = %q, want %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestShortModelNameReExport checks the kit derivation is reachable
+// under the poe-acp spelling; the full derivation table is pinned in
+// acp-kit/statusline.
+func TestShortModelNameReExport(t *testing.T) {
+	if got := ShortModelName("anthropic/claude-opus-4-5-20251001"); got != "opus-4.5" {
+		t.Errorf("ShortModelName = %q, want opus-4.5", got)
+	}
+	if got := ShortModelName(""); got != "" {
+		t.Errorf("ShortModelName(\"\") = %q, want empty", got)
+	}
+}
+
 func TestSpinnerRendering(t *testing.T) {
 	// Empty status still produces a visible frame.
 	if got := Spinner(Status{}, "", "."); got != "> _Thinking._" {
@@ -110,9 +156,9 @@ func TestSpinnerRendering(t *testing.T) {
 	if got := Spinner(Status{}, "", ""); got != "> _Thinking._" {
 		t.Errorf("default-dots spinner = %q", got)
 	}
-	// Full status: emoji + mood + plan + Thinking....
-	got := Spinner(Status{ProviderEmoji: "🏛️", Mood: "steady", Plan: "2/5"}, "", "..")
-	want := "> _🏛️ • steady • 2/5 • Thinking.._"
+	// Full status: model identity + mood + plan + Thinking....
+	got := Spinner(Status{ProviderEmoji: "🏛️", Model: "opus-4.5", Mood: "steady", Plan: "2/5"}, "", "..")
+	want := "> _🏛️ opus-4.5 • steady • 2/5 • Thinking.._"
 	if got != want {
 		t.Errorf("full spinner = %q, want %q", got, want)
 	}

@@ -1,9 +1,14 @@
 # ACP Extension — `dev.acp-kit.status-line/v1`
 
-A compact one-line status header that poe-acp prepends to assistant
-responses and to the live "Thinking…" indicator, so users on mobile
-chat surfaces see fir-style mood / plan signals they'd otherwise miss
-without a TUI.
+A compact one-line status line that poe-acp appends as an italic
+FOOTER under assistant responses, and shows live in the "Thinking…"
+indicator, so users on mobile chat surfaces see fir-style model / mood
+/ plan signals they'd otherwise miss without a TUI.
+
+It is a footer, not a header: `mood` and `plan` are agent-supplied and
+usually arrive mid-turn, so a line rendered before the first token
+would show a status the agent had not published yet. Rendered at the
+end, it always carries the final snapshot.
 
 This document is the wire spec. The relay-side renderer lives in
 [`internal/statusline`](../../internal/statusline/), the parser feeds
@@ -12,27 +17,31 @@ emitter is in [`internal/httpsrv`](../../internal/httpsrv/).
 
 ## Format
 
-Example final header prepended to an assistant message:
+Example footer appended to an assistant message:
 
 ```
-🏛️ • steady • 2/5
+…the agent's actual reply ends here…
 
-…the agent's actual reply continues here…
+_🏛️ opus-4.5 • steady • 2/5_
 ```
+
+The footer is preceded by a blank line and wrapped in `_…_`, so it
+reads as a signature under the answer rather than as body text.
 
 While the agent is thinking, the relay's heartbeat spinner carries the
-same header with an animated `Thinking.`/`Thinking..`/`Thinking...`
+same line with an animated `Thinking.`/`Thinking..`/`Thinking...`
 suffix, rendered inside Poe's blockquote/italic style:
 
 ```
-> _🏛️ • steady • 2/5 • Thinking..._
+> _🏛️ opus-4.5 • steady • 2/5 • Thinking..._
 ```
 
-The header has three segments, in fixed order:
+The line has three segments, in fixed order:
 
-1. **Provider emoji** — relay-resolved. Identifies the model provider
-   (Anthropic 🏛️, OpenAI 🌐, Google ✨, etc.). Never supplied by the
-   agent.
+1. **Model identity** — relay-resolved, never supplied by the agent.
+   The provider emoji (Anthropic 🏛️, OpenAI 🌐, Google ✨, etc.) and the
+   short model name, joined by a **single space** and NOT by a bullet:
+   they name one thing. Either half alone degrades to just that half.
 2. **Mood** — agent-supplied opaque string (e.g. `steady`, `curious`,
    `frayed`). Length-capped at 12 runes by the renderer.
 3. **Plan** — agent-supplied opaque string (e.g. `2/5`, `step 3`).
@@ -41,8 +50,35 @@ The header has three segments, in fixed order:
 
 Segments with empty values are dropped. The remaining non-empty
 segments are joined with ` • ` (space–bullet–space). If all three
-would be empty, no header is emitted on the final message; the spinner
+would be empty, no footer is emitted on the final message; the spinner
 falls back to the bare `> _Thinking..._` frame for liveness.
+
+### Short model name
+
+The model name is derived by the relay from the dispatched model id,
+never sent by the agent. `acp-kit/statusline.ShortModelName` applies,
+in order, to the part after `<provider>/`:
+
+1. drop the `<provider>/` prefix (no `/` → use the whole string);
+2. drop a trailing date stamp `-YYYYMMDD` and a trailing `-latest` /
+   `-preview` (repeatedly, so `-preview-20251101` unwinds fully);
+3. drop a leading vendor echo the emoji already carries — `claude-`,
+   `anthropic-`. Family prefixes that carry meaning (`gpt-`, `gemini-`,
+   `grok-`, `llama-`, `deepseek-`) are **kept**;
+4. rewrite a dash BETWEEN TWO DIGITS as a dot (`4-5` → `4.5`), leaving
+   name dashes (`gpt-5-codex`) alone;
+5. lowercase and cap to 12 runes.
+
+| Model id                             | Rendered     |
+| ------------------------------------ | ------------ |
+| `anthropic/claude-opus-4-5-20251001` | `opus-4.5`   |
+| `anthropic/claude-sonnet-4-5`        | `sonnet-4.5` |
+| `openai/gpt-5-codex`                 | `gpt-5-codex`|
+| `google/gemini-3-pro-preview`        | `gemini-3-pro`|
+| `poe/Claude-Opus-4.5`                | `opus-4.5`   |
+
+The result is lossy by design — it is a display label and must never be
+fed back onto the wire as a model id.
 
 ## Negotiation
 
@@ -74,7 +110,8 @@ use a new key (e.g. `.../v2`).
 
 Negotiation is informational: the renderer does not gate on the
 agent's advertisement. Agents that don't emit `_meta` still get a
-provider-emoji-only header (or no header if the provider is unknown).
+model-identity-only footer (or none if the provider and model are
+both unknown).
 The advertisement just lets each side log the other's support for
 diagnostics.
 
@@ -114,13 +151,16 @@ Updates may be sent as often as the agent likes; the renderer keeps
 the latest values and re-renders on every heartbeat tick. A typical
 emitter sends two frames per turn: one shortly after `session/prompt`
 acks (to populate the spinner), and one with the final assistant
-chunk (to lock in the final header).
+chunk. Because the status line is rendered as a footer at the end of
+the turn, a late update still lands in it — which is exactly why the
+line moved to the bottom.
 
 ## Provider emoji
 
-The provider emoji is **always** chosen by poe-acp from the model id
-it dispatched the turn to (`<provider>/<model>` convention). The agent
-must not include it in `_meta`; doing so has no effect.
+The provider emoji — like the short model name — is **always** chosen
+by poe-acp from the model id it dispatched the turn to
+(`<provider>/<model>` convention). The agent must not include either in
+`_meta`; doing so has no effect.
 
 | Provider slug                                   | Emoji |
 | ----------------------------------------------- | ----- |
@@ -146,14 +186,24 @@ emoji — the segment is dropped.
 
 - Spinner frames are emitted by the SSE heartbeat as
   `replace_response` events. Each tick rebuilds the frame from the
-  latest snapshot of `(emoji, mood, plan)`, animating the dot count
-  for liveness.
-- The final header is emitted exactly once, as the first portion of
-  the very first `text` event for the turn. It is **not** prepended on
-  `replace_response` paths (e.g. `_(cancelled)_`) — those overwrite
-  the body, so a header there would be erased anyway.
-- If the rendered header is empty (unknown provider + no agent
-  `_meta`), the first `text` event passes through unchanged.
+  latest snapshot of `(emoji, model, mood, plan)`, animating the dot
+  count for liveness.
+- The footer is emitted exactly once per turn, as the last `text`
+  event before the terminal `done`, from the LATEST status snapshot.
+  It survives the transient keepalive region for free: the footer goes
+  out through the ordinary text path, which strips a visible spinner
+  first, and `done` seals the stream so no later heartbeat frame can
+  replace it.
+- The footer is suppressed when the turn produced no user-visible
+  content, and on **error turns** (a Poe `error` event is followed by a
+  mandatory `done`, so the sink latches the failure to tell the two
+  apart).
+- If the rendered line is empty (unknown provider + no model + no agent
+  `_meta`), nothing is appended — not even the blank line.
+- The footer is not part of the recorded answer used for redrive
+  replay: it is produced inside the sink's `Done`, below the recorder,
+  and a replay regenerates it from the replayed status instead of
+  emitting it twice.
 - Mood and plan are length-capped at 12 runes (not bytes) — emoji and
   non-ASCII strings count by rune, never split a UTF-8 sequence. No
   ellipsis is appended; the cap is tight enough that an ellipsis would
@@ -173,8 +223,11 @@ emoji — the segment is dropped.
 - Renderer + slug map: [`internal/statusline/statusline.go`](../../internal/statusline/statusline.go)
 - `_meta` parsing in the router's chunk drain: search
   `drainProcessChunk` in [`internal/router/router.go`](../../internal/router/router.go)
-- Spinner + header prepend on the SSE sink:
+- Spinner + footer append on the SSE sink:
   [`internal/httpsrv/handler.go`](../../internal/httpsrv/handler.go)
-  (search for `statusline.Spinner` and `maybePrependHeader`).
+  (search for `statusline.Spinner` and `maybeAppendFooter`).
+- Redrive record/replay of the status calls:
+  [`internal/httpsrv/buffer.go`](../../internal/httpsrv/buffer.go)
+  (search for `opSetModelInfo`).
 - Capability advertisement: `client.Config.ClientMeta` in
   [`cmd/poe-acp/main.go`](../../cmd/poe-acp/main.go).

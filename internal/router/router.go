@@ -54,11 +54,14 @@ type ChunkSink interface {
 	// receives a non-empty update from the agent. Used by the HTTP layer
 	// to stop the "still thinking…" heartbeat.
 	FirstChunk()
-	// SetProviderEmoji conveys the relay-resolved provider emoji for
-	// the current turn (dev.acp-kit.status-line/v1). Empty string means
-	// the provider is unknown and the segment should be dropped.
-	// Called at most once per turn, before any chunks land.
-	SetProviderEmoji(emoji string)
+	// SetModelInfo conveys the relay-resolved identity of the model
+	// servicing the current turn (dev.acp-kit.status-line/v1): the
+	// provider emoji and the short model name, which render as one
+	// unit ("🏛️ opus-4.5"). Either may be empty — an unknown provider
+	// or an unnamed model degrades to whichever half is known, and
+	// both empty drops the segment. Called at most once per turn,
+	// before any chunks land.
+	SetModelInfo(emoji, model string)
 	// SetStatus conveys the latest agent-supplied mood/plan labels
 	// (dev.acp-kit.status-line/v1). Called whenever a session/update
 	// carries the extension's _meta entry. Both fields are opaque
@@ -1646,11 +1649,11 @@ func (d discardSink) File(url, ct, name, ref string) error {
 	kitlog.Debugf("reaction sink (conv=%s) file: %s (%s)", d.convID, name, url)
 	return nil
 }
-func (d discardSink) Done() error              { return nil }
-func (d discardSink) FirstChunk()              {}
-func (d discardSink) SetProviderEmoji(string)  {}
-func (d discardSink) SetStatus(string, string) {}
-func (d discardSink) ToolActivity(string)      {}
+func (d discardSink) Done() error                 { return nil }
+func (d discardSink) FirstChunk()                 {}
+func (d discardSink) SetModelInfo(string, string) {}
+func (d discardSink) SetStatus(string, string)    {}
+func (d discardSink) ToolActivity(string)         {}
 
 func (d discardSink) SetPlan([]statusline.PlanEntry) {}
 
@@ -1709,14 +1712,20 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 			req.err = applyErr
 			return
 		}
-		// Set the provider emoji once st.applied.Model is settled,
+		// Set the model identity once st.applied.Model is settled,
 		// whether or not the swap succeeded — on failure applied.Model
-		// keeps its previous value (often "" on a fresh session),
-		// which must be reflected BEFORE the "_(option not applied)_"
-		// Text below triggers the header prepend. The relay-owned
-		// emoji is the source of truth here; reactions (turnReaction)
-		// use discardSink so this is a no-op for them.
-		sink.SetProviderEmoji(statusline.ProviderEmojiForModel(st.applied.Model))
+		// keeps its previous value (often "" on a fresh session). The
+		// relay-owned emoji + short name are the source of truth here;
+		// reactions (turnReaction) use discardSink so this is a no-op
+		// for them. The status line is rendered as a FOOTER at the end
+		// of the turn, so unlike the old prepend there is no ordering
+		// hazard with the "_(option not applied)_" Text below — but
+		// the resolution still belongs here, at the moment the model
+		// is decided.
+		sink.SetModelInfo(
+			statusline.ProviderEmojiForModel(st.applied.Model),
+			statusline.ShortModelName(st.applied.Model),
+		)
 		if applyErr != nil {
 			sink.FirstChunk()
 			_ = sink.Text(fmt.Sprintf("_(option not applied: %v)_\n\n", applyErr))

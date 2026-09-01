@@ -18,6 +18,7 @@ type recordSink struct {
 	done       int
 	first      int
 	emojis     []string
+	models     []string
 	statuses   [][2]string
 	toolLabels []string
 	plans      [][]statusline.PlanEntry
@@ -36,8 +37,9 @@ func (r *recordSink) SuggestedReply(t string) error {
 func (r *recordSink) Error(t, e string) error { r.errs = append(r.errs, [2]string{t, e}); return nil }
 func (r *recordSink) Done() error             { r.done++; return nil }
 func (r *recordSink) FirstChunk()             { r.first++ }
-func (r *recordSink) SetProviderEmoji(e string) {
+func (r *recordSink) SetModelInfo(e, m string) {
 	r.emojis = append(r.emojis, e)
+	r.models = append(r.models, m)
 }
 func (r *recordSink) SetStatus(m, p string)            { r.statuses = append(r.statuses, [2]string{m, p}) }
 func (r *recordSink) ToolActivity(label string)        { r.toolLabels = append(r.toolLabels, label) }
@@ -46,7 +48,7 @@ func (r *recordSink) SetPlan(p []statusline.PlanEntry) { r.plans = append(r.plan
 func TestAnswerRecorderAndReplay(t *testing.T) {
 	inner := &recordSink{}
 	rec := &answerRecorder{inner: inner}
-	rec.SetProviderEmoji("🤖")
+	rec.SetModelInfo("🤖", "opus-4.5")
 	rec.SetStatus("calm", "plan")
 	rec.FirstChunk()
 	// Transient signals: forwarded for liveness, never recorded (a
@@ -102,8 +104,8 @@ func TestAnswerRecorderAndReplay(t *testing.T) {
 	if out.done != 1 || out.first != 1 {
 		t.Fatalf("replay done=%d first=%d", out.done, out.first)
 	}
-	if len(out.emojis) != 1 || out.emojis[0] != "🤖" {
-		t.Fatalf("replay emojis=%v", out.emojis)
+	if len(out.emojis) != 1 || out.emojis[0] != "🤖" || len(out.models) != 1 || out.models[0] != "opus-4.5" {
+		t.Fatalf("replay emojis=%v models=%v", out.emojis, out.models)
 	}
 	if len(out.statuses) != 1 || out.statuses[0] != [2]string{"calm", "plan"} {
 		t.Fatalf("replay statuses=%v", out.statuses)

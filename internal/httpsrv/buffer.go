@@ -22,7 +22,7 @@ const (
 	opError
 	opDone
 	opFirstChunk
-	opSetProviderEmoji
+	opSetModelInfo
 	opSetStatus
 )
 
@@ -36,7 +36,7 @@ type recCall struct {
 // answerRecorder is a ChunkSink that records every call (for later
 // replay) while forwarding to an inner sink. It is goroutine-safe: the
 // router drives Text/FirstChunk/SetStatus from the drain goroutine and
-// SetProviderEmoji/Done/Error/Replace from the runner goroutine.
+// SetModelInfo/Done/Error/Replace from the runner goroutine.
 type answerRecorder struct {
 	inner router.ChunkSink
 	mu    sync.Mutex
@@ -91,9 +91,9 @@ func (a *answerRecorder) FirstChunk() {
 	a.inner.FirstChunk()
 }
 
-func (a *answerRecorder) SetProviderEmoji(emoji string) {
-	a.record(recCall{op: opSetProviderEmoji, s1: emoji})
-	a.inner.SetProviderEmoji(emoji)
+func (a *answerRecorder) SetModelInfo(emoji, model string) {
+	a.record(recCall{op: opSetModelInfo, s1: emoji, s2: model})
+	a.inner.SetModelInfo(emoji, model)
 }
 
 func (a *answerRecorder) SetStatus(mood, plan string) {
@@ -130,6 +130,12 @@ func (a *answerRecorder) snapshot() []recCall {
 // exact user-visible stream the original (absorbed) turn produced. IO
 // errors are swallowed: a broken redrive connection is no worse than the
 // original drop, and there is nothing further to do.
+//
+// The status FOOTER is deliberately absent from the recording: it is
+// produced inside sink.Done, below this recorder, so it was never an
+// opText. Replaying opSetModelInfo / opSetStatus and then opDone makes
+// the fresh sink regenerate the identical footer from the replayed
+// status — recording it as text as well would emit it twice.
 func replay(calls []recCall, sink router.ChunkSink) {
 	for _, c := range calls {
 		switch c.op {
@@ -145,8 +151,8 @@ func replay(calls []recCall, sink router.ChunkSink) {
 			_ = sink.Done()
 		case opFirstChunk:
 			sink.FirstChunk()
-		case opSetProviderEmoji:
-			sink.SetProviderEmoji(c.s1)
+		case opSetModelInfo:
+			sink.SetModelInfo(c.s1, c.s2)
 		case opSetStatus:
 			sink.SetStatus(c.s1, c.s2)
 		}
