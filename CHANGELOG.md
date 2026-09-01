@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-09-01
+
 ### Added
 
 - **The relay-control tools from `acp-kit/relaytool` are now exposed on the
