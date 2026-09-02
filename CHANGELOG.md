@@ -2,10 +2,21 @@
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-09-02
+
+### Added
+
+- **The status line now names the model.** The provider emoji and a short
+  model name render as one unit — `🏛️ opus-4.5` — ahead of mood and plan.
+  The short name is derived by the relay from the dispatched model id
+  (`acp-kit/statusline.ShortModelName`): `anthropic/claude-opus-4-5-20251001`
+  → `opus-4.5`, `openai/gpt-5-codex` → `gpt-5-codex`. The live keepalive
+  spinner keeps its `> _…_` form and carries the model too.
+
 ### Changed
 
-- **The status line moved from a header to an italic footer, and now names
-  the model.** It is appended once at the END of the answer
+- **The status line moved from a header to an italic footer.**
+  It is appended once at the END of the answer
   (`\n\n_🏛️ opus-4.5 • steady • 2/5_`) instead of being prepended to the
   first chunk. `mood` and `plan` are agent-supplied and normally arrive
   mid-turn, so a header rendered on the first chunk showed a status the
