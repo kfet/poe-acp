@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.68.1] - 2026-09-04
+
 ### Fixed
 
 - **A remote agent's session cwd and attachments now exist on its own
