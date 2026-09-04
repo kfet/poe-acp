@@ -148,6 +148,40 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 - **Never detach or delay a restart** — no `setsid`, no `sleep N`, no one-shot timer unit, no background reloader. Beyond being unnecessary (previous pitfall), it does not even work: under systemd the unit's default `KillMode=control-group` tears down the whole **cgroup**, and `setsid` only escapes the process *group*, not the cgroup — a detached restart command sits inside its own blast radius. It appears to succeed only because `systemctl` hands the job to systemd over D-Bus before it is killed.
 - **Do not mutate launchd for config-only changes** — if only `config.json`, env, or the binary changed, recycle with `launchctl kill SIGHUP gui/$UID/<label>` (or `kickstart -k` when the running supervisor is < 0.36.0 or stopped). Do not edit plist, create one-shot reloader jobs, or run bootout/bootstrap unless first installing/removing a service or intentionally changing the plist registration.
 
+- **The lock cannot express a fir version the installer can honour** — a known
+  gap, not a bug in any one run. `dist.lock` pins an exact fir version, but the
+  only installer converge has is `fir update`, which is **latest-only**: there
+  is no `fir update --version X`, and `fir` self-updates to the newest
+  fir-dist release. So the moment a new fir ships, every lock naming an older
+  one becomes unsatisfiable — converge dutifully runs `fir update`, gets the
+  newest, sees it disagree with the lock, and aborts *after* having already
+  moved the host's fir. That leaves the host half-converged (new binary on
+  disk, nothing recycled) and the abort is not recoverable by re-running.
+  Hit on 2026-09-04: lock pinned fir 1.6.4, 1.7.1 had shipped, ko1 aborted.
+  Until fir grows a pinned install, the options are: re-run `--tot` to move the
+  lock forward (what was done), or fetch the pinned version's asset from
+  `https://github.com/kfet/fir-dist/releases` by hand. A lock pinning a fir the
+  installer can never reach is a tripwire, not a pin.
+  Note `fir update` also calls the **GitHub API** (`/releases`), which is rate
+  limited per source IP — converging several hosts in a row can exhaust it and
+  abort a later bot with a 403 (`rate reset in NNm`). That one *is* transient:
+  wait for the reset and re-run. Fetching the poe-acp binary is unaffected — it
+  uses the release **download** URL, not the API.
+- **A brew-managed fir is upgraded by brew, not by self-update** — on macOS
+  converge detects this and runs `brew upgrade` instead, which pulls in a
+  `brew update` of every tap first. Slow and noisy, same latest-only outcome.
+- **An agent watchdog can turn your graceful swap into a hard restart** — a
+  drained worker swap forks a *new* worker with a *new* agent, and the new
+  agent takes a few seconds to come up (an ssh transport especially). A
+  watchdog that restarts the unit when it sees no live agent will fire into
+  that window and restart the service anyway — supervisor pid moves, in-flight
+  replies drop, and converge's own "graceful ✓" line is already printed and
+  now misleading. `poe-acp-acptmux-watchdog.timer` on sea-racknerd does this
+  on a 2-minute period: observed converting a successful swap into a full
+  restart 8 seconds later. Before a graceful recycle, check for a watchdog
+  timer on the unit (`systemctl --user list-timers | grep <bot>`) and stop it
+  for the duration if in-flight survival actually matters.
+
 ## Checklist
 
 - [ ] Target version confirmed (latest pushed tag).
