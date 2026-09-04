@@ -17,6 +17,7 @@
     { "value": "host-a", "name": "hosta (server)" },
     { "value": "boxy" }
   ],
+  "agent_ssh_host": "",
   "agent": {
     "profile": "fir"
   }

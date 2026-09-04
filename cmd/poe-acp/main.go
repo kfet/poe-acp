@@ -25,6 +25,7 @@ import (
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/mcphost"
 	"github.com/kfet/acp-kit/relaytool"
+	"github.com/kfet/acp-kit/remotefs"
 	"github.com/kfet/poe-acp/internal/agentcfg"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/httpsrv"
@@ -291,12 +292,26 @@ func main() {
 
 	// Router
 	broker := command.New(agent)
+
+	// Where the agent process actually runs. Empty (the common case)
+	// leaves the router's provisioner nil, i.e. remotefs.Local.
+	var provisioner remotefs.Provisioner
+	if cfg.AgentSSHHost != "" {
+		ssh, perr := remotefs.New(cfg.AgentSSHHost)
+		if perr != nil {
+			log.Fatalf("config: %v", perr)
+		}
+		provisioner = ssh
+		log.Printf("agent host: %s (session cwds and staged attachments are provisioned there)", ssh.Host())
+	}
+
 	// The agent→relay loopback. relaytool needs the Router as the
 	// broker's Controller, and the Router needs relaytool's end-of-turn
 	// hook, so the cycle is broken by capturing tools — assigned below
 	// before any turn can run.
 	var tools *relaytool.Tools
 	rtr, err := router.New(router.Config{
+		Provisioner:          provisioner,
 		Agent:                agent,
 		StateDir:             stateDir,
 		SessionTTL:           *ttl,
