@@ -1,0 +1,18 @@
+{
+  "name": "slack-two",
+  "relay": "slack-acp",
+  "managed": false,
+  "host": "kopitwo",
+  "platform": "linux/arm64",
+  "supervisor": "systemd-user",
+  "unit": "slack-acp",
+  "binary": "~/.local/bin/slack-acp",
+  "source": {
+    "repo": "github.com/kfet/slack-acp",
+    "deploy_skill": "slack-acp: .fir/skills/deploy",
+    "clone_host": "zboxserver"
+  },
+  "credentials": { "env_file": "~/.config/slack-acp/env" },
+  "config_path": "~/.config/slack-acp/config.json",
+  "notes": "Slack relay for the fir fleet. TRACKED, not converge-managed: slack-acp has its own VERSION/release flow and its own unit shape. converge.sh reports wanted-vs-running drift for it; deploying is the slack-acp repo's own deploy skill."
+}

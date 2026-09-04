@@ -1,0 +1,35 @@
+{
+  "name": "seamiki",
+  "relay": "poe-acp",
+  "host": "rn",
+  "platform": "linux/amd64",
+  "supervisor": "systemd-user",
+  "unit": "poe-acp-seamiki",
+  "binary": "~/.local/bin/poe-acp",
+  "agent": {
+    "cmd": "ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 miki .local/bin/fir --mode acp",
+    "kind": "remote-fir"
+  },
+  "server": {
+    "http_addr": "127.0.0.1:8350",
+    "poe_path": "/sea-miki",
+    "config_path": "~/.config/poe-acp/seamiki/config.json",
+    "heartbeat_interval": "3s",
+    "session_ttl": "10m",
+    "introduction": "sea-miki — fir on mikiserver, reached over plain ssh. Probe bot for the ACP-over-ssh transport question."
+  },
+  "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s"
+  },
+  "config": {
+    "bot_name": "sea-miki",
+    "defaults": {
+      "model": "anthropic/claude-opus-5",
+      "thinking": "medium"
+    },
+    "agent_ssh_host": "miki"
+  },
+  "credentials": { "env_file": "~/.config/poe-acp/seamiki/env" }
+}

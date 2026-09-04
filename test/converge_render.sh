@@ -16,7 +16,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CONVERGE="$ROOT/scripts/converge.sh"
 GOLDEN="$ROOT/test/golden"
-BOTS=(two-fir kopi-fir sea-fir fir-air acptmux)
+BOTS=(two-fir kopi-fir sea-fir fir-air acptmux seamiki)
 
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok   $1"; }
@@ -39,7 +39,7 @@ for bot in "${BOTS[@]}"; do
     check_golden "$bot.$art" "$GOLDEN/$bot.$art" "$t"; rm -f "$t"
   done
 done
-for bot in two-fir kopi-fir sea-fir acptmux; do
+for bot in two-fir kopi-fir sea-fir acptmux seamiki; do
   t=$(mktemp); "$CONVERGE" render "$bot" unit >"$t"
   check_golden "$bot.unit" "$GOLDEN/$bot.unit" "$t"; rm -f "$t"
 done
@@ -441,6 +441,54 @@ esac
 grep -q -- "--user restart" "$fake4/.stub/log" \
   && bad "moved-aside image must not be hard restarted" \
   || ok "no restart issued for the moved-aside image"
+echo "== registry: every relay instance is covered, and the tiers are enforced"
+for f in "$ROOT"/bots/*.json; do
+  n=$(basename "$f" .json)
+  jq -e . "$f" >/dev/null 2>&1 && ok "$n: valid json" || bad "$n: invalid json"
+  [ "$(jq -r .name "$f")" = "$n" ] && ok "$n: .name matches filename" \
+    || bad "$n: .name is $(jq -r .name "$f"), filename says $n"
+  r=$(jq -r '.relay // "poe-acp"' "$f")
+  # Every relay a spec names must have a wanted version in the lock, or
+  # `status` can never answer "is it stale?" for it.
+  if [ "$r" = poe-acp ]; then w=$(jq -r '.poe_acp // empty' "$ROOT/dist.lock")
+  else w=$(jq -r --arg r "$r" '.relays[$r] // empty' "$ROOT/dist.lock"); fi
+  [ -n "$w" ] && ok "$n: lock pins $r = $w" || bad "$n: dist.lock has no wanted version for $r"
+done
+# The three live relays must all be represented — this is the whole point.
+for r in poe-acp slack-acp zulip-acp; do
+  jq -rs --arg r "$r" 'map(select((.relay // "poe-acp") == $r)) | length' "$ROOT"/bots/*.json \
+    | grep -qv '^0$' && ok "registry covers $r" || bad "registry has no $r instance"
+done
+# Tier guard: a tracked or retire-marked instance must never converge.
+for n in slack-two zulip-zbox firtest fir-air-test; do
+  if "$CONVERGE" "$n" >/dev/null 2>&1; then
+    bad "$n must refuse to converge"
+  else
+    ok "$n refuses to converge"
+  fi
+done
+
+echo "== status drift verdicts (the sweep's decision rule)"
+xdrift() { # <expected> <label> <args...>
+  local want=$1 label=$2; shift 2
+  local got; got=$("$CONVERGE" plan-drift "$@")
+  case "$got" in
+    "$want|"*) ok "$label ($got)" ;;
+    *) bad "$label: wanted $want, got $got" ;;
+  esac
+}
+#                                                       state      supver workers        want
+xdrift ok    "worker on the wanted version"             active     0.63.0 0.68.0         0.68.0
+xdrift ok    "a draining old worker does not count"     active     0.68.0 0.68.0,0.65.0  0.68.0
+xdrift DRIFT "every worker behind"                      active     0.68.0 0.65.0,0.60.0  0.68.0
+xdrift ok    "single process on the wanted version"     active     0.68.0 ''             0.68.0
+xdrift DRIFT "single process behind"                    active     0.56.0 ''             0.68.0
+xdrift DOWN  "an inactive unit is down, not drifting"   inactive   ''     ''             0.68.0
+xdrift DOWN  "a unit the host does not have"            missing    ''     ''             0.68.0
+xdrift '?'   "an unreachable host is never drift"       unreachable '' '' 0.68.0
+xdrift '?'   "unreadable version is never drift"        active     ''     ''             0.68.0
+xdrift '?'   "no wanted version in the lock"            active     0.5.0  ''             ''
+xdrift ok    "launchd running state"                    running    0.15.0 ''             0.15.0
 
 echo
 echo "passed=$pass failed=$fail"

@@ -1,0 +1,18 @@
+{
+  "name": "zulip-zbox",
+  "relay": "zulip-acp",
+  "managed": false,
+  "host": "zboxserver",
+  "platform": "linux/amd64",
+  "supervisor": "systemd-user",
+  "unit": "zulip-acp",
+  "binary": "~/.local/bin/zulip-acp",
+  "source": {
+    "repo": "github.com/kfet/zulip-acp",
+    "deploy_skill": "zulip-acp: skills/deploy",
+    "clone_host": "zboxserver"
+  },
+  "credentials": { "env_file": "~/.config/zulip-acp/env" },
+  "config_path": "~/.config/zulip-acp/config.json",
+  "notes": "Zulip relay for the fir fleet. TRACKED, not converge-managed. zboxserver is the ONLY host that runs it and the ONLY clone to release from — a release cut from the mikiserver clone produced two different v0.14.0s on 2026-09-04. Graceful reload is `systemctl --user reload zulip-acp` (SIGHUP: drain, then re-exec in place)."
+}

@@ -4,5 +4,9 @@
   "exts": {
     "github.com/kfet/fir-exts": "35e262cc8bbf9f0ab3bd1823108cfefbcffa8b8a"
   },
+  "relays": {
+    "slack-acp": "0.5.0",
+    "zulip-acp": "0.15.0"
+  },
   "resolved_at": "2026-09-09T04:36:08Z"
 }

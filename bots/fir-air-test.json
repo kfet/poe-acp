@@ -1,0 +1,13 @@
+{
+  "name": "fir-air-test",
+  "relay": "poe-acp",
+  "managed": false,
+  "state": "retire",
+  "host": "airm1",
+  "platform": "darwin/arm64",
+  "supervisor": "launchd",
+  "unit": "dev.kfet.poe-acp.test",
+  "binary": "~/dev/ai/poe-acp/bin/poe-acp",
+  "launchd": { "plist": "~/Library/LaunchAgents/dev.kfet.poe-acp.test.plist" },
+  "notes": "PROPOSED FOR RETIREMENT, not adoption. A developer harness on :8099 running an UNVERSIONED local build out of the legacy ~/dev/ai/poe-acp tree (repos.md says checkouts live in ~/src), with the pre-0.6x single-dash flag style. It is not a fleet bot and nothing depends on it. Retire with: launchctl bootout gui/$(id -u)/dev.kfet.poe-acp.test && rm ~/Library/LaunchAgents/dev.kfet.poe-acp.test.plist, then delete this spec."
+}

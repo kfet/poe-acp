@@ -1,0 +1,15 @@
+[Unit]
+Description=poe-acp (seamiki)
+After=network-online.target
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/poe-acp/seamiki/env
+Type=notify
+ExecStart=%h/.local/bin/poe-acp --http-addr 127.0.0.1:8350 --poe-path /sea-miki --config %h/.config/poe-acp/seamiki/config.json --agent-cmd "ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 miki .local/bin/fir --mode acp" --heartbeat-interval 3s --session-ttl 10m --introduction "sea-miki — fir on mikiserver, reached over plain ssh. Probe bot for the ACP-over-ssh transport question."
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,12 @@
+{
+  "name": "firtest",
+  "relay": "poe-acp",
+  "managed": false,
+  "state": "retire",
+  "host": "rn",
+  "platform": "linux/amd64",
+  "supervisor": "systemd-user",
+  "unit": "poe-acp-firtest",
+  "binary": "~/.local/bin/poe-acp",
+  "notes": "PROPOSED FOR RETIREMENT, not adoption. The fir-extraction test harness on :8349 (/acp-tmux-test), paired with acp-tmux-test on zboxserver. Last served a turn 2026-08-28, last (re)started 2026-08-25, still pinned to poe-acp 0.60.0 — it has been idle through three releases. Registered here so the sweep names it instead of reporting it as an unknown process. Retire with: systemctl --user disable --now poe-acp-firtest && rm ~/.config/systemd/user/poe-acp-firtest.service, then delete this spec."
+}
