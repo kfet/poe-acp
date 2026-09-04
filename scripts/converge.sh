@@ -20,6 +20,9 @@
 #   converge.sh plan-stale <running> <want> <supervisor_ver> \
 #               <worker_vers-csv>              print whether the RUNNING binary is
 #                                              stale w.r.t. want (test hook)
+#   converge.sh match-image <basename> <paname>  print whether that image
+#                                              basename counts as our poe-acp
+#                                              binary (test hook)
 #
 # Conventions:
 #   - a spec.server key that is absent (or false/null) emits no flag at all;
@@ -277,6 +280,9 @@ suptool() { # <supervisor> — the CLI that drives it
 # it was replaced or unlinked — hence stripping a " (deleted)" suffix). Where
 # there is no /proc (macOS) it falls back to `ps -o comm=`, which reports the
 # same basename.
+#
+# Also defines `is_pa_image <basename>`: is that basename OUR poe-acp image?
+# See image_match_snippet for why an exact compare is not enough.
 exe_name_snippet() {
   cat <<'EOS'
 exe_name() {
@@ -284,6 +290,42 @@ exe_name() {
   _e=${_e% (deleted)}
   [ -n "$_e" ] || _e=$(ps -o comm= -p "$1" 2>/dev/null || true)
   printf '%s\n' "${_e##*/}"
+}
+EOS
+  image_match_snippet
+}
+
+# image_match_snippet — remote shell defining `is_pa_image <basename>`, true
+# when that basename names the poe-acp binary in $paname.
+#
+# An exact `= "$paname"` compare is wrong, because a running poe-acp is
+# routinely executing the binary under a DOT-SUFFIXED name:
+#
+#   poe-acp.running-0.65.0        deploy moves the live image aside so the
+#                                 path can be replaced under it (sea-racknerd)
+#   poe-acp.bak-20260830-041659   previous release kept as a rollback copy
+#   poe-acp.running               `ps -o comm=` truncates to 15 chars where
+#                                 there is no /proc to read
+#
+# Under an exact compare every one of those reads as "not a poe-acp process",
+# so a perfectly healthy >= 0.36.0 supervisor reports zero workers and an
+# unreadable version — and recycle_plan then picks a HARD RESTART for a host
+# that could have swapped gracefully. That is a live bot dropping in-flight
+# replies to work around a naming convention. Observed on sea-racknerd, where
+# both acptmux and sea-fir run from `poe-acp.running-0.65.0`.
+#
+# The rule: exact match, or $paname followed by a dot and anything. The
+# trailing dot is what keeps the filter load-bearing (see workers_snippet) —
+# the agents a pre-0.36.0 poe-acp spawns as direct children are `fir`, `ssh`,
+# `node`, none of which can collide, and a genuinely different binary such as
+# `poe-acp-shim` is still correctly excluded.
+image_match_snippet() {
+  cat <<'EOS'
+is_pa_image() {
+  case "$1" in
+    "$paname"|"$paname".*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 EOS
 }
@@ -303,9 +345,7 @@ workers_snippet() {
   cat <<'EOS'
 workers=''
 for _c in $(pgrep -P "$pid" 2>/dev/null || true); do
-  case "$(exe_name "$_c")" in
-    "$paname") workers="$workers $_c" ;;
-  esac
+  if is_pa_image "$(exe_name "$_c")"; then workers="$workers $_c"; fi
 done
 workers=${workers# }
 EOS
@@ -318,9 +358,9 @@ EOS
 # wrong.
 running_version_snippet() {
   cat <<'EOS'
-case "$(exe_name "$pid")" in
-  "$paname") ver=$("/proc/$pid/exe" --version 2>/dev/null | head -1 || true) ;;
-esac
+if is_pa_image "$(exe_name "$pid")"; then
+  ver=$("/proc/$pid/exe" --version 2>/dev/null | head -1 || true)
+fi
 EOS
 }
 
@@ -925,6 +965,9 @@ usage:
   converge.sh plan-swap <replacement_pid> <replacement_ver> <want>
                                              print the post-swap verdict when the
                                              observed worker is gone (test hook)
+  converge.sh match-image <basename> <paname>
+                                             print whether that image basename
+                                             counts as our binary (test hook)
 EOF
   exit 1
 }
@@ -957,6 +1000,14 @@ case "$1" in
     # Test hook: exercise the running-version staleness rule without a host.
     [ $# -eq 5 ] || usage
     stale_decision "$2" "$3" "$4" "$5" ;;
+  match-image)
+    # Test hook: exercise the image-identity filter without a host. Evaluates
+    # the very snippet shipped to the remote shell, so the test cannot drift
+    # from what actually runs there.
+    [ $# -eq 3 ] || usage
+    ( paname=$3
+      eval "$(image_match_snippet)"
+      if is_pa_image "$2"; then echo match; else echo no-match; fi ) ;;
   -*) usage ;;
   *)
     BOT=$1; shift

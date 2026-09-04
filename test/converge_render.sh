@@ -358,6 +358,90 @@ else
   ok "frozen supervisor pid after a hard restart fails loudly"
 fi
 
+echo "== image identity (dot-suffixed copies of our binary still count)"
+mi() { "$CONVERGE" match-image "$1" "${2:-poe-acp}"; }
+xmatch() { # <expected> <label> <basename> [paname]
+  local want=$1 label=$2 got
+  got=$(mi "$3" "${4:-poe-acp}")
+  [ "$got" = "$want" ] && ok "$label ($3 -> $got)" || bad "$label: wanted $want for '$3', got $got"
+}
+xmatch match    "the plain binary"                  poe-acp
+# sea-racknerd's deploy convention: the live image is moved aside by version
+# so the path can be replaced under a running process. Not going away.
+xmatch match    "deploy moved the live image aside" poe-acp.running-0.65.0
+xmatch match    "a dev build's +commit suffix"      poe-acp.running-0.68.1-dev+696bea4
+xmatch match    "a rollback copy"                   poe-acp.bak-20260830-041659
+# `ps -o comm=` truncates at 15 chars where there is no /proc to read.
+xmatch match    "comm truncated to 15 chars"        poe-acp.running
+# The filter stays load-bearing: agents spawned by a pre-0.36.0 relay, and
+# any genuinely different binary, must still be excluded.
+xmatch no-match "an ACP agent child"                fir
+xmatch no-match "an ssh transport child"            ssh
+xmatch no-match "a different binary sharing the prefix" poe-acp-shim
+xmatch no-match "empty basename (pid vanished)"     ''
+xmatch no-match "a substring of our name"           poe
+# paname comes from spec.binary, so it is not always "poe-acp".
+xmatch match    "alternate paname, exact"           acp-tmux            acp-tmux
+xmatch match    "alternate paname, moved aside"     acp-tmux.running-1.2.3 acp-tmux
+xmatch no-match "alternate paname, wrong binary"    poe-acp.running-0.65.0 acp-tmux
+
+echo "== fake-target: a moved-aside image must still swap gracefully"
+# The sea-racknerd regression in full: supervisor and worker both execute
+# poe-acp.running-0.65.0. Under an exact-basename compare converge saw zero
+# workers, called the host pre-0.36.0, and picked a hard restart — dropping
+# in-flight replies on a live bot that could swap.
+fake4="$tmpd/fakehost4"
+mkdir -p "$fake4/.local/bin" "$fake4/.stub"
+printf '%s\n' 999001 >"$fake4/.stub/worker"
+printf '%s\n' 999000 >"$fake4/.stub/sup"
+printf '%s\n' poe-acp.running-0.65.0 >"$fake4/.stub/comm"
+printf '#!/bin/sh\necho %s\n' "$LOCKED_POE_ACP" >"$fake4/.local/bin/poe-acp"
+for f in systemctl pgrep ps; do cp "$fake3/.local/bin/$f" "$fake4/.local/bin/$f" 2>/dev/null || true; done
+cat >"$fake4/.local/bin/systemctl" <<'STUB'
+#!/bin/sh
+s="$HOME/.stub"
+echo "$*" >>"$s/log"
+case "$*" in
+  *"show -p MainPID"*)    cat "$s/sup" ;;
+  *"show -p ExecReload"*) echo "/bin/kill -HUP \$MAINPID" ;;
+  *is-active*)            echo active ;;
+  *daemon-reload*)        : ;;
+  *reload*)               expr "$(cat "$s/worker")" + 1 >"$s/worker" ;;
+  *restart*)              expr "$(cat "$s/sup")" + 1 >"$s/sup"
+                          expr "$(cat "$s/worker")" + 1 >"$s/worker" ;;
+  *) ;;
+esac
+STUB
+cat >"$fake4/.local/bin/pgrep" <<'STUB'
+#!/bin/sh
+cat "$HOME/.stub/worker"
+STUB
+cat >"$fake4/.local/bin/ps" <<'STUB'
+#!/bin/sh
+cat "$HOME/.stub/comm"
+STUB
+chmod +x "$fake4/.local/bin/poe-acp" "$fake4/.local/bin/systemctl" \
+         "$fake4/.local/bin/ps" "$fake4/.local/bin/pgrep"
+
+# First apply writes the unit => hard restart, as for any first cutover.
+"$CONVERGE" two-fir --target-root "$fake4" --apply >/dev/null
+# Now a config-only change: the moved-aside image must read as a live worker.
+echo '{"x":1}' >"$fake4/.config/poe-acp/bot-two-fir/config.json"
+out=$("$CONVERGE" two-fir --target-root "$fake4")
+case "$out" in
+  *"would graceful worker swap (SIGHUP)"*) ok "moved-aside image previews a graceful swap" ;;
+  *) bad "moved-aside image must not force a hard restart"; echo "$out" ;;
+esac
+: >"$fake4/.stub/log"
+out=$("$CONVERGE" two-fir --target-root "$fake4" --apply)
+case "$out" in
+  *"graceful worker swap (SIGHUP) ✓"*) ok "moved-aside image swaps gracefully" ;;
+  *) bad "expected a graceful swap on the moved-aside image"; echo "$out" ;;
+esac
+grep -q -- "--user restart" "$fake4/.stub/log" \
+  && bad "moved-aside image must not be hard restarted" \
+  || ok "no restart issued for the moved-aside image"
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]
