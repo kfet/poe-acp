@@ -264,6 +264,7 @@ keep working.
     { "value": "zboxserver", "name": "zbox (server)" },
     { "value": "boxy" }
   ],
+  "agent_ssh_host": "miki",
   "agent": {
     "profile": "fir"
   }
@@ -380,6 +381,27 @@ keep working.
   next conversation: this one stays on `<host>`)_`. Start a new chat to
   land on the new host. (Contrast `model`, which IS applied
   mid-session.)
+- **`agent_ssh_host`** — the machine the ACP AGENT PROCESS runs on,
+  when that is not this one — i.e. when `--agent-cmd` is something like
+  `ssh -T miki .local/bin/fir --mode acp`. An ssh destination this relay
+  can reach (`~/.ssh/config` alias, `user@host`, IP).
+  The relay hands the agent absolute paths: the per-conversation cwd on
+  `session/new`, and the attachment files it stages for a prompt. Those
+  are created on the RELAY's disk, and a remote agent given a cwd that
+  does not exist on its side does not fail — it falls back to `$HOME`,
+  so every conversation silently shares one directory and every
+  attachment is silently missing. With this key set the relay creates
+  the cwd and copies staged attachments onto that host first (ssh/tar,
+  `BatchMode=yes`, bounded timeout), and **fails session creation
+  loudly** if it cannot, rather than proceeding with a wrong cwd.
+  Omitted (the default) = the agent is local and nothing changes. The
+  relay cannot infer this: `--agent-cmd` is an opaque shell string and
+  the ACP handshake never reports where the agent runs.
+  Paths are used verbatim on both sides, so `--state-dir` must resolve
+  to the same absolute path on both machines (the usual case: same user,
+  same `$HOME`).
+  Orthogonal to `hosts`, which is about where an acp-tmux-style agent
+  PLACES a session; this key is about where the agent process already is.
 - **`agent.profile`** — reserved (today the relay only knows fir's
   `set_config_option` schema; multi-agent profile selection lands in a
   follow-up).

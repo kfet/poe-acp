@@ -458,3 +458,38 @@ func TestValidate_BothThinkingKeys(t *testing.T) {
 		t.Fatalf("error should name both keys: %v", err)
 	}
 }
+
+func TestValidateAgentSSHHost(t *testing.T) {
+	for _, tc := range []struct {
+		val     string
+		wantErr string
+	}{
+		{"", ""},
+		{"miki", ""},
+		{"kfet@10.0.0.4", ""},
+		{"-oProxyCommand=id", "agent_ssh_host"},
+		{"two hosts", "agent_ssh_host"},
+	} {
+		err := Config{AgentSSHHost: tc.val}.Validate()
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Fatalf("%q: unexpected error %v", tc.val, err)
+		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+			t.Fatalf("%q: err = %v, want %q", tc.val, err, tc.wantErr)
+		}
+	}
+}
+
+func TestLoadAgentSSHHost(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.json")
+	if err := os.WriteFile(p, []byte(`{"agent_ssh_host":"miki"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, ok, err := Load(p)
+	if err != nil || !ok {
+		t.Fatalf("Load: %v ok=%v", err, ok)
+	}
+	if cfg.AgentSSHHost != "miki" {
+		t.Fatalf("AgentSSHHost = %q, want miki", cfg.AgentSSHHost)
+	}
+}

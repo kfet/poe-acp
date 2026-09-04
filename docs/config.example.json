@@ -17,6 +17,7 @@
     { "value": "zboxserver", "name": "zbox (server)" },
     { "value": "boxy" }
   ],
+  "agent_ssh_host": "",
   "agent": {
     "profile": "fir"
   }

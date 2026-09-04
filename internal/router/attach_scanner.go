@@ -54,7 +54,9 @@ func newInlineRef() string {
 // events via the sink. One instance per turn; all methods are called
 // from the single drainChunks goroutine, so no synchronisation.
 type attachScanner struct {
-	up      *poeupload.Uploader
+	// upload delivers a file the AGENT wrote to Poe, fetching it off
+	// the agent's host first when that is a different machine.
+	upload  func(context.Context, string) (poeupload.Result, error)
 	sink    ChunkSink
 	cwd     string
 	line    string // current line buffered since the last newline
@@ -66,7 +68,7 @@ func (r *Router) newAttachScanner(sink ChunkSink, cwd string) *attachScanner {
 	if r.uploader == nil {
 		return nil
 	}
-	return &attachScanner{up: r.uploader, sink: sink, cwd: cwd}
+	return &attachScanner{upload: r.uploadAgentFile, sink: sink, cwd: cwd}
 }
 
 // Feed processes a chunk of assistant message text.
@@ -152,7 +154,7 @@ func (s *attachScanner) processDirective(attrs string) bool {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	res, err := s.up.UploadFile(ctx, path)
+	res, err := s.upload(ctx, path)
 	if err != nil {
 		kitlog.Logf("poe-attach upload failed (%s): %v", path, err)
 		_ = s.sink.Text(fmt.Sprintf("\n_(attachment failed: %s)_\n", filepath.Base(path)))

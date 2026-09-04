@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A remote agent's session cwd and attachments now exist on its own
+  host.** With `--agent-cmd "ssh -T <box> fir --mode acp"` the relay was
+  creating the per-conversation directory — and staging the prompt's
+  attachments — on its OWN disk, then sending that path as
+  `session/new.cwd`. The agent takes `cwd` as-is, with no stat and no
+  mkdir, so it did not fail: it fell back to `$HOME`. Every conversation
+  on the remote box shared one directory, every attachment was missing,
+  and nothing on either side reported anything. Set the new
+  **`agent_ssh_host`** config key to the machine the agent process runs
+  on and the relay provisions the cwd there before acquiring a session —
+  before `session/load` and `session/resume` too, not only
+  `session/new` — and copies each message's staged attachments across
+  before dispatching the prompt. A failure to provision now fails
+  session creation loudly with ssh's own stderr quoted, because falling
+  through would reproduce exactly the invisible bug this fixes. A failed
+  attachment copy degrades that message's `file://` links to their https
+  form rather than failing the turn or pointing the agent at nothing.
+  Omitted (the default) = the agent is local and behaviour is unchanged.
+  Implemented over `acp-kit/remotefs` (ssh/tar, `BatchMode=yes`, argv
+  only, bounded timeout) so the sibling relays get the same fix.
+  Known limitation: reaping a conversation removes the relay-side
+  directory only; the agent-host copy is left in place.
+- **Attachments the agent PRODUCES survive the same hop.** A
+  `<!--poe-attach path=...-->` directive, and the MCP `attach` tool,
+  named a file the agent had just written — on the agent's disk. The
+  relay uploaded from its own, so with a remote agent every delivery
+  failed. Those files are now fetched back before upload (nothing
+  copied, same path, when the agent is local).
+- **A conversation id can no longer steer the conv directory.** The id
+  arrives in the request and was joined straight into
+  `<state-dir>/convs/<id>`; one containing `..` or a separator escaped
+  it — and with `agent_ssh_host` set would have done so on a second
+  machine. Ordinary ids still map to themselves, so existing directories
+  keep resolving; anything path-significant maps to a hash of the id.
+
 ## [0.68.0] - 2026-09-02
 
 ### Added

@@ -31,6 +31,7 @@ import (
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/acp-kit/remotefs"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/poeupload"
@@ -238,6 +239,18 @@ type Config struct {
 	// reserved entry config.LocalHost ("local") is allowlisted like any
 	// other, but resolving to it also sends no `_meta.host`.
 	Hosts []string
+	// Provisioner makes the paths this relay puts on the ACP wire exist
+	// on the host where the agent process actually runs: the per-conv
+	// cwd, and the attachment files staged for a prompt. Nil means
+	// remotefs.Local — the agent is a local subprocess and the relay's
+	// own filesystem is already the agent's filesystem.
+	//
+	// It exists because the failure it prevents is invisible: an agent
+	// handed a cwd that does not exist on its side does not error, it
+	// falls back to $HOME. So a provisioning failure must fail session
+	// creation outright rather than fall through to a session whose cwd
+	// is quietly wrong. See config.AgentSSHHost.
+	Provisioner remotefs.Provisioner
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
 	// OnTurnEnd, if set, is called once per completed turn, AFTER the
@@ -1332,11 +1345,36 @@ func (r *Router) buildPromptBlocks(ctx context.Context, cwd string, query []Turn
 	// the query had a user turn, and the caller short-circuited otherwise.
 	msgID := turnMsgID(latestTurn)
 	used := map[string]struct{}{}
+	var parts []attachmentParts
+	staged := false
 	for _, a := range latestTurn.Attachments {
 		if a.URL == "" {
 			continue
 		}
-		blocks = append(blocks, r.attachmentBlocks(ctx, cwd, msgID, used, a, embedded)...)
+		p := r.attachmentBlocks(ctx, cwd, msgID, used, a, embedded)
+		staged = staged || p.staged
+		parts = append(parts, p)
+	}
+	// Staged files live under the conv cwd on THIS disk; if the agent
+	// runs elsewhere it must be given them, or every file:// link in
+	// this prompt points at nothing on its side. Push once per message,
+	// after all downloads have completed and their roots are closed.
+	if staged {
+		msgDir := filepath.Join(cwd, attachmentDirName, msgID)
+		if err := r.provisioner().Push(context.WithoutCancel(ctx), msgDir, filepath.Join(cwd, attachmentDirName)); err != nil {
+			// A prompt is never failed because of attachment IO — but
+			// it must not carry paths the agent cannot open either, so
+			// every staged attachment degrades to its https link.
+			log.Printf("WARN attachment push to the agent's host failed (msg=%s): %v — this message's files degrade to https links", msgID, err)
+			for i := range parts {
+				if parts[i].staged {
+					parts[i].blocks = parts[i].fallback
+				}
+			}
+		}
+	}
+	for _, p := range parts {
+		blocks = append(blocks, p.blocks...)
 	}
 	return blocks
 }
@@ -1376,13 +1414,37 @@ func (r *Router) agentGone() bool {
 	}
 }
 
+// provisionError marks a session that could not be created because the
+// agent's host would not take its working directory. It is separated
+// from every other session-creation failure for one reason: the user
+// must SEE it. Poe does not render the text of an `error` event (the
+// 2026-08-28 incident), and this particular failure's whole character
+// is that the alternative — carrying on with a cwd the agent cannot
+// use — is invisible. So it is reported as assistant text.
+type provisionError struct{ err error }
+
+func (e provisionError) Error() string {
+	return "provision conv dir on the agent's host: " + e.err.Error()
+}
+func (e provisionError) Unwrap() error { return e.err }
+
+// provisionFailedMsg prefixes the user-visible form of a provisionError.
+const provisionFailedMsg = "⚠️ The agent's host could not be prepared for this conversation, so it was not started: "
+
 // failTurn terminates a failed turn on the user's stream. When the agent
 // process is gone it says so in plain language as visible text; anything
-// else keeps the existing `error` event with its diagnostic prefix.
+// else keeps the existing `error` event with its diagnostic prefix — bar
+// a provisionError, which is text for the same reason.
 func (r *Router) failTurn(sink ChunkSink, prefix string, err error) {
 	if r.agentGone() {
 		log.Printf("agent is gone (%v); reporting the outage to the user instead of %q", r.cfg.Agent.Err(), err)
 		_ = sink.Text(agentDownMsg)
+		_ = sink.Done()
+		return
+	}
+	var pe provisionError
+	if errors.As(err, &pe) {
+		_ = sink.Text(provisionFailedMsg + pe.err.Error())
 		_ = sink.Done()
 		return
 	}
@@ -2369,6 +2431,7 @@ var (
 	ioCopy          = io.Copy
 	osReadDirRouter = os.ReadDir
 	osRemove        = os.Remove
+	osMkdirTemp     = os.MkdirTemp
 
 	// openMessageDirFn lets tests force openMessageDir to fail without
 	// constructing a hostile FS layout.
@@ -2380,6 +2443,20 @@ var imageInlineAllowedMimeTypes = map[string]bool{
 	"image/png":  true,
 	"image/gif":  true,
 	"image/webp": true,
+}
+
+// attachmentParts is one attachment's contribution to a prompt.
+//
+// fallback is what to emit INSTEAD of blocks when the staged file
+// cannot be delivered to the agent's host: the bare https link (plus
+// any inline image bytes, which travel in the prompt and are unaffected
+// by a filesystem failure). Handing the agent a file:// path that does
+// not exist on its side is the failure this whole change exists to
+// remove; a link it can at least see is strictly better.
+type attachmentParts struct {
+	blocks   []acp.ContentBlock
+	fallback []acp.ContentBlock
+	staged   bool
 }
 
 // attachmentBlocks turns one Poe attachment into one or more ACP content
@@ -2414,10 +2491,11 @@ func (r *Router) attachmentBlocks(
 	used map[string]struct{},
 	a Attachment,
 	embedded bool,
-) []acp.ContentBlock {
+) attachmentParts {
 	// Path 1: pre-parsed text — fastest, agent gets the bytes directly.
 	if embedded && a.ParsedContent != "" {
-		return []acp.ContentBlock{textResourceBlock(a.URL, a.ParsedContent, a.ContentType)}
+		b := []acp.ContentBlock{textResourceBlock(a.URL, a.ParsedContent, a.ContentType)}
+		return attachmentParts{blocks: b, fallback: b}
 	}
 
 	// Paths 2 + 3: download to disk, emit file:// ResourceLink, possibly
@@ -2427,21 +2505,54 @@ func (r *Router) attachmentBlocks(
 		kitlog.Debugf("attachmentBlocks: download failed url=%s err=%v; emitting bare ResourceLink", a.URL, err)
 		// Last-resort: tell the agent about the URL so a vision-capable
 		// agent that can fetch directly still has a chance.
-		return []acp.ContentBlock{resourceLinkBlockHTTPS(a)}
+		b := []acp.ContentBlock{resourceLinkBlockHTTPS(a)}
+		return attachmentParts{blocks: b, fallback: b}
 	}
 
 	link := fileResourceLinkBlock(name, absPath, a.ContentType)
 	out := []acp.ContentBlock{link}
+	var inline []acp.ContentBlock
 
 	if imageInlineAllowedMimeTypes[a.ContentType] && size <= r.maxInlineImageBytes() {
 		data, rerr := osReadFile(absPath)
 		if rerr != nil {
 			kitlog.Debugf("attachmentBlocks: inline read failed path=%s err=%v; link-only", absPath, rerr)
 		} else {
-			out = append(out, acp.ImageBlock(base64.StdEncoding.EncodeToString(data), a.ContentType))
+			inline = []acp.ContentBlock{acp.ImageBlock(base64.StdEncoding.EncodeToString(data), a.ContentType)}
+			out = append(out, inline...)
 		}
 	}
-	return out
+	return attachmentParts{
+		blocks:   out,
+		fallback: append([]acp.ContentBlock{resourceLinkBlockHTTPS(a)}, inline...),
+		staged:   true,
+	}
+}
+
+// uploadAgentFile uploads a file the AGENT produced. The path names the
+// agent's filesystem, which is this one only when the agent is local —
+// so it is fetched back first (a no-op, and the same path, for a local
+// agent) into a scratch directory that is removed either way.
+func (r *Router) uploadAgentFile(ctx context.Context, path string) (poeupload.Result, error) {
+	dir, err := osMkdirTemp("", "poe-acp-fetch-")
+	if err != nil {
+		return poeupload.Result{}, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	local, err := r.provisioner().Fetch(ctx, path, dir)
+	if err != nil {
+		return poeupload.Result{}, err
+	}
+	return r.uploader.UploadFile(ctx, local)
+}
+
+// provisioner is the agent-host provisioner, defaulting to the no-op
+// for a local agent.
+func (r *Router) provisioner() remotefs.Provisioner {
+	if r.cfg.Provisioner != nil {
+		return r.cfg.Provisioner
+	}
+	return remotefs.Local
 }
 
 func (r *Router) maxInlineImageBytes() int64 {
@@ -2961,9 +3072,20 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	host = r.resolveHost(host)
 	kitlog.Debugf("getOrCreate conv=%s user=%s -> miss, query_len=%d force_fresh=%v host=%q", convID, userID, len(query), forceFresh, host)
 
-	cwd := filepath.Join(r.cfg.StateDir, "convs", convID)
+	cwd := filepath.Join(r.cfg.StateDir, "convs", convDirName(convID))
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		return nil, false, fmt.Errorf("mkdir conv dir: %w", err)
+	}
+	// And on the agent's host, if that is a different machine. Done
+	// before session acquisition — session/load and session/resume
+	// carry the cwd exactly like session/new does, so provisioning only
+	// in front of the Tier 2 path would leave resume with the original
+	// bug. Detached from the caller's cancellation for the same reason
+	// acquisition is (see acqCtx below); remotefs applies its own
+	// per-operation deadline.
+	if err := r.provisioner().Mkdir(context.WithoutCancel(ctx), cwd); err != nil {
+		log.Printf("ERROR conv=%s: cannot provision %s on the agent's host: %v", convID, cwd, err)
+		return nil, false, provisionError{err}
 	}
 
 	st = &sessionState{
@@ -3060,6 +3182,33 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	kitlog.Debugf("getOrCreate conv=%s -> new sid=%s won_race=%v fresh_seed=%v",
 		convID, string(sid), won, freshSeed)
 	return winner, freshSeed, nil
+}
+
+// convDirName maps a conversation id onto ONE path component for the
+// conv directory. A conversation id is request input — Poe sends
+// UUID-ish values, but nothing in the protocol promises that, and the
+// result is joined into a filesystem path and then created on the agent
+// host as well. Ordinary ids pass through unchanged so existing conv
+// directories keep resolving; anything that could mean something to a
+// path (separators, "..", a leading dot, exotic bytes) is replaced by a
+// stable hash of the id.
+func convDirName(convID string) string {
+	if convID != "" && convID != "." && convID != ".." && !strings.HasPrefix(convID, ".") {
+		ok := true
+		for _, r := range convID {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			case r == '-', r == '_', r == '.':
+			default:
+				ok = false
+			}
+		}
+		if ok {
+			return convID
+		}
+	}
+	h := sha256.Sum256([]byte(convID))
+	return "conv-" + hex.EncodeToString(h[:16])
 }
 
 // install registers st under convID, returning the winning entry and
@@ -3372,7 +3521,7 @@ func (r *Router) AttachActive(convID, path, name string, inline bool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	res, err := r.uploader.UploadFile(ctx, path)
+	res, err := r.uploadAgentFile(ctx, path)
 	if err != nil {
 		return err
 	}

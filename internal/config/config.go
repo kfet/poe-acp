@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/remotefs"
 )
 
 // Config is the on-disk shape. Add fields with care — every field is
@@ -93,6 +94,32 @@ type Config struct {
 	// changes the serialized settings (and thus the schema hash / cache
 	// invalidation) exactly like any other schema change.
 	PinnedModels []string `json:"pinned_models,omitempty"`
+
+	// AgentSSHHost names the machine the ACP agent process actually
+	// runs on, when that is NOT this one — i.e. when `--agent-cmd` is
+	// something like `ssh -T miki .local/bin/fir --mode acp`. It is an
+	// ssh destination this relay can reach (a ~/.ssh/config alias,
+	// user@host, an IP).
+	//
+	// The relay has no other way to know. An agent command line is an
+	// opaque shell string and nothing in the ACP handshake reports
+	// where the agent lives, yet the relay hands it absolute paths: the
+	// per-conversation cwd on session/new, and the attachment files it
+	// stages for a prompt. Created on THIS disk, those paths do not
+	// exist over there, and a remote agent given a nonexistent cwd does
+	// not complain — it falls back to $HOME, so every conversation
+	// silently shares one directory and every attachment is silently
+	// missing. Setting this key makes the relay create the cwd and copy
+	// staged attachments onto that host first (ssh/tar, BatchMode,
+	// bounded), and fail session creation loudly if it cannot.
+	//
+	// Empty (the default) means the agent is local and nothing changes:
+	// the relay's own filesystem is the agent's filesystem.
+	//
+	// This is orthogonal to `hosts`, which is about where an
+	// acp-tmux-style agent PLACES a session. This key is about where
+	// the agent process itself already is.
+	AgentSSHHost string `json:"agent_ssh_host,omitempty"`
 }
 
 // LocalHost is the RESERVED `hosts[i].value` meaning "the agent's own
@@ -458,6 +485,11 @@ func (c Config) Validate() error {
 	if c.Defaults.Host != "" && len(c.Hosts) > 0 {
 		if _, ok := seen[c.Defaults.Host]; !ok {
 			return fmt.Errorf("defaults.host: %q is not in the `hosts` list", c.Defaults.Host)
+		}
+	}
+	if c.AgentSSHHost != "" {
+		if _, err := remotefs.New(c.AgentSSHHost); err != nil {
+			return fmt.Errorf("agent_ssh_host: %w", err)
 		}
 	}
 	if s := c.Agent.Restart.MaxBackoff; s != "" {

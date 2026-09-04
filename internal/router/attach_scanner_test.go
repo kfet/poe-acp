@@ -53,8 +53,9 @@ func newTestScanner(t *testing.T, sink ChunkSink, cwd string) (*attachScanner, *
 		_, _ = io.WriteString(w, `{"attachment_url":"https://poe/att","mime_type":"text/plain"}`)
 	}))
 	t.Cleanup(srv.Close)
-	up := poeupload.New("k", srv.URL, srv.Client())
-	return &attachScanner{up: up, sink: sink, cwd: cwd}, &uploads
+	r := &Router{}
+	r.uploader = poeupload.New("k", srv.URL, srv.Client())
+	return &attachScanner{upload: r.uploadAgentFile, sink: sink, cwd: cwd}, &uploads
 }
 
 func TestScanner_PlainTextStreamsThrough(t *testing.T) {
@@ -167,7 +168,9 @@ func TestScanner_UploadErrorSurfacesNote(t *testing.T) {
 	defer srv.Close()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
-	sc := &attachScanner{up: poeupload.New("k", srv.URL, srv.Client()), sink: sink, cwd: dir}
+	r := &Router{}
+	r.uploader = poeupload.New("k", srv.URL, srv.Client())
+	sc := &attachScanner{upload: r.uploadAgentFile, sink: sink, cwd: dir}
 	sc.Feed(`<!--poe-attach path="f.txt"-->` + "\n")
 	sc.Flush()
 	if len(sink.files) != 0 {
