@@ -1,0 +1,35 @@
+{
+  "name": "bot-h",
+  "relay": "poe-acp",
+  "host": "host-e",
+  "platform": "linux/amd64",
+  "supervisor": "systemd-user",
+  "unit": "poe-acp-bot-h",
+  "binary": "~/.local/bin/poe-acp",
+  "agent": {
+    "cmd": "ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 hostb .local/bin/fir --mode acp",
+    "kind": "remote-fir"
+  },
+  "server": {
+    "http_addr": "127.0.0.1:8350",
+    "poe_path": "/bot-h",
+    "config_path": "~/.config/poe-acp/bot-h/config.json",
+    "heartbeat_interval": "3s",
+    "session_ttl": "10m",
+    "introduction": "bot-h — fir on host-b, reached over plain ssh. Probe bot for the ACP-over-ssh transport question."
+  },
+  "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s"
+  },
+  "config": {
+    "bot_name": "bot-h",
+    "defaults": {
+      "model": "anthropic/claude-opus-5",
+      "thinking": "medium"
+    },
+    "agent_ssh_host": "hostb"
+  },
+  "credentials": { "env_file": "~/.config/poe-acp/bot-h/env" }
+}

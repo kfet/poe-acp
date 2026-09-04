@@ -59,22 +59,46 @@ Point your Poe bot at `https://<host>/poe` (with any reverse proxy or
 
 ## Deployment
 
-### Fleet: bot specs + converge (the sanctioned path)
+### Fleet: relay registry + converge (the sanctioned path)
+
+`bots/` is the **fleet-wide relay registry** — one JSON file per relay
+*instance*, covering every ACP relay on every host, not just poe-acp.
 
 For the personal bot fleet, **a bot IS a dist spec**: one declarative JSON
 file under `bots/<name>.json` fully describes a bot — host, supervisor,
 server flags, relay config, agent, fir extensions, credential *references*
 (never contents). `dist.lock` at the repo root pins the fleet-wide target
-versions: poe-acp, fir (released from `kfet/fir-dist`), and each fir
-extension repo by git rev.
+versions: poe-acp, fir (released from `kfet/fir-dist`), each fir
+extension repo by git rev, and under `relays` the tracked sibling relays.
+
+Two tiers:
+
+| tier | which | converge.sh |
+|---|---|---|
+| **managed** (default) | poe-acp instances | full: renders config + unit, fetches the binary, recycles, verifies |
+| **tracked** (`"managed": false`) | `slack-acp`, `zulip-acp` | reports drift in `status`; **refuses** `--apply` — they have their own repos, release flows and unit shapes |
+
+`"state": "retire"` marks an instance that is running but proposed for
+removal: registered so the sweep names it instead of reporting an unknown
+process, never converged, never counted as drift.
 
 **`scripts/converge.sh` is the only sanctioned way to touch a host.**
 
 ```bash
+scripts/converge.sh status           # READ-ONLY fleet sweep — what runs where, and is it stale?
 scripts/converge.sh <bot>            # dry run (default): diff of what would change
 scripts/converge.sh <bot> --apply    # make the host match bots/<bot>.json + dist.lock
 scripts/converge.sh --tot            # resolve latest-of-everything ONCE into dist.lock
 ```
+
+**`status` is the closing step of every deploy, release and update.** It
+answers "what runs where, and is it stale?" for the whole fleet in one
+read-only command, reading each version from the **running process**
+(`/proc/<pid>/exe --version`, or the running image's inode on macOS) —
+never the on-disk binary, never a glob. It also lists any relay running on
+a registered host with no spec. See
+`~/sync/shared/docs/notes/relays.md` for the fleet-wide note.
+
 
 Converge checks/fixes, in order: poe-acp binary version, fir version,
 fir extension revs, rendered `config.json`, rendered systemd unit or
@@ -574,7 +598,8 @@ context and is fine.
 
 ```
 poe-acp/
-  bots/                    one dist spec per fleet bot (bots/<name>.json)
+  bots/                    the fleet relay registry: one spec per relay instance
+                           (poe-acp managed; slack-acp/zulip-acp tracked)
   dist.lock                fleet-wide pinned versions (poe-acp, fir, ext revs)
   scripts/converge.sh      the only sanctioned way to touch a bot host
   cmd/poe-acp/             entry point + flag wiring
