@@ -1,4 +1,6 @@
-bin/
+/bin/
 *.log
-dist/
+# goreleaser's output at the repo root only — an unanchored "dist/" would
+# also swallow internal/dist/, silently leaving the package untracked.
+/dist/
 /poe-acp

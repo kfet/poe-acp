@@ -41,7 +41,7 @@ else
   endef
 endif
 
-.PHONY: all _parallel build build-all install fmt tidy vet \
+.PHONY: all _parallel build build-all install fmt tidy vet check-installsh \
         test test-race-cover test-cover test-scripts open-coverage \
         clean notices check-licenses publish deploy FORCE
 
@@ -58,7 +58,7 @@ FORCE:
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _parallel
 
-_parallel: vet test-race-cover test-scripts build build-all check-licenses
+_parallel: vet test-race-cover test-scripts build build-all check-licenses check-installsh
 
 fmt:
 	@gofmt -s -w .
@@ -133,6 +133,20 @@ notices: $(NOTICE_FILE)
 
 $(NOTICE_FILE): go.mod go.sum
 	$(call RUN,generate notices,$(GO_LICENSES) report ./cmd/poe-acp > $(NOTICE_FILE) 2>/dev/null)
+
+# ---------------------------------------------------------------------------
+# install.sh
+#
+# The root install.sh is GENERATED from install.sh.json by the canonical
+# distkit template — never hand-edited. `check-installsh` fails the build
+# when the checked-in copy has drifted from the template or the spec. It is
+# dev-only: it runs in `make all` and in CI, never on a user's machine.
+# ---------------------------------------------------------------------------
+install.sh: install.sh.json
+	$(call RUN,generate install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -o $@ && chmod +x $@)
+
+check-installsh:
+	$(call RUN,check install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -check)
 
 check-licenses:
 	$(call RUN,check licenses,$(GO_LICENSES) check ./cmd/poe-acp --disallowed_types=forbidden,restricted 2>/dev/null)

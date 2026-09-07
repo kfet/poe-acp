@@ -20,6 +20,24 @@ the main fir binary.
 SSE-streamed assistant response is verified against a real `fir --mode acp`
 child. See the "Live test" section below.
 
+## Install
+
+```bash
+# Homebrew
+brew install kfet/ai/poe-acp
+
+# or the install script (generated from the distkit template)
+curl -fsSL https://raw.githubusercontent.com/kfet/poe-acp/main/install.sh | sh
+```
+
+`install.sh` picks the asset for the host's OS/arch, verifies its sha256
+against the release's `checksums.txt`, and installs to `/usr/local/bin`
+when writable and `$HOME/.local/bin` otherwise (`BIN_DIR` overrides).
+
+It is **generated**, not hand-written: edit `install.sh.json` and run
+`make install.sh`. `make check-installsh` (part of `make all` and CI) fails
+the build when the checked-in copy has drifted.
+
 ## Quick start
 
 ```bash
@@ -152,21 +170,24 @@ follow-up; a template will land alongside the first production deploy.
 
 ### Updating
 
-`poe-acp update` self-updates the binary in place: it resolves the latest
-GitHub release for the host's OS/arch, downloads the raw asset, verifies its
-sha256 against `checksums.txt`, and **atomically renames** it over the
-running binary. The rename (rather than `cp`-over-the-running-file, which
-fails with `ETXTBSY`) is what makes an in-place swap safe; the live process
-keeps its old inode until it restarts.
+`poe-acp update` self-updates the binary in place. It is
+[distkit](https://github.com/kfet/distkit): it resolves the latest GitHub
+release **through the REST API** (asset bytes included, with a bearer token
+from `GITHUB_TOKEN` / `GH_TOKEN` / `gh auth token` when one is available, so
+the same path works against a private repo), verifies the asset's sha256
+against `checksums.txt` as it streams to disk, and **atomically renames** it
+over the running binary. The rename (rather than `cp`-over-the-running-file,
+which fails with `ETXTBSY`) is what makes an in-place swap safe; the live
+process keeps its old inode until it restarts.
 
 ```bash
-# Is a newer release available?
+# Is a newer release available?  Exit 3 = yes, 0 = already current.
 poe-acp update -check
 
 # Update to the latest release (binary only — restart separately).
 poe-acp update
 
-# Pin a specific version.
+# Pin a specific version (a deliberate downgrade is allowed).
 poe-acp update -version v0.27.0
 
 # Update and recycle the supervisor so the new binary goes live.
@@ -186,8 +207,19 @@ On a fleet host, do not run this by hand: `scripts/converge.sh <bot> --apply`
 owns the upgrade and picks the graceful or hard path itself (and verifies the
 swap took).
 
-Self-update is refused when the binary lives under a package-manager path
-(Homebrew, linuxbrew, `/usr/bin`); use `brew upgrade poe-acp` there instead.
+A **Homebrew install is upgraded, not refused**: the keg is detected through
+symlinks, the fully-qualified formula (`kfet/ai/poe-acp`) is read from the
+keg's `INSTALL_RECEIPT.json` so `brew upgrade` cannot bind to a same-named
+formula from another tap, and `brew update && brew upgrade` runs with its
+output streamed through. Self-updating a keg would be silently reverted by
+the next `brew upgrade`, leaving a host that reports one version and runs
+another.
+
+An install this process does not own — a package-manager prefix
+(`/usr/bin`, `/usr/sbin`) or a directory belonging to another user — is
+refused **up front**, with the command to use instead, rather than three
+network round-trips later with `permission denied`.
+
 A remote host can be updated with `ssh <host> poe-acp update -restart-cmd ...`.
 
 ## Endpoints

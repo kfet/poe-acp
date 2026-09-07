@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -26,15 +25,16 @@ import (
 	"github.com/kfet/acp-kit/mcphost"
 	"github.com/kfet/acp-kit/relaytool"
 	"github.com/kfet/acp-kit/remotefs"
+	"github.com/kfet/distkit"
 	"github.com/kfet/poe-acp/internal/agentcfg"
 	"github.com/kfet/poe-acp/internal/config"
+	"github.com/kfet/poe-acp/internal/dist"
 	"github.com/kfet/poe-acp/internal/httpsrv"
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poemcp"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 	"github.com/kfet/poe-acp/internal/sdnotify"
-	"github.com/kfet/poe-acp/internal/selfupdate"
 	"github.com/kfet/poe-acp/internal/statusline"
 	"github.com/kfet/poe-acp/internal/supervisor"
 )
@@ -44,11 +44,15 @@ var version = "0.1.0-dev"
 
 func main() {
 	// Subcommands are dispatched before flag parsing. `update` is the
-	// canonical self-update path (ETXTBSY-safe atomic binary swap +
-	// optional supervisor restart); it supersedes the ad-hoc deploy
-	// script and `make deploy` over a running binary.
+	// canonical self-update path; it supersedes the ad-hoc deploy script
+	// and `make deploy` over a running binary. distkit owns the whole
+	// subcommand — flags (-check/-version/-repo/-restart-cmd), the
+	// GitHub-API download with token discovery (so it works against a
+	// private repo), sha256 verification, the ETXTBSY-safe atomic swap,
+	// and `brew update && brew upgrade` when this binary is a keg.
+	// -check exits 3 when a newer release exists.
 	if len(os.Args) > 1 && os.Args[1] == "update" {
-		os.Exit(runUpdate(os.Args[2:]))
+		os.Exit(distkit.Main(dist.Config(version)))
 	}
 
 	// `mcp-serve` is the self-hosted stdio MCP server the agent spawns
@@ -886,51 +890,4 @@ func workerDesc(w *worker) string {
 		return "(none)"
 	}
 	return strconv.Itoa(w.proc.Pid)
-}
-
-// runUpdate implements the `poe-acp update` subcommand: download the
-// latest (or pinned) release, verify its sha256, and atomically replace
-// the running binary. With -restart-cmd set, it runs that command (via
-// `sh -c`) afterwards so a supervisor (systemd --user / launchd) picks up
-// the new binary. For a binary-only change prefer the GRACEFUL recycle —
-// "systemctl --user reload <unit>" / "launchctl kill SIGHUP gui/$UID/<label>"
-// — which makes the running supervisor fork a new worker and drain the old
-// one; a plain restart/kickstart drops every in-flight conversation.
-func runUpdate(args []string) int {
-	fs := flag.NewFlagSet("update", flag.ContinueOnError)
-	check := fs.Bool("check", false, "report whether an update is available; do not install")
-	ver := fs.String("version", "", "install a specific version (e.g. v0.27.0); default: latest")
-	repo := fs.String("repo", selfupdate.DefaultRepo, "github owner/repo to update from")
-	restartCmd := fs.String("restart-cmd", "", "shell command to run after a successful update; prefer a graceful worker swap (e.g. \"systemctl --user reload poe-acp-sea-fir\", \"launchctl kill SIGHUP gui/$UID/<label>\")")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-
-	res, err := selfupdate.Run(version, selfupdate.Options{
-		Repo:      *repo,
-		Version:   *ver,
-		CheckOnly: *check,
-		Stdout:    os.Stdout,
-		Stderr:    os.Stderr,
-	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "update:", err)
-		return 1
-	}
-	if !res.Updated {
-		return 0
-	}
-
-	if *restartCmd == "" {
-		fmt.Print("restart the service to pick up the new binary, e.g.:\n  systemctl --user restart poe-acp-<bot>\n")
-		return 0
-	}
-	fmt.Printf("restarting: %s\n", *restartCmd)
-	c := exec.Command("sh", "-c", *restartCmd)
-	c.Stdout, c.Stderr = os.Stdout, os.Stderr
-	if err := c.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "restart:", err)
-		return 1
-	}
-	return 0
 }

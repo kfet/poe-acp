@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Root `install.sh`.** Generated from `install.sh.json` by the shared
+  distkit template (`make install.sh`); `make check-installsh` fails the
+  build — dev-only, never on a user's machine — when the checked-in copy
+  drifts. Handles curl-or-wget, the three 32-bit ARM spellings, sha256
+  verification, `BIN_DIR`/`PREFIX`, and a private repo via `GITHUB_TOKEN`.
+
+### Fixed
+
+- **`.gitignore` no longer swallows `internal/dist/`.** The unanchored
+  `dist/` entry — meant for goreleaser's root output — matched any
+  directory named `dist` at any depth, so a new package would have been
+  silently untracked. Anchored to `/dist/` (and `/bin/`).
+
+### Changed
+
+- **`poe-acp update` is now [distkit](https://github.com/kfet/distkit)**;
+  `internal/selfupdate` is deleted. Two deliberate behaviour upgrades:
+  a Homebrew install is **upgraded, not refused** (the keg is detected
+  through symlinks and the fully-qualified formula read from
+  `INSTALL_RECEIPT.json`, then `brew update && brew upgrade` runs), and
+  every byte — asset payloads included — moves through the GitHub REST
+  API with a discovered bearer token (`GITHUB_TOKEN`, `GH_TOKEN`,
+  `gh auth token`), so update works against a private repo. Also new:
+  `update -check` exits **3** when a release is available, so a timer can
+  act without parsing stdout; a dev build is refused rather than having a
+  release binary renamed over it; and the download is bounded by a stall
+  timeout instead of a total deadline, so a slow link on a Pi no longer
+  aborts a large asset mid-transfer. The atomic ETXTBSY-safe swap,
+  checksum verification, and the up-front refusal on an install we do not
+  own are unchanged.
+
 ## [0.68.1] - 2026-09-04
 
 ### Fixed
