@@ -91,6 +91,21 @@ systemctl --user restart poe-acp    # hard restart: only if the running
 drops in-flight replies. `daemon-reload` is only needed when the **unit file**
 itself changed — and a changed unit does require the hard path.
 
+**Self-update (`poe-acp update`, any install method):**
+```bash
+ssh <host> 'poe-acp update -check'      # exit 3 = a newer release exists, 0 = current
+ssh <host> 'poe-acp update -restart-cmd "systemctl --user reload poe-acp"'
+```
+Since 0.69.0 this is [distkit](https://github.com/kfet/distkit) and it
+handles **every** install method itself: a brew keg is resolved to its
+fully-qualified formula and upgraded with `brew update && brew upgrade`,
+anything else is downloaded through the GitHub API (checksum-verified) and
+atomically renamed into place. It refuses up front — changing nothing — when
+the binary belongs to a package manager or another user. `-restart-cmd` runs
+after a successful swap, so pass the graceful recycle. On a fleet host this
+is still not the sanctioned path: `scripts/converge.sh <bot> --apply` owns
+the upgrade and verifies the swap took.
+
 **Direct deploy (`~/.local/bin`, hotfix):**
 From the repo:
 ```bash
