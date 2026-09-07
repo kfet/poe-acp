@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`curl … | sh` no longer needs GitHub API quota to find the latest
+  release.** The generated `install.sh` resolved `latest` through the REST
+  API even with no token, and that limit is 60 requests/hour PER IP — a
+  NAT'd fleet spends it between hosts and every later install fails. With
+  no token it now reads the tag from the `releases/latest` redirect, which
+  costs no quota, falling back to the API when the redirect yields no tag.
+  The token path for private repos is unchanged. Via distkit v0.1.4.
+
+- **`poe-acp update` no longer needs GitHub API quota either.** The same
+  per-IP limit broke self-update on a NAT'd fleet, with a 403 that reads
+  like a permissions error on a public repo — v0.1.4 fixed only the shell
+  installer. Anonymously the API is now skipped end to end: a pinned
+  `-version` needs no lookup, `latest` comes from the `releases/latest`
+  redirect, and the asset and its `checksums.txt` are fetched from the
+  download host. Checksum verification and the private-repo token path are
+  unchanged. Via distkit v0.1.5.
+
+- **A `VERSION`/`-version` that is not a release tag is refused instead of
+  installing something else.** The value was pasted straight into two URL
+  paths, so `VERSION=../../other/repo/releases/download/v1` walked out of
+  this repo and installed another project's binary — and because
+  `checksums.txt` came from the same traversed location it verified against
+  itself and printed `checksum ok`. Both `install.sh` and `poe-acp update`
+  now validate the tag up front, which also turns a typo into a clear
+  message rather than a puzzling 404. Via distkit v0.1.6.
+
+- **A release tag containing a slash no longer resolves to a different
+  tag.** `install.sh` reduced the `releases/latest` redirect to its last
+  path segment, so a tag like `release/v1` became `v1` — and where a
+  separate `v1` tag exists, the wrong binary installed with no error at
+  all. Via distkit v0.1.6.
+
+- **`poe-acp update` refuses a dev build again.** Only bare placeholders
+  (`dev`, `unknown`, …) counted, so the `-dev` suffix this project actually
+  compiles — `v0.1.0-dev` — sailed past the guard, and `update` would have
+  renamed a release binary over a developer's own build. Prerelease tags
+  (`-rc1`) are real releases and still update. Via distkit v0.1.7.
+
 ## [0.69.1] - 2026-09-07
 
 ### Fixed

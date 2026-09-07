@@ -7,10 +7,11 @@
 // formats=[binary], with GOARCH=arm published as "armv6") has exactly one
 // definition, and a drift test proves install.sh.json still agrees with it.
 //
-// Everything else — the GitHub API download with token discovery, sha256
-// verification against checksums.txt, the ETXTBSY-safe atomic swap, the
-// Homebrew keg upgrade, and the refusal on an install we do not own —
-// lives in github.com/kfet/distkit.
+// Everything else — release resolution and download (through the GitHub API
+// with a discovered token, or off it entirely and at no API-quota cost when
+// there is none), sha256 verification against checksums.txt, the
+// ETXTBSY-safe atomic swap, the Homebrew keg upgrade, and the refusal on an
+// install we do not own — lives in github.com/kfet/distkit.
 package dist
 
 import "github.com/kfet/distkit"
