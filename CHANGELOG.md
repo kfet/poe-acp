@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-09-07
+
 ### Added
 
 - **Root `install.sh`.** Generated from `install.sh.json` by the shared
