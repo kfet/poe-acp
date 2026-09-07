@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.69.1] - 2026-09-07
+
+### Fixed
+
+- **A spent GitHub API rate limit no longer looks like a permissions
+  error.** Both `install.sh` and `poe-acp update` reported a bare 403 —
+  `curl: (22) The requested URL returned error: 403` with no message at
+  all, in the installer's case, because it exited on curl's status before
+  reaching its own error handler. The unauthenticated limit is per IP
+  ADDRESS, so a NAT'd fleet exhausts it between its hosts and then every
+  one of them fails with what reads like "you are not allowed". Both paths
+  now name the cause and say to set `GITHUB_TOKEN`. Via distkit v0.1.3.
+
 ## [0.69.0] - 2026-09-07
 
 ### Added

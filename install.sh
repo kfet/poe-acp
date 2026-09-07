@@ -103,15 +103,21 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
 api="${GITHUB_API:-https://api.github.com}/repos/$REPO/releases"
+# The download is run as an `if` condition on purpose: `set -e` would
+# otherwise abort here with curl's bare "error: 22", and the two things that
+# actually go wrong at this step — a private repo with no token, and GitHub's
+# per-IP unauthenticated rate limit spent by a whole NAT'd fleet — both look
+# like an unexplained HTTP failure unless we say so.
+api_hint="a private repo needs GITHUB_TOKEN; so does a spent unauthenticated API rate limit (GitHub counts it per IP address, so a shared network exhausts it)"
 if [ "$VERSION" = latest ]; then
 	log "resolving latest release for $REPO"
-	download "$api/latest" "$tmpdir/release.json"
+	download "$api/latest" "$tmpdir/release.json" || die "cannot read the latest release of $REPO: $api_hint"
 else
-	download "$api/tags/$VERSION" "$tmpdir/release.json"
+	download "$api/tags/$VERSION" "$tmpdir/release.json" || die "cannot read release $VERSION of $REPO: $api_hint"
 fi
 # Extract "tag_name": "v…" without jq, which is not installable from here.
 VERSION="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmpdir/release.json" | head -n1)"
-[ -n "$VERSION" ] || die "could not resolve a release tag from $REPO (private repo? set GITHUB_TOKEN)"
+[ -n "$VERSION" ] || die "no tag_name in the release JSON from $REPO: $api_hint"
 VERSION_NO_V="${VERSION#v}"
 log "installing $REPO $VERSION ($OS/$ARCH)"
 
@@ -136,9 +142,10 @@ fetch_asset() {
 			| sed -n 's/.*"url":"\([^"]*releases\/assets\/[0-9]*\)".*/\1/p' \
 			| head -n1)"
 		[ -n "$_url" ] || die "release $VERSION has no asset $1"
-		download "$_url" "$2" application/octet-stream
+		download "$_url" "$2" application/octet-stream || die "cannot download $1 from $REPO: $api_hint"
 	else
-		download "$BASE_URL/$1" "$2" application/octet-stream
+		download "$BASE_URL/$1" "$2" application/octet-stream \
+			|| die "cannot download $1 from $REPO $VERSION (no such asset for this platform, or the release is not public): $api_hint"
 	fi
 }
 
