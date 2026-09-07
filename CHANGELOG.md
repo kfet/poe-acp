@@ -41,7 +41,9 @@
   timeout instead of a total deadline, so a slow link on a Pi no longer
   aborts a large asset mid-transfer. The atomic ETXTBSY-safe swap,
   checksum verification, and the up-front refusal on an install we do not
-  own are unchanged.
+  own are unchanged. The embedded `update` skill documents `poe-acp update`
+  as a supported host-upgrade path for the first time, since it now covers
+  brew installs too.
 
 ## [0.68.1] - 2026-09-04
 
