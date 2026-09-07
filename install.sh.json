@@ -1,0 +1,13 @@
+{
+  "repo": "kfet/poe-acp",
+  "binary": "poe-acp",
+  "asset_stem": "poe-acp",
+  "asset_template": "{stem}-{os}-{arch}",
+  "arm_suffix": "armv6",
+  "brew_formula": "kfet/ai/poe-acp",
+  "version_flag": "--version",
+  "next_steps": [
+    "poe-acp -h                       # flags and defaults",
+    "see https://github.com/kfet/poe-acp#readme for config + deploy"
+  ]
+}
