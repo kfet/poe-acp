@@ -142,8 +142,12 @@ $(NOTICE_FILE): go.mod go.sum
 # when the checked-in copy has drifted from the template or the spec. It is
 # dev-only: it runs in `make all` and in CI, never on a user's machine.
 # ---------------------------------------------------------------------------
-install.sh: install.sh.json
-	$(call RUN,generate install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -o $@ && chmod +x $@)
+# FORCE, not an mtime dependency on the spec: the generator also restores
+# the executable bit, and a mode change leaves mtime alone — so a plain
+# prerequisite would report "up to date" on the one file make cannot see is
+# wrong. Regenerating is a sub-second no-op when nothing changed.
+install.sh: FORCE
+	$(call RUN,generate install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -o $@)
 
 check-installsh:
 	$(call RUN,check install.sh,go run github.com/kfet/distkit/cmd/distkit-installsh -check)

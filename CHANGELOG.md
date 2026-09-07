@@ -9,6 +9,9 @@
   build — dev-only, never on a user's machine — when the checked-in copy
   drifts. Handles curl-or-wget, the three 32-bit ARM spellings, sha256
   verification, `BIN_DIR`/`PREFIX`, and a private repo via `GITHUB_TOKEN`.
+  Requires distkit v0.1.1, which fixes `installsh.Write` losing the
+  executable bit when regenerating over an existing file (found here,
+  fixed upstream).
 
 ### Fixed
 
