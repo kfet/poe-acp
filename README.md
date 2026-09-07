@@ -162,11 +162,13 @@ curl -sS -H "Authorization: Bearer $POEACP_ACCESS_KEY" \
 # → {"count":0,"sessions":[]}
 ```
 
-### Auto-restart on the host (not yet automated)
+### Auto-restart on the host
 
-v1 runs under `nohup` / a tmux window and must be restarted by hand
-on host reboot. A launchd / systemd unit is a straightforward M2
-follow-up; a template will land alongside the first production deploy.
+Supervision is declared in `bots/<bot>.json` and rendered by
+`scripts/converge.sh` — a systemd `--user` unit on Linux, a launchd plist
+on macOS — so a host reboot brings the bot back by itself. Do not start a
+production bot under `nohup` or a tmux window; converge owns the unit, the
+EnvironmentFile, and the restart policy.
 
 ### Updating
 
