@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.69.2] - 2026-09-07
+
 ### Fixed
 
 - **`curl … | sh` no longer needs GitHub API quota to find the latest
