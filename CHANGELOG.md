@@ -15,6 +15,11 @@
 
 ### Fixed
 
+- **README's "Auto-restart on the host (not yet automated)" section** was
+  years stale: it told operators to run production bots under `nohup` or
+  tmux, when `scripts/converge.sh` has rendered systemd `--user` units and
+  launchd plists from `bots/<bot>.json` for a long time.
+
 - **`.gitignore` no longer swallows `internal/dist/`.** The unanchored
   `dist/` entry — meant for goreleaser's root output — matched any
   directory named `dist` at any depth, so a new package would have been
