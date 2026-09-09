@@ -8,7 +8,7 @@ import "testing"
 // regression (frontmatter typo, bundle path mismatch, or kit import
 // drift) rather than a tolerable edge case.
 func TestWrappersDelegate(t *testing.T) {
-	got, err := LoadBuiltin()
+	got, err := LoadBuiltin(t.TempDir())
 	if err != nil {
 		t.Fatalf("LoadBuiltin: %v", err)
 	}

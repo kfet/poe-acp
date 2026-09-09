@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A wedged turn now actually stops the agent.** When the idle-write
+  backstop cut a turn the relay only stopped WAITING for it: the
+  `session/prompt` request was abandoned and the agent — never told
+  anything — kept running its tool. Measured on a sibling relay: files
+  written a minute after the relay had given up. Via acp-kit v0.16.2,
+  which sends `session/cancel` when a prompt's context is cancelled.
+  Proved end-to-end against a real agent subprocess in
+  `internal/httpsrv/cancelproof_test.go`.
+
+- **Builtin skills no longer leak a `$TMPDIR` directory per released
+  version.** The embedded bundle was extracted under a temp dir keyed to
+  its content hash and nothing ever removed the old ones — 11 of them on
+  one live host. Extraction now happens under the relay's own state dir
+  and prunes both stale generations there and the legacy `$TMPDIR` ones.
+  Via acp-kit `skills.LoadBuiltinIn` (v0.14.0).
+
 ## [0.69.2] - 2026-09-07
 
 ### Fixed
