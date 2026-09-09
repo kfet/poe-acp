@@ -47,10 +47,11 @@ package httpsrv
 // mid-flight and drop the waiter back into a re-run on exactly the long
 // turns where that costs most. Instead the OWNER republishes its marker
 // from watchTurn on every tick (IdleWriteTimeout/4, so four ticks of
-// margin) for as long as the turn is demonstrably alive — the same
-// liveness clock that decides a wedge, reset by real output and tool
-// progress but never by a keepalive frame. A wedged turn therefore stops
-// refreshing and its marker expires; so does a killed worker's.
+// margin) for as long as the turn is alive. Alive is not judged here:
+// the loop simply runs until acp-kit's liveness watcher cuts the turn,
+// so it is bounded by exactly the condition that declares a wedge. A
+// wedged turn therefore stops refreshing and its marker expires; so does
+// a killed worker's.
 //
 // TAKE-ONCE across generations is rename(2): a taker renames `<h>.a` to a
 // private claim name. rename is atomic within a directory, so of two
