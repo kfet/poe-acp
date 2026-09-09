@@ -41,6 +41,7 @@ func (s *scanSink) Done() error                    { return nil }
 func (s *scanSink) FirstChunk()                    {}
 func (s *scanSink) SetModelInfo(string, string)    {}
 func (s *scanSink) SetStatus(string, string)       {}
+func (s *scanSink) Progress()                      {}
 func (s *scanSink) ToolActivity(string)            {}
 func (s *scanSink) SetPlan([]statusline.PlanEntry) {}
 func (s *scanSink) joined() string                 { return strings.Join(s.texts, "") }

@@ -105,6 +105,10 @@ func (a *answerRecorder) SetStatus(mood, plan string) {
 // label), not user-visible content, so it is forwarded but NOT recorded:
 // a replayed answer is a completed turn where liveness is moot. The
 // durable per-tool_call body line is a plain Text call and IS recorded.
+func (a *answerRecorder) Progress() {
+	a.inner.Progress()
+}
+
 func (a *answerRecorder) ToolActivity(label string) {
 	a.inner.ToolActivity(label)
 }
