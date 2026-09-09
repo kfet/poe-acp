@@ -11,6 +11,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/router"
 
 	"github.com/kfet/poe-acp/internal/poeproto"
@@ -95,17 +96,34 @@ func TestSink_PlanChangeForcesFrameWhileStreaming(t *testing.T) {
 }
 
 // TestSink_PlanIsNotUserVisibleOutput pins the transient contract:
-// SetPlan touches neither clock and never marks realWritten.
+// SetPlan is not content and is not liveness. It leaves the
+// content-stall clock alone, never marks realWritten, and — the half
+// that matters most — does not keep a wedged turn alive: an agent whose
+// harness keeps emitting plans while it is hung must still be cut.
 func TestSink_PlanIsNotUserVisibleOutput(t *testing.T) {
 	rec := newSSERecorder(t)
 	s := newSink(rec.w, 0, 0, nil)
-	lw, lc := s.lastWrite.Load(), s.lastContent.Load()
-	s.SetPlan([]statusline.PlanEntry{{Content: "step", Status: "pending"}})
+	lc := s.lastContent.Load()
+
+	live, ctx, stop := client.StartTurnLiveness(context.Background(),
+		client.TurnLivenessConfig{NoProgressTimeout: 60 * time.Millisecond})
+	defer stop()
+	s.attachLiveness(live)
+
+	deadline := time.After(3 * time.Second)
+	for ctx.Err() == nil {
+		s.SetPlan([]statusline.PlanEntry{{Content: "step", Status: "pending"}})
+		select {
+		case <-deadline:
+			t.Fatal("a plan-only stream was never cut: plans are being counted as liveness")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 	if s.realWritten() {
 		t.Fatal("SetPlan must not mark realWritten")
 	}
-	if s.lastWrite.Load() != lw || s.lastContent.Load() != lc {
-		t.Fatal("SetPlan must not touch the wedge/stall clocks")
+	if s.lastContent.Load() != lc {
+		t.Fatal("SetPlan must not touch the content-stall clock")
 	}
 }
 

@@ -46,7 +46,7 @@ package httpsrv
 // -swap-drain-deadline), so a marker bounded by AnswerTTL would expire
 // mid-flight and drop the waiter back into a re-run on exactly the long
 // turns where that costs most. Instead the OWNER republishes its marker
-// from watchIdle on every tick (IdleWriteTimeout/4, so four ticks of
+// from watchTurn on every tick (IdleWriteTimeout/4, so four ticks of
 // margin) for as long as the turn is demonstrably alive — the same
 // liveness clock that decides a wedge, reset by real output and tool
 // progress but never by a keepalive frame. A wedged turn therefore stops
@@ -234,7 +234,7 @@ func (s *answerStore) ttlFor(name string) time.Duration {
 // The bound counts EVERY file, not just answers: a flood of distinct
 // absorbed keys inside one pendingTTL window would otherwise grow the
 // directory without limit through markers alone. Evicting a live marker
-// is safe — its owner republishes it on the next watchIdle tick, and the
+// is safe — its owner republishes it on the next watchTurn tick, and the
 // worst case in the meantime is one waiter falling back to a re-run.
 //
 // Two generations may sweep and write here concurrently. Every operation

@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The relay no longer runs its own wedge clock.** It kept a private
+  `lastWrite` timestamp polled four times a window by a ticker, next to
+  its own ceiling-context plumbing, while acp-kit shipped the
+  timer-based `client.TurnLiveness` the other two relays use. Stage 1
+  aligned the two on the RULE (`client.IsProgress`); this aligns them on
+  the MECHANISM, so there is one implementation of "the agent went
+  quiet" across all three relays instead of three that drift. Operator
+  flags and defaults are unchanged: `-idle-write-timeout` is the
+  watcher's no-progress window and `-turn-timeout` its opt-in ceiling.
+  The user-facing sentences, with their durations, are unchanged too.
+  A wedged turn is now cut ON the window rather than up to a quarter of
+  one late, and an absorbed turn stops refreshing its pending marker at
+  the cut rather than on the following tick.
+
+### Added
+
+- The opt-in `-turn-timeout` ceiling now has an end-to-end test proving
+  it actually fires, cuts the turn, and names its limit to the user.
+  Previously only the branch that CONSTRUCTS the ceiling was covered.
+
 ## [0.70.0] - 2026-09-09
 
 ### Fixed

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 )
@@ -177,19 +178,38 @@ func TestIdleCheckInterval(t *testing.T) {
 	}
 }
 
-func TestSink_IdleSince(t *testing.T) {
+// TestSink_WriteFeedsTheLivenessWatcher replaces TestSink_IdleSince.
+// The relay no longer keeps its own wedge clock, so there is no
+// idleSince to inspect; the behaviour it pinned — a user-visible write
+// counts as liveness — is pinned here against its actual effect, the
+// turn not being cut. The negative half (nothing written at all → cut)
+// is TestHandler_IdleWriteTimeout_CutsWedgedTurn.
+func TestSink_WriteFeedsTheLivenessWatcher(t *testing.T) {
 	sse, err := poeproto.NewSSEWriter(httptest.NewRecorder())
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := newSink(sse, 0, time.Hour, nil)
-	if s.idleSince() > time.Second {
-		t.Fatalf("fresh sink idle too high: %v", s.idleSince())
+
+	// No turn attached: writing must be safe and must not panic.
+	if err := s.Text("detached"); err != nil {
+		t.Fatal(err)
 	}
-	time.Sleep(15 * time.Millisecond)
-	before := s.idleSince()
-	_ = s.Text("x")
-	if s.idleSince() >= before {
-		t.Fatalf("Text did not reset idle clock: before=%v after=%v", before, s.idleSince())
+
+	live, ctx, stop := client.StartTurnLiveness(context.Background(),
+		client.TurnLivenessConfig{NoProgressTimeout: 80 * time.Millisecond})
+	defer stop()
+	s.attachLiveness(live)
+
+	// Six writes at a third of the window: without a reset per write the
+	// turn would have been cut twice over by the end of the loop.
+	for i := 0; i < 6; i++ {
+		time.Sleep(25 * time.Millisecond)
+		if err := s.Text("x"); err != nil {
+			t.Fatal(err)
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("a written-to turn was cut as wedged after %d writes: %v", i+1, context.Cause(ctx))
+		}
 	}
 }

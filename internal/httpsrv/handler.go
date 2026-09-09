@@ -4,6 +4,7 @@ package httpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/poeproto"
@@ -58,11 +60,12 @@ type Config struct {
 	//
 	// <=0 (the default) means NO absolute ceiling: a turn is bounded
 	// SOLELY by the progress-resetting IdleWriteTimeout backstop. While
-	// the agent keeps producing user-visible output the turn runs for as
-	// long as it needs — a long, actively-working turn is never cut. The
-	// absolute cap is opt-in for operators who deliberately want a hard
-	// upper bound regardless of progress; it is NOT a wedge guard (that
-	// is IdleWriteTimeout's job).
+	// the agent keeps making progress the turn runs for as long as it
+	// needs — a long, actively-working turn is never cut. The absolute
+	// cap is opt-in for operators who deliberately want a hard upper
+	// bound regardless of progress; it is NOT a wedge guard (that is
+	// IdleWriteTimeout's job). It maps onto acp-kit's
+	// client.TurnLivenessConfig.MaxTurnDuration.
 	TurnTimeout time.Duration
 	// AnswerTTL bounds how long a buffered (absorbed) turn answer is held
 	// for a redrive before it is discarded. <=0 falls back to
@@ -76,15 +79,20 @@ type Config struct {
 	// memory-only buffering (answers do not outlive the worker).
 	StateDir string
 	// IdleWriteTimeout is the per-stream backstop for a WEDGED turn: the
-	// agent has hung, no SSE content byte has been written, and the
-	// client never disconnected. If no user-visible chunk lands within
-	// this window the single wedged turn is cancelled so it cannot block
-	// a graceful drain forever; every other in-flight stream keeps
-	// draining. Heartbeat keepalive frames do NOT reset it — only real
-	// agent output does — so a genuinely wedged turn is detected even
-	// though its spinner keeps ticking. A tool_call session/update DOES
-	// reset it: a legitimately long-running tool is genuine progress, so
-	// it must not be cut. <=0 falls back to defaultIdleWriteTimeout (2m).
+	// agent has hung and the client never disconnected. If no evidence
+	// of agent progress lands within this window the single wedged turn
+	// is cancelled so it cannot block a graceful drain forever; every
+	// other in-flight stream keeps draining.
+	//
+	// It is acp-kit's client.TurnLivenessConfig.NoProgressTimeout under
+	// this relay's older name, and progress is acp-kit's client.IsProgress
+	// — agent message and thought chunks, tool_call and tool_call_update
+	// — evaluated on the RAW session/update. So a legitimately
+	// long-running tool is never cut, an agent thinking with thoughts
+	// hidden is never cut, and a hung agent whose harness keeps emitting
+	// plans or whose spinner keeps ticking IS still detected.
+	//
+	// <=0 falls back to defaultIdleWriteTimeout (2m).
 	IdleWriteTimeout time.Duration
 	// StallThreshold is how long the SSE stream may go without a
 	// user-visible content write before the heartbeat re-arms the
@@ -195,7 +203,7 @@ type Handler struct {
 
 	// The hooks below are test-only seams, nil in production. They are
 	// per-Handler fields for the SAME reason as fastCancelThreshold:
-	// goroutines that read them (the disconnect watcher, watchIdle) can
+	// goroutines that read them (the disconnect watcher, watchTurn) can
 	// outlive their test, so a shared package global would race with a
 	// later test's assignment. Tests set them on their own Handler before
 	// issuing the request; the goroutines that read them are spawned
@@ -205,12 +213,12 @@ type Handler struct {
 	// absorb/cancel decision, so a test can release a blocked turn only
 	// AFTER the decision is latched.
 	absorbDecidedHook func()
-	// idleWriteCancelHook fires after watchIdle cancels a wedged turn.
+	// idleWriteCancelHook fires after watchTurn reports that the
+	// liveness watcher cut a wedged turn.
 	idleWriteCancelHook func()
-	// idleTickHook fires at the END of every watchIdle tick that did not
-	// cancel — i.e. after the absorbed turn's pending marker has been
-	// refreshed. Tests wait on it instead of sleeping to observe a
-	// refresh.
+	// idleTickHook fires at the END of every watchTurn tick — i.e.
+	// after the absorbed turn's pending marker has been refreshed.
+	// Tests wait on it instead of sleeping to observe a refresh.
 	idleTickHook func()
 	// heartbeatTickHook is forwarded to each sink's heartbeat goroutine
 	// (see newSink); it fires after every heartbeat tick so spinner tests
@@ -499,29 +507,36 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// Decouple the prompt turn from the request ctx: Poe drops the
 	// bot-facing HTTP connection pre-output on a transport drop, which
 	// would otherwise abort the in-flight turn. Run on a context that
-	// drops the caller's cancellation. By default there is NO absolute
-	// deadline — an actively-progressing turn is never cut; the
-	// progress-resetting idle-write backstop (watchIdle, below) is the
-	// sole guard and cancels only a genuinely wedged turn. An operator
-	// may opt into a hard wall-clock ceiling via TurnTimeout>0.
+	// drops the caller's cancellation, bounded by acp-kit's turn-liveness
+	// watcher — the same construct slack-acp and zulip-acp run, so the
+	// three relays share one implementation of "the agent went quiet"
+	// rather than three clocks that drift apart.
+	//
+	// By default there is NO absolute deadline: an actively-progressing
+	// turn is never cut, and the progress-resetting no-progress window
+	// (IdleWriteTimeout) is the sole guard. An operator may opt into a
+	// hard wall-clock ceiling via TurnTimeout>0.
 	//
 	// Every end carries a CAUSE, using acp-kit's sentinels so all three
 	// relays name the same conditions: client.ErrNoProgress for the
 	// wedge cut, client.ErrTurnCeiling for the opt-in ceiling, and a
-	// plain context.Canceled for a client-driven stop. The router reads
-	// context.Cause to decide what (if anything) to tell the user — a
-	// turn that ends because the agent went quiet must say so, while a
-	// Poe transport drop must still finalise silently so the redrive can
-	// carry the real answer.
-	base := context.WithoutCancel(ctx)
-	stopCeiling := context.CancelFunc(func() {})
-	if h.cfg.TurnTimeout > 0 {
-		base, stopCeiling = context.WithDeadlineCause(base,
-			time.Now().Add(h.cfg.TurnTimeout), turnCeilingCause{ceiling: h.cfg.TurnTimeout})
-	}
-	defer stopCeiling()
-	turnCtx, cancelTurn := context.WithCancelCause(base)
-	defer cancelTurn(nil)
+	// plain context.Canceled for a client-driven stop. Our own cause
+	// types ride on top of those sentinels to carry the numbers (see
+	// turncause.go). The router reads context.Cause to decide what (if
+	// anything) to tell the user — a turn that ends because the agent
+	// went quiet must say so, while a Poe transport drop must still
+	// finalise silently so the redrive can carry the real answer.
+	live, turnCtx, stopTurn := client.StartTurnLiveness(context.WithoutCancel(ctx), client.TurnLivenessConfig{
+		NoProgressTimeout: h.cfg.IdleWriteTimeout,
+		MaxTurnDuration:   h.cfg.TurnTimeout,
+		NoProgressCause:   noProgressCause{window: h.cfg.IdleWriteTimeout},
+		TurnCeilingCause:  turnCeilingCause{ceiling: h.cfg.TurnTimeout},
+	})
+	defer stopTurn()
+	// The watcher is fed from the sink, which was built before the turn
+	// context existed. Attach it now, before Prompt — nothing calls
+	// sink.progress until the router's drain picks up this turn.
+	s.attachLiveness(live)
 
 	rec := &answerRecorder{inner: s}
 
@@ -587,17 +602,12 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		}
 	}()
 
-	// Wedged-turn backstop. The agent has hung if no user-visible byte
-	// lands within IdleWriteTimeout while the client is still connected
-	// (a caller-cancel is handled by the watcher above). When it fires we
-	// cancel this one turn so it cannot block a graceful drain forever;
-	// every other in-flight stream keeps draining. Heartbeat keepalives
-	// do not reset the idle clock (see sink.touch), so the spinner
-	// ticking does not mask a wedge. Exits when done is closed.
+	// Absorbed-turn liveness heartbeat, and the reporter for a turn the
+	// liveness watcher cut. Exits when the turn completes (done closed).
 	idleDone := make(chan struct{})
 	go func() {
 		defer close(idleDone)
-		h.watchIdle(cancelTurn, s, done, req.ConversationID, key, &absorbed)
+		h.watchTurn(turnCtx, done, req.ConversationID, key, &absorbed)
 	}()
 
 	err = h.cfg.Router.Prompt(turnCtx, req.ConversationID, req.UserID, turns, opts, rec)
@@ -621,42 +631,46 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	}
 }
 
-// watchIdle is the wedged-turn backstop goroutine AND the absorbed-turn
-// liveness heartbeat. Both derive from the same clock, so they share one
-// ticker rather than running two goroutines per turn.
+// watchTurn is the absorbed-turn liveness heartbeat, plus the reporter
+// for a turn acp-kit's liveness watcher cut.
 //
-// Backstop: it polls the sink's idle clock and cancels the turn if no
-// user-visible byte (or tool-call progress) has landed within
-// IdleWriteTimeout. It exits as soon as the turn completes (done closed)
-// — so a turn that ends normally, or is cut by an opt-in TurnTimeout
-// ceiling, never trips the idle path. Handler.idleWriteCancelHook is a
-// test-only seam fired when the idle path cancels.
+// Heartbeat: while this turn is ABSORBED, every tick republishes its
+// pending marker, extending it by another pendingTTL. A cut turn stops
+// refreshing — this goroutine returns the moment turnCtx settles — so
+// its marker expires, releasing any redrive waiting on it instead of
+// pinning it forever. The refresh is gated on absorbed: a marker left
+// behind by a DEAD worker must not be kept alive by an unrelated live
+// turn on the same key, which would never clear it.
 //
-// Heartbeat: while this turn is ABSORBED, every surviving tick
-// republishes its pending marker, extending it by another pendingTTL.
-// Reaching the republish already proves the turn is not wedged — the
-// idle check above cancels and returns first — so a wedged turn stops
-// refreshing and its marker expires, releasing any waiter instead of
-// pinning it. The refresh is gated on absorbed: a marker left behind by a
-// DEAD worker must not be kept alive by an unrelated live turn on the
-// same key, which would never clear it.
-func (h *Handler) watchIdle(cancelTurn context.CancelCauseFunc, s *sink, done <-chan struct{}, convID, key string, absorbed *atomic.Bool) {
+// Reporting: the cut itself belongs to client.TurnLiveness, which owns
+// the timers and cancels turnCtx with a cause. This is only where the
+// relay says so in its log — a wedged agent is the unexpected end, and
+// it was invisible in production before — and fires
+// Handler.idleWriteCancelHook, the test-only seam. The settled check
+// runs at the TOP of the loop rather than as a select case so it cannot
+// be lost to a random select when Prompt returns in the same instant:
+// the cut strictly precedes Prompt returning, so turnCtx has always
+// settled by the time done is closed.
+func (h *Handler) watchTurn(turnCtx context.Context, done <-chan struct{}, convID, key string, absorbed *atomic.Bool) {
 	t := time.NewTicker(idleCheckInterval(h.cfg.IdleWriteTimeout))
 	defer t.Stop()
 	for {
-		select {
-		case <-done:
-			return
-		case <-t.C:
-			if s.idleSince() >= h.cfg.IdleWriteTimeout {
+		if turnCtx.Err() != nil {
+			if errors.Is(context.Cause(turnCtx), client.ErrNoProgress) {
 				log.Printf("WARN idle-write timeout: conv=%s no agent output in %s — cutting wedged stream",
 					convID, h.cfg.IdleWriteTimeout)
-				cancelTurn(noProgressCause{window: h.cfg.IdleWriteTimeout})
 				if h.idleWriteCancelHook != nil {
 					h.idleWriteCancelHook()
 				}
-				return
 			}
+			return
+		}
+		select {
+		case <-done:
+			return
+		case <-turnCtx.Done():
+			// Loop round: reported at the top, in one place.
+		case <-t.C:
 			if absorbed.Load() {
 				h.answers.markPending(key)
 			}
@@ -667,8 +681,11 @@ func (h *Handler) watchIdle(cancelTurn context.CancelCauseFunc, s *sink, done <-
 	}
 }
 
-// idleCheckInterval derives the idle poll cadence from the timeout: a
-// quarter of the window, floored at 10ms so tiny test timeouts still tick.
+// idleCheckInterval derives the pending-marker refresh cadence from the
+// no-progress window: a quarter of it, floored at 10ms so tiny test
+// timeouts still tick. A quarter keeps four refreshes inside the window
+// a marker is allowed to live (pendingTTL is IdleWriteTimeout too), so a
+// single missed tick cannot expire a live turn's marker.
 func idleCheckInterval(timeout time.Duration) time.Duration {
 	if iv := timeout / 4; iv >= 10*time.Millisecond {
 		return iv
@@ -1177,14 +1194,12 @@ func (o *orderedWriter) isClosed() bool {
 type sink struct {
 	o *orderedWriter
 
-	// lastWrite is the unix-nano timestamp of the most recent event that
-	// counts as liveness for the WEDGE backstop: a user-visible write
-	// (Text/Replace/Error/Done/File) OR a tool_call session/update
-	// (touchTool). Heartbeat keepalive frames deliberately do NOT update
-	// it. A genuinely hung agent — no text AND no tool activity — trips
-	// IdleWriteTimeout even while its spinner keeps ticking; a
-	// legitimately long-running tool keeps resetting it and is not cut.
-	lastWrite atomic.Int64
+	// live is acp-kit's turn-liveness watcher for the turn currently
+	// running on this sink, attached by the handler once the turn
+	// context exists (attachLiveness) and nil on a sink with no turn —
+	// a redrive replaying a buffered answer, or a unit test. It owns the
+	// wedge clock: this relay keeps no second one.
+	live atomic.Pointer[client.TurnLiveness]
 
 	// lastContent is the unix-nano timestamp of the most recent
 	// user-visible content write ONLY. Tool_call updates do NOT reset it
@@ -1336,9 +1351,7 @@ func newSinkOpts(w *poeproto.SSEWriter, opts sinkOpts) *sink {
 		coExited:      make(chan struct{}),
 		flushHook:     opts.flushHook,
 	}
-	now := time.Now().UnixNano()
-	s.lastWrite.Store(now)
-	s.lastContent.Store(now)
+	s.lastContent.Store(time.Now().UnixNano())
 	if opts.heartbeat > 0 {
 		go s.heartbeat(opts.heartbeat)
 	} else {
@@ -1502,32 +1515,41 @@ func (s *sink) realWritten() bool {
 	return s.o.realWritten
 }
 
-// touch records a user-visible content write: it resets BOTH the wedge
-// clock (lastWrite) and the spinner-stall clock (lastContent), and
+// attachLiveness binds the turn's liveness watcher to this sink. Called
+// by the handler after the turn context is built and before Prompt, so
+// the router's drain goroutine never observes a half-written field.
+func (s *sink) attachLiveness(l *client.TurnLiveness) { s.live.Store(l) }
+
+// progress feeds the turn's liveness watcher, if one is attached. The
+// watcher is the ONLY wedge clock: acp-kit owns the timers, the window
+// and the causes, so the three relays cannot drift on what "the agent
+// went quiet" means.
+//
+// It is fed from two places, both on this per-turn sink. Progress is the
+// agent's own updates, classified by client.IsProgress on the RAW
+// session/update in the router's drain. touch is any user-visible write,
+// which is either one of those same agent chunks (a harmless second
+// call) or text the RELAY itself is emitting — a command reply, an auth
+// hint, a footer. Cutting a turn as "the agent is wedged" while the
+// relay is actively writing to the user would be a false positive, so
+// relay writes counting as liveness is correct, not merely historical.
+func (s *sink) progress() {
+	if l := s.live.Load(); l != nil {
+		l.Progress()
+	}
+}
+
+// touch records a user-visible content write: it feeds the wedge clock
+// (progress) and resets the spinner-stall clock (lastContent), and
 // clears any transient tool-activity spinner label — real output
 // supersedes a "running tool…" indicator. Heartbeat frames never call
 // it. Called by every user-visible write (Text/Replace/Error/Done/File).
 func (s *sink) touch() {
-	now := time.Now().UnixNano()
-	s.lastWrite.Store(now)
-	s.lastContent.Store(now)
+	s.progress()
+	s.lastContent.Store(time.Now().UnixNano())
 	s.statusMu.Lock()
 	s.activity = ""
 	s.statusMu.Unlock()
-}
-
-// touchTool records tool-call progress: it resets ONLY the wedge clock
-// (lastWrite), so a legitimately long-running tool is not cut by the
-// idle-write backstop. It deliberately does NOT reset lastContent — a
-// running tool produces no SSE content, so the mid-turn keepalive
-// spinner must still re-arm to keep Poe from starving — and it does NOT
-// mark realWritten or emit body text.
-func (s *sink) touchTool() { s.lastWrite.Store(time.Now().UnixNano()) }
-
-// idleSince reports how long since the last wedge-liveness event
-// (user-visible write OR tool-call progress).
-func (s *sink) idleSince() time.Duration {
-	return time.Since(time.Unix(0, s.lastWrite.Load()))
 }
 
 // contentIdleSince reports how long since the last user-visible content
@@ -1580,12 +1602,12 @@ func (s *sink) File(url, contentType, name, inlineRef string) error {
 
 // Progress records evidence that the agent is working (acp-kit's
 // client.IsProgress, evaluated by the router on the raw session/update).
-// It resets ONLY the wedge clock: it must not mark realWritten, must not
+// It feeds ONLY the wedge clock: it must not mark realWritten, must not
 // reset the content-stall clock — a thinking agent produces no SSE
 // content, so the mid-turn keepalive spinner must still re-arm — and
 // must not disturb the transient tool label a concurrent ToolActivity
 // may have set.
-func (s *sink) Progress() { s.touchTool() }
+func (s *sink) Progress() { s.progress() }
 
 // ToolActivity signals agent tool-call progress (an ACP tool_call /
 // tool_call_update session/update). It resets the wedge clock so a
@@ -1595,7 +1617,7 @@ func (s *sink) Progress() { s.touchTool() }
 // and does not satisfy Poe's content-starvation keepalive (only the
 // spinner replace_response does).
 func (s *sink) ToolActivity(label string) {
-	s.touchTool()
+	s.progress()
 	s.statusMu.Lock()
 	s.activity = label
 	s.statusMu.Unlock()
