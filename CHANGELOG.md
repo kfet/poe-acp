@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-09-09
+
 ### Changed
 
 - **The relay no longer runs its own wedge clock.** It kept a private
