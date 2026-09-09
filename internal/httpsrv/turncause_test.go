@@ -168,3 +168,55 @@ func TestHandler_HiddenThinkingIsNotAWedge(t *testing.T) {
 	}
 	<-done
 }
+
+// TestHandler_AbsorbedWedgeNoteSurvivesTheRedrive covers the awkward
+// intersection of the two mechanisms.
+//
+// A pre-output transport drop is ABSORBED: the turn is decoupled, keeps
+// running with no client attached, and its answer is buffered for Poe's
+// redrive. If that decoupled turn then WEDGES, the cut's note is written
+// into the buffer like any other output — so the redrive serves the
+// explanation rather than an empty answer. Without the note this is the
+// worst case in the system: the user's question silently produces
+// nothing at all, twice.
+func TestHandler_AbsorbedWedgeNoteSurvivesTheRedrive(t *testing.T) {
+	a := &wedgeAgent{fakeAgent: &fakeAgent{}, returned: make(chan struct{})}
+	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Router: rtr, IdleWriteTimeout: 60 * time.Millisecond})
+	decided := make(chan struct{})
+	h.absorbDecidedHook = func() { close(decided) }
+
+	body := mustJSON(map[string]any{
+		"type": "query", "conversation_id": "c-absorb-wedge", "user_id": "u", "message_id": "req",
+		"query": []map[string]any{{"role": "user", "content": "hi", "message_id": "m1"}},
+	})
+
+	// Request 1: drop the connection before any output → absorbed.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req := httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body)).WithContext(ctx)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	cancel()
+	<-decided
+	// The agent is wedged, so the idle backstop — not the agent — ends
+	// the turn, and only then is the answer buffered.
+	<-a.returned
+	<-done
+
+	// Request 2: Poe's redrive must be told what happened.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/poe", bytes.NewReader(body)))
+	out := rec.Body.String()
+	if !strings.Contains(out, "it looks wedged") {
+		t.Fatalf("the redrive must serve the wedge note, not an empty answer:\n%s", out)
+	}
+	if !strings.Contains(out, "event: done") {
+		t.Fatalf("redrive missing done event:\n%s", out)
+	}
+}

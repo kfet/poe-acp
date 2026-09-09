@@ -513,8 +513,6 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// turn that ends because the agent went quiet must say so, while a
 	// Poe transport drop must still finalise silently so the redrive can
 	// carry the real answer.
-	var turnCtx context.Context
-	var cancelTurn context.CancelCauseFunc
 	base := context.WithoutCancel(ctx)
 	stopCeiling := context.CancelFunc(func() {})
 	if h.cfg.TurnTimeout > 0 {
@@ -522,7 +520,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 			time.Now().Add(h.cfg.TurnTimeout), turnCeilingCause{ceiling: h.cfg.TurnTimeout})
 	}
 	defer stopCeiling()
-	turnCtx, cancelTurn = context.WithCancelCause(base)
+	turnCtx, cancelTurn := context.WithCancelCause(base)
 	defer cancelTurn(nil)
 
 	rec := &answerRecorder{inner: s}
@@ -1580,13 +1578,6 @@ func (s *sink) File(url, contentType, name, inlineRef string) error {
 	return s.o.userFile(url, contentType, name, inlineRef)
 }
 
-// ToolActivity signals agent tool-call progress (an ACP tool_call /
-// tool_call_update session/update). It resets the wedge clock so a
-// legitimately long tool is not cut, and records the running tool's
-// label so the mid-turn keepalive spinner can show it. It MUST NOT mark
-// realWritten or emit body text: a tool_call is not user-visible content
-// and does not satisfy Poe's content-starvation keepalive (only the
-// spinner replace_response does).
 // Progress records evidence that the agent is working (acp-kit's
 // client.IsProgress, evaluated by the router on the raw session/update).
 // It resets ONLY the wedge clock: it must not mark realWritten, must not
@@ -1596,6 +1587,13 @@ func (s *sink) File(url, contentType, name, inlineRef string) error {
 // may have set.
 func (s *sink) Progress() { s.touchTool() }
 
+// ToolActivity signals agent tool-call progress (an ACP tool_call /
+// tool_call_update session/update). It resets the wedge clock so a
+// legitimately long tool is not cut, and records the running tool's
+// label so the mid-turn keepalive spinner can show it. It MUST NOT mark
+// realWritten or emit body text: a tool_call is not user-visible content
+// and does not satisfy Poe's content-starvation keepalive (only the
+// spinner replace_response does).
 func (s *sink) ToolActivity(label string) {
 	s.touchTool()
 	s.statusMu.Lock()
