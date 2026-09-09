@@ -504,14 +504,26 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// progress-resetting idle-write backstop (watchIdle, below) is the
 	// sole guard and cancels only a genuinely wedged turn. An operator
 	// may opt into a hard wall-clock ceiling via TurnTimeout>0.
+	//
+	// Every end carries a CAUSE, using acp-kit's sentinels so all three
+	// relays name the same conditions: client.ErrNoProgress for the
+	// wedge cut, client.ErrTurnCeiling for the opt-in ceiling, and a
+	// plain context.Canceled for a client-driven stop. The router reads
+	// context.Cause to decide what (if anything) to tell the user — a
+	// turn that ends because the agent went quiet must say so, while a
+	// Poe transport drop must still finalise silently so the redrive can
+	// carry the real answer.
 	var turnCtx context.Context
-	var cancelTurn context.CancelFunc
+	var cancelTurn context.CancelCauseFunc
+	base := context.WithoutCancel(ctx)
+	stopCeiling := context.CancelFunc(func() {})
 	if h.cfg.TurnTimeout > 0 {
-		turnCtx, cancelTurn = context.WithTimeout(context.WithoutCancel(ctx), h.cfg.TurnTimeout)
-	} else {
-		turnCtx, cancelTurn = context.WithCancel(context.WithoutCancel(ctx))
+		base, stopCeiling = context.WithDeadlineCause(base,
+			time.Now().Add(h.cfg.TurnTimeout), turnCeilingCause{ceiling: h.cfg.TurnTimeout})
 	}
-	defer cancelTurn()
+	defer stopCeiling()
+	turnCtx, cancelTurn = context.WithCancelCause(base)
+	defer cancelTurn(nil)
 
 	rec := &answerRecorder{inner: s}
 
@@ -630,7 +642,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 // pinning it. The refresh is gated on absorbed: a marker left behind by a
 // DEAD worker must not be kept alive by an unrelated live turn on the
 // same key, which would never clear it.
-func (h *Handler) watchIdle(cancelTurn context.CancelFunc, s *sink, done <-chan struct{}, convID, key string, absorbed *atomic.Bool) {
+func (h *Handler) watchIdle(cancelTurn context.CancelCauseFunc, s *sink, done <-chan struct{}, convID, key string, absorbed *atomic.Bool) {
 	t := time.NewTicker(idleCheckInterval(h.cfg.IdleWriteTimeout))
 	defer t.Stop()
 	for {
@@ -641,7 +653,7 @@ func (h *Handler) watchIdle(cancelTurn context.CancelFunc, s *sink, done <-chan 
 			if s.idleSince() >= h.cfg.IdleWriteTimeout {
 				log.Printf("WARN idle-write timeout: conv=%s no agent output in %s — cutting wedged stream",
 					convID, h.cfg.IdleWriteTimeout)
-				cancelTurn()
+				cancelTurn(noProgressCause{window: h.cfg.IdleWriteTimeout})
 				if h.idleWriteCancelHook != nil {
 					h.idleWriteCancelHook()
 				}
@@ -1575,6 +1587,15 @@ func (s *sink) File(url, contentType, name, inlineRef string) error {
 // realWritten or emit body text: a tool_call is not user-visible content
 // and does not satisfy Poe's content-starvation keepalive (only the
 // spinner replace_response does).
+// Progress records evidence that the agent is working (acp-kit's
+// client.IsProgress, evaluated by the router on the raw session/update).
+// It resets ONLY the wedge clock: it must not mark realWritten, must not
+// reset the content-stall clock — a thinking agent produces no SSE
+// content, so the mid-turn keepalive spinner must still re-arm — and
+// must not disturb the transient tool label a concurrent ToolActivity
+// may have set.
+func (s *sink) Progress() { s.touchTool() }
+
 func (s *sink) ToolActivity(label string) {
 	s.touchTool()
 	s.statusMu.Lock()

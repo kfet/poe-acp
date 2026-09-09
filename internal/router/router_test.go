@@ -273,6 +273,9 @@ type captureSink struct {
 	modelName     string
 	mood          string
 	plan          string
+	// progress counts client.IsProgress hits — every session/update that
+	// is evidence the agent is working, before any display filtering.
+	progress int
 	// tool-activity labels seen, in order (Solution B).
 	toolLabels []string
 	plans      [][]statusline.PlanEntry
@@ -325,6 +328,11 @@ func (s *captureSink) SetModelInfo(emoji, model string) {
 func (s *captureSink) SetStatus(mood, plan string) {
 	s.mu.Lock()
 	s.mood, s.plan = mood, plan
+	s.mu.Unlock()
+}
+func (s *captureSink) Progress() {
+	s.mu.Lock()
+	s.progress++
 	s.mu.Unlock()
 }
 func (s *captureSink) ToolActivity(label string) {
@@ -1665,6 +1673,7 @@ func (s *eventSink) Error(t, et string) error       { return nil }
 func (s *eventSink) Done() error                    { return nil }
 func (s *eventSink) SetModelInfo(string, string)    {}
 func (s *eventSink) SetStatus(string, string)       {}
+func (s *eventSink) Progress()                      {}
 func (s *eventSink) ToolActivity(string)            {}
 func (s *eventSink) SetPlan([]statusline.PlanEntry) {}
 

@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **A wedged turn now tells the user why it stopped.** The idle-write
+  backstop was a bare context cancel, indistinguishable from Poe dropping
+  the bot-facing connection mid-turn — so the router finalised SILENTLY
+  and the user simply watched their answer stop. The cut now carries a
+  cause (acp-kit's `client.ErrNoProgress`, or `client.ErrTurnCeiling` for
+  the opt-in `-turn-timeout` ceiling) and the stream says what happened.
+  A plain cancel still finalises quietly: that one IS the transport drop,
+  where the redrive carries the real answer.
+
+- **An agent thinking with `show_thinking` off is no longer cut as
+  wedged.** The wedge clock was reset only as a side effect of what the
+  router happened to RENDER, so hiding thoughts made a working agent look
+  hung — the same agent with `show_thinking` on survived. Progress is now
+  classified by `client.IsProgress` on the raw `session/update`, before
+  any display filtering.
+
 - **A wedged turn now actually stops the agent.** When the idle-write
   backstop cut a turn the relay only stopped WAITING for it: the
   `session/prompt` request was abandoned and the agent — never told
@@ -19,6 +35,14 @@
   one live host. Extraction now happens under the relay's own state dir
   and prunes both stale generations there and the legacy `$TMPDIR` ones.
   Via acp-kit `skills.LoadBuiltinIn` (v0.14.0).
+
+### Changed
+
+- The relay shares acp-kit's turn-liveness contract instead of its own
+  private copy of the design it donated: `client.IsProgress` is the sole
+  classifier for "the agent is working", and cuts are reported with the
+  kit's `ErrNoProgress` / `ErrTurnCeiling` causes — the same ones
+  slack-acp and zulip-acp classify on.
 
 ## [0.69.2] - 2026-09-07
 

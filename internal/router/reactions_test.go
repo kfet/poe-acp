@@ -361,6 +361,7 @@ func (s *orderingSink) Error(t, _ string) error {
 func (s *orderingSink) Done() error                    { s.send("done", ""); return nil }
 func (s *orderingSink) SetModelInfo(string, string)    {}
 func (s *orderingSink) SetStatus(string, string)       {}
+func (s *orderingSink) Progress()                      {}
 func (s *orderingSink) ToolActivity(string)            {}
 func (s *orderingSink) SetPlan([]statusline.PlanEntry) {}
 func (s *orderingSink) send(kind, text string) {

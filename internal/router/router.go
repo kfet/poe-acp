@@ -70,6 +70,22 @@ type ChunkSink interface {
 	// empty string means "drop this segment". May be called multiple
 	// times per turn — the renderer keeps the latest values.
 	SetStatus(mood, plan string)
+	// Progress signals that the agent is demonstrably doing work — the
+	// classifier is acp-kit's client.IsProgress, so this relay, slack-acp
+	// and zulip-acp all agree on what "progress" means rather than each
+	// re-deriving it. The HTTP layer resets the wedge idle clock, so a
+	// long-running tool (or a long think) is never cut as hung.
+	//
+	// It is deliberately separate from ToolActivity: progress is a
+	// PREDICATE over raw session/updates, evaluated before any
+	// user-facing filtering, while ToolActivity additionally carries a
+	// spinner label. An agent whose thoughts the user has switched off is
+	// still working, and must not be mistaken for a wedged one.
+	//
+	// Like ToolActivity it MUST NOT count as user-visible output: it
+	// neither marks realWritten nor satisfies Poe's content-starvation
+	// keepalive, and it must not disturb the spinner label.
+	Progress()
 	// ToolActivity is called on each ACP tool_call / tool_call_update
 	// session/update while a turn runs. It signals genuine progress (a
 	// running tool), so the HTTP layer resets the wedge idle clock — a
@@ -959,6 +975,16 @@ func drainProcessChunk(n acp.SessionNotification, td *turnDef, first *bool, chun
 		td.sink.SetStatus(mood, plan)
 	}
 	u := n.Update
+	// ONE classifier for "the agent is working", acp-kit's, evaluated on
+	// the RAW update before any user-facing filtering. Previously the
+	// wedge clock was reset only as a side effect of what the branches
+	// below happened to render, so an agent whose output the user had
+	// switched off (thoughts with show_thinking off) or whose chunks were
+	// empty looked identical to a hung one and was eventually cut.
+	// Filtering is a display choice; it is not evidence about the agent.
+	if client.IsProgress(u) {
+		td.sink.Progress()
+	}
 	var (
 		kind chunkKind
 		text string
@@ -1715,6 +1741,7 @@ func (d discardSink) Done() error                 { return nil }
 func (d discardSink) FirstChunk()                 {}
 func (d discardSink) SetModelInfo(string, string) {}
 func (d discardSink) SetStatus(string, string)    {}
+func (d discardSink) Progress()                   {}
 func (d discardSink) ToolActivity(string)         {}
 
 func (d discardSink) SetPlan([]statusline.PlanEntry) {}
@@ -1889,14 +1916,25 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 				return
 			}
 		}
-		// Client-driven cancellation: Poe dropped the bot-facing HTTP
-		// connection mid-turn (the chronic cold-start redrive race), which
-		// cancels req.ctx and surfaces here as context.Canceled — often
-		// wrapped by the agent as JSON-RPC -32800 "Request cancelled". The
-		// client has abandoned this attempt; Poe’s redrive carries the real
-		// answer. Emitting event:error here is exactly what Poe renders as the
-		// spurious "first response failed", so finalise quietly instead.
+		// The turn's context ended. WHY decides what the user sees, so
+		// classify on context.Cause, never on err — an agent cancelled
+		// mid-prompt reports it back as an ordinary JSON-RPC -32800
+		// "Request cancelled" carrying no Go sentinel.
+		//
+		//   - ErrNoProgress: the agent went quiet and the relay cut it.
+		//     Say so. Silence here reads as a lost answer, and the user
+		//     has no other way to learn the turn was abandoned.
+		//   - ErrTurnCeiling: the operator's opt-in wall-clock cap.
+		//   - anything else (a plain cancel): Poe dropped the bot-facing
+		//     HTTP connection mid-turn — the chronic cold-start redrive
+		//     race. The client has abandoned this attempt and the redrive
+		//     carries the real answer, so finalise QUIETLY: an
+		//     event:error here is exactly what Poe renders as the
+		//     spurious "first response failed".
 		if ctx.Err() != nil {
+			if note := turnEndNote(context.Cause(ctx)); note != "" {
+				_ = sink.Text(note)
+			}
 			_ = sink.Done()
 			req.err = err
 			return
@@ -1918,6 +1956,20 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 		_ = sink.Replace("_(cancelled)_")
 	}
 	_ = sink.Done()
+}
+
+// turnEndNote renders the user-visible note for a turn whose context
+// ended before the agent finished, or "" when the end must be SILENT.
+//
+// Only a relay-initiated cut speaks. The cause carries its own sentence
+// — the layer that owns the timeouts is the one that knows the numbers —
+// so this renders it rather than reinventing the wording. Everything
+// else (a plain cancel: Poe's mid-turn transport drop) stays quiet.
+func turnEndNote(cause error) string {
+	if errors.Is(cause, client.ErrNoProgress) || errors.Is(cause, client.ErrTurnCeiling) {
+		return "\n\n_(stopped: " + cause.Error() + ")_"
+	}
+	return ""
 }
 
 // applyOptions diffs incoming opts vs the session's last-applied options
