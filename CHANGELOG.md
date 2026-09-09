@@ -36,6 +36,12 @@
   and prunes both stale generations there and the legacy `$TMPDIR` ones.
   Via acp-kit `skills.LoadBuiltinIn` (v0.14.0).
 
+- **`make publish` no longer released a tag that excluded the notices it
+  had just regenerated.** It auto-commits a refreshed
+  `THIRD_PARTY_NOTICES.md`, but the tag had already been cut on the
+  parent commit, so the published release pointed one commit behind
+  `main`. The tag is now moved onto the notices commit when one is made.
+
 ### Changed
 
 - The relay shares acp-kit's turn-liveness contract instead of its own

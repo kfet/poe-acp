@@ -164,6 +164,10 @@ RELEASE_TAG := v$(shell cat VERSION 2>/dev/null || echo 0.0.0)
 publish: build notices
 	@if ! git diff --quiet -- $(NOTICE_FILE); then \
 		git add $(NOTICE_FILE) && git commit -m "chore: refresh THIRD_PARTY_NOTICES.md for $(RELEASE_TAG)"; \
+		if git rev-parse -q --verify refs/tags/$(RELEASE_TAG) >/dev/null; then \
+			echo "Moving $(RELEASE_TAG) onto the notices commit..."; \
+			git tag -f -a $(RELEASE_TAG) -m "release: $(RELEASE_TAG)" >/dev/null; \
+		fi; \
 	fi
 	@echo "Preflight $(RELEASE_TAG)..."
 	@BRANCH=$$(git rev-parse --abbrev-ref HEAD); \
