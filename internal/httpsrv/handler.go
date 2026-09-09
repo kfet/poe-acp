@@ -526,6 +526,11 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// anything) to tell the user — a turn that ends because the agent
 	// went quiet must say so, while a Poe transport drop must still
 	// finalise silently so the redrive can carry the real answer.
+	// The wedge window starts HERE, not at sink construction: preamble
+	// work and a redrive's wait for an in-flight turn return before this
+	// point and no longer count against it. TurnCeilingCause is passed
+	// unconditionally and is simply unused when TurnTimeout<=0, since
+	// MaxTurnDuration<=0 means no ceiling context is built at all.
 	live, turnCtx, stopTurn := client.StartTurnLiveness(context.WithoutCancel(ctx), client.TurnLivenessConfig{
 		NoProgressTimeout: h.cfg.IdleWriteTimeout,
 		MaxTurnDuration:   h.cfg.TurnTimeout,
@@ -646,11 +651,22 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 // the timers and cancels turnCtx with a cause. This is only where the
 // relay says so in its log — a wedged agent is the unexpected end, and
 // it was invisible in production before — and fires
-// Handler.idleWriteCancelHook, the test-only seam. The settled check
-// runs at the TOP of the loop rather than as a select case so it cannot
-// be lost to a random select when Prompt returns in the same instant:
-// the cut strictly precedes Prompt returning, so turnCtx has always
-// settled by the time done is closed.
+// Handler.idleWriteCancelHook, the test-only seam.
+//
+// Two facts make the report exact. First, while this goroutine runs,
+// turnCtx can settle ONLY through the liveness watcher: its parent is
+// WithoutCancel, and stopTurn is deferred past <-idleDone. So a settled
+// turnCtx always means a cut, never a client stop. Second, the cut
+// happens-before close(done) — Prompt returns BECAUSE of it — so a
+// goroutine parked in the select below is woken by turnCtx.Done() and
+// not by done. The settled check is nevertheless at the TOP of the loop
+// rather than being a select case: that is what covers the case where
+// both become ready while this goroutine is busy in the tick body,
+// where a select would pick between them at random.
+//
+// A late timer firing on a turn that already returned for another
+// reason is harmless: stopTurn has settled the watcher, so fire is a
+// no-op and there is nothing to report.
 func (h *Handler) watchTurn(turnCtx context.Context, done <-chan struct{}, convID, key string, absorbed *atomic.Bool) {
 	t := time.NewTicker(idleCheckInterval(h.cfg.IdleWriteTimeout))
 	defer t.Stop()

@@ -116,8 +116,8 @@ func (a *progressAgent) Prompt(ctx context.Context, sid acp.SessionId, _ []acp.C
 func TestHandler_NoTurnCeiling_ProgressKeepsTurnAlive(t *testing.T) {
 	a := &progressAgent{
 		fakeAgent: &fakeAgent{},
-		gap:       20 * time.Millisecond,
-		count:     12, // ~240ms total, far beyond the 50ms idle window
+		gap:       40 * time.Millisecond,
+		count:     12, // ~480ms total, far beyond the 200ms idle window
 		completed: make(chan struct{}),
 	}
 	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
@@ -126,7 +126,7 @@ func TestHandler_NoTurnCeiling_ProgressKeepsTurnAlive(t *testing.T) {
 	}
 	// No TurnTimeout (0 => unbounded). Short idle window: each emitted
 	// chunk must reset it, so the wedge backstop must NOT fire.
-	h := New(Config{Router: rtr, IdleWriteTimeout: 50 * time.Millisecond})
+	h := New(Config{Router: rtr, IdleWriteTimeout: 200 * time.Millisecond})
 
 	idleFired := make(chan struct{})
 	h.idleWriteCancelHook = func() { close(idleFired) }
@@ -197,14 +197,17 @@ func TestSink_WriteFeedsTheLivenessWatcher(t *testing.T) {
 	}
 
 	live, ctx, stop := client.StartTurnLiveness(context.Background(),
-		client.TurnLivenessConfig{NoProgressTimeout: 80 * time.Millisecond})
+		client.TurnLivenessConfig{NoProgressTimeout: 400 * time.Millisecond})
 	defer stop()
 	s.attachLiveness(live)
 
-	// Six writes at a third of the window: without a reset per write the
-	// turn would have been cut twice over by the end of the loop.
-	for i := 0; i < 6; i++ {
-		time.Sleep(25 * time.Millisecond)
+	// Eight writes at a quarter of the window, 800ms in total: without a
+	// reset per write the turn would have been cut twice over by the end
+	// of the loop. The margins are wide because a cut is now a TIMER, not
+	// a poll — it lands exactly on the window — so a loaded box must be
+	// able to stall 300ms between iterations without flaking.
+	for i := 0; i < 8; i++ {
+		time.Sleep(100 * time.Millisecond)
 		if err := s.Text("x"); err != nil {
 			t.Fatal(err)
 		}

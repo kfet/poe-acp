@@ -171,14 +171,15 @@ func TestSink_ToolActivityIsLivenessNotContent(t *testing.T) {
 	s.lastContent.Store(old)
 
 	live, ctx, stop := client.StartTurnLiveness(context.Background(),
-		client.TurnLivenessConfig{NoProgressTimeout: 80 * time.Millisecond})
+		client.TurnLivenessConfig{NoProgressTimeout: 400 * time.Millisecond})
 	defer stop()
 	s.attachLiveness(live)
 
-	// Tool activity well past the window: a long-running tool must not
-	// be cut as wedged.
-	for i := 0; i < 6; i++ {
-		time.Sleep(25 * time.Millisecond)
+	// Tool activity for twice the window: a long-running tool must not
+	// be cut as wedged. Wide margins for the same reason as
+	// TestSink_WriteFeedsTheLivenessWatcher.
+	for i := 0; i < 8; i++ {
+		time.Sleep(100 * time.Millisecond)
 		s.ToolActivity("running bash")
 		if ctx.Err() != nil {
 			t.Fatalf("a tool-active turn was cut as wedged after %d tool updates: %v", i+1, context.Cause(ctx))
@@ -277,8 +278,8 @@ func (a *toolPingAgent) Prompt(ctx context.Context, sid acp.SessionId, _ []acp.C
 func TestHandler_ToolActivityKeepsWedgeAlive(t *testing.T) {
 	a := &toolPingAgent{
 		fakeAgent: &fakeAgent{},
-		gap:       20 * time.Millisecond,
-		count:     12, // ~240ms of tool activity, far beyond the 50ms idle window
+		gap:       40 * time.Millisecond,
+		count:     12, // ~480ms of tool activity, far beyond the 200ms idle window
 		completed: make(chan struct{}),
 	}
 	rtr, err := router.New(router.Config{Agent: a, StateDir: t.TempDir(), SessionTTL: time.Hour})
@@ -287,7 +288,7 @@ func TestHandler_ToolActivityKeepsWedgeAlive(t *testing.T) {
 	}
 	// Short idle window; heartbeat off (this test is purely about the
 	// wedge clock, driven by tool_call resets).
-	h := New(Config{Router: rtr, IdleWriteTimeout: 50 * time.Millisecond})
+	h := New(Config{Router: rtr, IdleWriteTimeout: 200 * time.Millisecond})
 
 	idleFired := make(chan struct{})
 	h.idleWriteCancelHook = func() { close(idleFired) }

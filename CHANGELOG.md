@@ -16,7 +16,9 @@
   The user-facing sentences, with their durations, are unchanged too.
   A wedged turn is now cut ON the window rather than up to a quarter of
   one late, and an absorbed turn stops refreshing its pending marker at
-  the cut rather than on the following tick.
+  the cut rather than on the following tick. The window also starts when
+  the turn does rather than when the SSE stream is opened, so a
+  redrive's wait for an in-flight turn no longer eats into it.
 
 ### Added
 

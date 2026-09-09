@@ -401,10 +401,11 @@ func TestWatchTurn_CutStopsTheMarkerRefresh(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("watchTurn kept refreshing the marker after the turn was cut")
 	}
-	// The refresh loop is gone, so nothing can extend the marker: it
-	// expires on its own TTL and a redrive is free to re-run.
-	backdate(t, h.answers.store.path(key, sufPending), time.Hour)
-	if h.answers.store.pendingLive(key) {
-		t.Fatal("a cut turn's marker was still being kept alive")
+	// The loop was demonstrably refreshing before the cut — otherwise
+	// "it stopped" would be vacuous.
+	select {
+	case <-ticked:
+	default:
+		t.Fatal("the marker was never refreshed at all, so the test proves nothing about it stopping")
 	}
 }

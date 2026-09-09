@@ -11,7 +11,7 @@ adoption, and where it lives AFTER. Nothing may get weaker.
 | 2 | The cut actually stops the agent (`Prompt` ctx cancelled, prompt returns) | same test — unchanged |
 | 3 | With `TurnTimeout==0`, a turn emitting periodic text survives far past `IdleWriteTimeout` | `TestHandler_NoTurnCeiling_ProgressKeepsTurnAlive` — unchanged |
 | 4 | Poll cadence is `timeout/4`, floored at 10ms | `TestIdleCheckInterval` — unchanged (function now drives the pending-marker refresh only) |
-| 5 | `sink.Text` resets the wedge clock (`TestSink_IdleSince`) | `TestSink_WriteFeedsTheLivenessWatcher` — a real `client.TurnLiveness` is attached and repeated `Text` keeps the turn uncut. Stronger: it pins the effect, not an intermediate field. Also pins the nil-watcher (no turn attached) case is safe. |
+| 5 | `sink.Text` resets the wedge clock (`TestSink_IdleSince`) | `TestSink_WriteFeedsTheLivenessWatcher` — a real `client.TurnLiveness` is attached and repeated `Text` keeps the turn uncut. Also pins that the nil-watcher (no turn attached) case is safe. **Weaker in FORM:** `lastProgress` is kit-private, so the reset is observed through its effect over eight writes rather than per call — a reset that fired only every other write would pass here. The per-call reset is pinned in acp-kit by `TestTurnLiveness_ProgressResetsTheClock`. |
 
 ## internal/httpsrv/midturn_test.go
 
@@ -20,7 +20,7 @@ adoption, and where it lives AFTER. Nothing may get weaker.
 | 6 | Spinner re-arms multiple times mid-turn; exact SSE event sequence; accumulator never dropped | `TestSink_MidTurnSpinnerToggleSSE` — unchanged |
 | 7 | A keepalive spinner frame does NOT reset the wedge clock | `TestSink_SpinnerFrameDoesNotKeepAWedgedTurnAlive` — spinner frames are emitted continuously for >3× the no-progress window and the turn is still cut with `client.ErrNoProgress` |
 | 8 | A keepalive spinner frame does NOT reset the content-stall clock | same test — `lastContent` unchanged (mechanism untouched by Stage 2) |
-| 9 | `ToolActivity` resets the wedge clock | `TestSink_ToolActivityIsLivenessNotContent` — repeated `ToolActivity` over >2× the no-progress window leaves the turn uncut |
+| 9 | `ToolActivity` resets the wedge clock | `TestSink_ToolActivityIsLivenessNotContent` — repeated `ToolActivity` over 2× the no-progress window leaves the turn uncut. Weaker in form for the same reason as row 5, covered per-call by the kit's own tests. |
 | 10 | `ToolActivity` does NOT reset the content-stall clock | same test — `lastContent` unchanged |
 | 11 | `ToolActivity` records the spinner label | same test — unchanged assertion |
 | 12 | `ToolActivity` never marks `realWritten` | same test — unchanged assertion |
@@ -37,13 +37,25 @@ adoption, and where it lives AFTER. Nothing may get weaker.
 | 18 | A turn outliving `pendingTTL` keeps its marker live (refresh from the tick loop) and its redrive is SERVED, not re-run | `TestPending_LongTurnKeepsMarkerLiveAndRedriveIsServed` — unchanged; `idleTickHook` / `idleWriteCancelHook` seams both survive on `watchTurn` |
 | 19 | A dead owner stops refreshing, its marker expires, the redrive re-runs | `TestPending_DeadOwnersMarkerExpiresAndRedriveReruns` — unchanged |
 | 20 | A normally-connected turn publishes no marker | unchanged |
-| 21 | A WEDGED turn stops refreshing its marker | now structural and stronger: `watchTurn` returns on `turnCtx.Done()` instead of on the next poll tick, so refreshing stops at the cut rather than up to a quarter-window later. Pinned by `TestHandler_WedgedAbsorbedTurnStopsRefreshingItsMarker` |
+| 21 | A WEDGED turn stops refreshing its marker | now structural and stronger: `watchTurn` returns on `turnCtx.Done()` instead of on the next poll tick, so refreshing stops at the cut rather than up to a quarter-window later. Pinned by `TestWatchTurn_CutStopsTheMarkerRefresh` |
 
 ## internal/httpsrv/plan_test.go
 
 | # | Behaviour asserted (before) | After |
 |---|---|---|
 | 22 | `SetPlan` touches neither clock and never marks `realWritten` | `TestSink_PlanIsNotUserVisibleOutput` — `lastContent` unchanged, `realWritten` false, and a plan-only turn is still cut as wedged |
+
+## One assertion that has no successor, deliberately
+
+`TestSink_IdleSince` also implicitly asserted that the wedge clock starts
+fresh at SINK construction (`newSinkOpts` stamped `lastWrite`). That is
+no longer true and should not be: the window now starts at
+`StartTurnLiveness`, which the handler calls after the preamble and
+after the redrive's wait for an in-flight turn have both had their
+chance to return early. Preamble and redrive-wait time therefore no
+longer count against the wedge window — a strictly more lenient start
+point, and one the kit pins itself (`lastProgress: time.Now()` inside
+`StartTurnLiveness`). It is called out in the CHANGELOG.
 
 ## Stage 1 tests that must still pass
 
