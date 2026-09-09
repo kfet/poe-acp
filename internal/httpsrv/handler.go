@@ -526,6 +526,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// anything) to tell the user — a turn that ends because the agent
 	// went quiet must say so, while a Poe transport drop must still
 	// finalise silently so the redrive can carry the real answer.
+	//
 	// The wedge window starts HERE, not at sink construction: preamble
 	// work and a redrive's wait for an in-flight turn return before this
 	// point and no longer count against it. TurnCeilingCause is passed
