@@ -91,7 +91,7 @@ func TestAppendEnv(t *testing.T) {
 func TestBuildSkillsCatalog(t *testing.T) {
 	dir := t.TempDir()
 	// No host skills dir → just builtin.
-	cat := buildSkillsCatalog(filepath.Join(dir, "config.json"))
+	cat := buildSkillsCatalog(filepath.Join(dir, "config.json"), t.TempDir())
 	if !strings.Contains(cat, "<available_skills>") {
 		t.Fatalf("missing block: %s", cat)
 	}
@@ -104,7 +104,7 @@ func TestBuildSkillsCatalog(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(host, "SKILL.md"), body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cat = buildSkillsCatalog(filepath.Join(dir, "config.json"))
+	cat = buildSkillsCatalog(filepath.Join(dir, "config.json"), t.TempDir())
 	if !strings.Contains(cat, "extra") {
 		t.Fatalf("host skill missing: %s", cat)
 	}
@@ -112,7 +112,7 @@ func TestBuildSkillsCatalog(t *testing.T) {
 
 func TestSkillsCatalogProviderSeesHostSkillsAddedAfterStartup(t *testing.T) {
 	dir := t.TempDir()
-	provider := systemPromptProvider(filepath.Join(dir, "config.json"))
+	provider := systemPromptProvider(filepath.Join(dir, "config.json"), t.TempDir())
 	if got := provider(); strings.Contains(got, "host later") {
 		t.Fatalf("host skill appeared before it existed: %s", got)
 	}
@@ -158,7 +158,7 @@ func writeCfgWithPrompt(t *testing.T, prompt string) string {
 }
 
 func TestSystemPromptProviderPrependsPromptFile(t *testing.T) {
-	got := systemPromptProvider(writeCfgWithPrompt(t, "OP-INSTRUCTIONS"))()
+	got := systemPromptProvider(writeCfgWithPrompt(t, "OP-INSTRUCTIONS"), t.TempDir())()
 	op := strings.Index(got, "OP-INSTRUCTIONS")
 	cat := strings.Index(got, "<available_skills>")
 	if op < 0 || cat < 0 || op > cat {
@@ -176,7 +176,7 @@ func TestSystemPromptProviderDisableShortCircuits(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(`{"system_prompt_file":"prompt.md","disable_system_prompt":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := systemPromptProvider(cfgPath)(); got != "" {
+	if got := systemPromptProvider(cfgPath, t.TempDir())(); got != "" {
 		t.Fatalf("disabled should return empty, got %q", got)
 	}
 }
@@ -191,7 +191,7 @@ func TestSystemPromptProviderRereadsPromptFilePerCall(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(`{"system_prompt_file":"prompt.md"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	provider := systemPromptProvider(cfgPath)
+	provider := systemPromptProvider(cfgPath, t.TempDir())
 	if got := provider(); !strings.Contains(got, "V1") {
 		t.Fatalf("v1: %s", got)
 	}
@@ -210,7 +210,7 @@ func TestSystemPromptProviderResolvesAbsolutePromptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgPath := writeCfg(t, fmt.Sprintf(`{"system_prompt_file":%q}`, promptPath))
-	got := systemPromptProvider(cfgPath)()
+	got := systemPromptProvider(cfgPath, t.TempDir())()
 	if !strings.Contains(got, "ABS-PROMPT") {
 		t.Fatalf("absolute prompt path not honoured: %s", got)
 	}
@@ -220,7 +220,7 @@ func TestSystemPromptProviderMissingPromptFileFallsBackToCatalog(t *testing.T) {
 	// system_prompt_file points at a non-existent file → log + treat as
 	// empty; catalog still renders (boot already fails fast via main.go).
 	cfgPath := writeCfg(t, `{"system_prompt_file":"nope.md"}`)
-	got := systemPromptProvider(cfgPath)()
+	got := systemPromptProvider(cfgPath, t.TempDir())()
 	if !strings.Contains(got, "<available_skills>") {
 		t.Fatalf("catalog missing when prompt file absent: %s", got)
 	}
@@ -229,21 +229,21 @@ func TestSystemPromptProviderMissingPromptFileFallsBackToCatalog(t *testing.T) {
 func TestSystemPromptProviderNoPromptFileStillReturnsCatalog(t *testing.T) {
 	// Bare config (no system_prompt_file at all) → just the catalog.
 	cfgPath := writeCfg(t, `{}`)
-	got := systemPromptProvider(cfgPath)()
+	got := systemPromptProvider(cfgPath, t.TempDir())()
 	if !strings.Contains(got, "<available_skills>") {
 		t.Fatalf("catalog missing on bare config: %s", got)
 	}
 }
 
 func TestSystemPromptProviderMissingConfigStillReturnsCatalog(t *testing.T) {
-	got := systemPromptProvider(filepath.Join(t.TempDir(), "nope.json"))()
+	got := systemPromptProvider(filepath.Join(t.TempDir(), "nope.json"), t.TempDir())()
 	if !strings.Contains(got, "<available_skills>") {
 		t.Fatalf("catalog missing when config absent: %s", got)
 	}
 }
 
 func TestSystemPromptProviderBrokenConfigStillReturnsCatalog(t *testing.T) {
-	got := systemPromptProvider(writeCfg(t, `{not json`))()
+	got := systemPromptProvider(writeCfg(t, `{not json`), t.TempDir())()
 	if !strings.Contains(got, "<available_skills>") {
 		t.Fatalf("catalog missing on broken config: %s", got)
 	}
@@ -253,7 +253,7 @@ func TestSystemPromptProviderDisableWinsOverMissingFile(t *testing.T) {
 	// disable=true + configured file that doesn't exist → empty, no
 	// fall-through to a file read whose error would be logged.
 	cfgPath := writeCfg(t, `{"system_prompt_file":"nope.md","disable_system_prompt":true}`)
-	if got := systemPromptProvider(cfgPath)(); got != "" {
+	if got := systemPromptProvider(cfgPath, t.TempDir())(); got != "" {
 		t.Fatalf("disable should short-circuit before file read, got %q", got)
 	}
 }
@@ -404,14 +404,14 @@ func swap[T any](dst *T, v T) func() {
 }
 
 func TestBuildSkillsCatalog_LoaderErrors(t *testing.T) {
-	defer swap(&loadBuiltinSkills, func() ([]skills.Skill, error) {
+	defer swap(&loadBuiltinSkills, func(string) ([]skills.Skill, error) {
 		return nil, errors.New("builtin-fail")
 	})()
 	defer swap(&loadDirSkills, func(string) ([]skills.Skill, error) {
 		return nil, errors.New("host-fail")
 	})()
 	// Both loaders fail → merged is empty → returns "".
-	if got := buildSkillsCatalog(filepath.Join(t.TempDir(), "config.json")); got != "" {
+	if got := buildSkillsCatalog(filepath.Join(t.TempDir(), "config.json"), t.TempDir()); got != "" {
 		t.Fatalf("expected empty catalog on loader failure, got %q", got)
 	}
 }
@@ -523,5 +523,22 @@ func TestWatchAgentRestartDisabled(t *testing.T) {
 	case c := <-codes:
 		t.Fatalf("restart-disabled agent triggered exit(%d)", c)
 	default:
+	}
+}
+
+// TestResolveStateDir covers the three ways the state dir root is
+// chosen. It matters beyond tidiness: the builtin skill bundle is now
+// extracted under this directory (skills.LoadBuiltin), so --print-skills
+// and the worker must agree on it or the catalog the operator inspects
+// is not the one the agent is handed.
+func TestResolveStateDir(t *testing.T) {
+	if got := resolveStateDir("/flagged", "/cfg/config.json", true); got != "/flagged" {
+		t.Fatalf("flag should win, got %q", got)
+	}
+	if got := resolveStateDir("", "/cfg/config.json", true); got != filepath.Join("/cfg", "state") {
+		t.Fatalf("explicit config should site state beside it, got %q", got)
+	}
+	if got := resolveStateDir("", "/cfg/config.json", false); got != defaultStateDir() {
+		t.Fatalf("implicit config should use the XDG default, got %q", got)
 	}
 }

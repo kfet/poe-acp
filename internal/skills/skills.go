@@ -1,9 +1,9 @@
 // Package skills owns the poe-acp embedded skill bundle and re-exports
 // the catalog primitives from acp-kit/skills. The wrapper lives here so
 // the rest of the relay only depends on `internal/skills` regardless of
-// where the implementation moves; it also pins the `"poe-acp"` tmp-dir
+// where the implementation moves; it also pins the `"poe-acp"` extraction
 // prefix used by LoadBuiltin so multiple relays sharing a host never
-// collide in $TMPDIR.
+// collide.
 package skills
 
 import (
@@ -19,8 +19,16 @@ var bundleFS embed.FS
 type Skill = kitskills.Skill
 
 // LoadBuiltin walks the embedded poe-acp bundle and extracts builtin
-// SKILL.md files to a per-content-hash dir under $TMPDIR.
-func LoadBuiltin() ([]Skill, error) { return kitskills.LoadBuiltin(bundleFS, "poe-acp") }
+// SKILL.md files to a per-content-hash dir under base — pass the relay's
+// state dir, which the app owns and which outlives a process.
+//
+// base != "" also garbage collects: extractions of OTHER generations of
+// this bundle, both under base and in the legacy $TMPDIR location, are
+// removed. Without it the relay leaked one directory per released
+// version forever (11 of them on one live host).
+func LoadBuiltin(base string) ([]Skill, error) {
+	return kitskills.LoadBuiltinIn(base, bundleFS, "poe-acp")
+}
 
 // LoadDir walks <path>/*/SKILL.md and returns a fir-style catalog.
 func LoadDir(path string) ([]Skill, error) { return kitskills.LoadDir(path) }

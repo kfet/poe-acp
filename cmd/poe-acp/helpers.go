@@ -167,6 +167,21 @@ func appendEnv(env []string, kv string) []string {
 	return append(out, kv)
 }
 
+// resolveStateDir picks the per-conv state dir root: the flag when set,
+// else a `state` sibling of an EXPLICIT config file, else the XDG
+// default. Pure — the caller creates it. Shared by the worker and the
+// --print-skills path, which both need the builtin-skill extraction root
+// to be the same directory (see skills.LoadBuiltin).
+func resolveStateDir(stateDirFlag, cfgPath string, cfgExplicit bool) string {
+	if stateDirFlag != "" {
+		return stateDirFlag
+	}
+	if cfgExplicit {
+		return filepath.Join(filepath.Dir(cfgPath), "state")
+	}
+	return defaultStateDir()
+}
+
 // loadBuiltinSkills / loadDirSkills are overridable for tests.
 var (
 	loadBuiltinSkills = skills.LoadBuiltin
@@ -184,7 +199,7 @@ var (
 // — startup already validated both via config.Load and a fail-fast file
 // read in main.go, so this per-session path only surfaces post-boot
 // edits and prefers to keep live conversations going.
-func systemPromptProvider(cfgPath string) func() string {
+func systemPromptProvider(cfgPath, stateDir string) func() string {
 	return func() string {
 		cfg, _, err := config.Load(cfgPath)
 		if err != nil {
@@ -197,7 +212,7 @@ func systemPromptProvider(cfgPath string) func() string {
 		if err != nil {
 			log.Printf("system_prompt_file: read failed (continuing without operator prompt): %v", err)
 		}
-		return kitsysprompt.Compose("", text, buildSkillsCatalog(cfgPath))
+		return kitsysprompt.Compose("", text, buildSkillsCatalog(cfgPath, stateDir))
 	}
 }
 
@@ -229,8 +244,8 @@ func readSystemPromptFile(cfgDir, configuredPath string) (resolved, contents str
 // extraction failures degrade to whatever layers succeeded (the relay
 // is still usable without a catalog). Host skills with the same name
 // as a built-in override the built-in (the disable mechanism).
-func buildSkillsCatalog(cfgPath string) string {
-	builtin, err := loadBuiltinSkills()
+func buildSkillsCatalog(cfgPath, stateDir string) string {
+	builtin, err := loadBuiltinSkills(stateDir)
 	if err != nil {
 		log.Printf("skills: builtin load failed (continuing): %v", err)
 	}

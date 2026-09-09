@@ -167,8 +167,10 @@ func main() {
 		log.Printf("system_prompt_file: %s loaded (%d bytes)", resolved, len(text))
 	}
 
+	stateDir := resolveStateDir(*stateDirFlag, cfgPath, cfgExplicit)
+
 	if *printCatalog {
-		fmt.Print(buildSkillsCatalog(cfgPath))
+		fmt.Print(buildSkillsCatalog(cfgPath, stateDir))
 		return
 	}
 
@@ -190,14 +192,6 @@ func main() {
 	// the port bound if it were ever orphaned.
 	supervisor.SealInheritedFDs()
 
-	stateDir := *stateDirFlag
-	if stateDir == "" {
-		if cfgExplicit {
-			stateDir = filepath.Join(filepath.Dir(cfgPath), "state")
-		} else {
-			stateDir = defaultStateDir()
-		}
-	}
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		log.Fatalf("state dir: %v", err)
 	}
@@ -321,7 +315,7 @@ func main() {
 		SessionTTL:           *ttl,
 		SessionCreateTimeout: *sessCreateTO,
 		Defaults:             defaults,
-		SystemPromptProvider: systemPromptProvider(cfgPath),
+		SystemPromptProvider: systemPromptProvider(cfgPath, stateDir),
 		AuthErrorHint:        broker.OfferLogin,
 		Version:              version,
 		AgentCmd:             *agentCmd,
