@@ -101,14 +101,17 @@ func (a *answerRecorder) SetStatus(mood, plan string) {
 	a.inner.SetStatus(mood, plan)
 }
 
-// ToolActivity is transient liveness (wedge-clock reset + spinner
-// label), not user-visible content, so it is forwarded but NOT recorded:
-// a replayed answer is a completed turn where liveness is moot. The
-// durable per-tool_call body line is a plain Text call and IS recorded.
+// Progress is transient liveness — evidence the agent is working, used
+// only to reset the wedge clock — so it is forwarded but NOT recorded: a
+// replayed answer is a completed turn where liveness is moot.
 func (a *answerRecorder) Progress() {
 	a.inner.Progress()
 }
 
+// ToolActivity is transient too (wedge-clock reset + spinner label), not
+// user-visible content, so it is likewise forwarded but not recorded.
+// The durable per-tool_call body line is a plain Text call and IS
+// recorded.
 func (a *answerRecorder) ToolActivity(label string) {
 	a.inner.ToolActivity(label)
 }

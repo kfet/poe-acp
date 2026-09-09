@@ -92,3 +92,46 @@ func TestRunOneTurn_WedgeCutSpeaksToTheUser(t *testing.T) {
 		t.Fatal("the stream must still be sealed")
 	}
 }
+
+// TestDrainProcessChunk_ProgressIsIndependentOfRendering pins the
+// classifier at the layer that owns it: whether an update is EVIDENCE
+// the agent is working is decided by client.IsProgress on the raw
+// session/update, and is not affected by the display options that decide
+// whether the user sees anything.
+//
+// The thought chunk here renders nothing (show_thinking off) but must
+// still count. That divergence is the bug this classifier fixed: a
+// thinking agent used to be cut as wedged purely because its thoughts
+// were hidden.
+func TestDrainProcessChunk_ProgressIsIndependentOfRendering(t *testing.T) {
+	sink := &captureSink{}
+	td := &turnDef{sink: sink, showThinking: false, tools: newToolStates(Options{})}
+	first, mode := true, chunkNone
+
+	drainProcessChunk(acp.SessionNotification{Update: acp.SessionUpdate{
+		AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{Content: acp.TextBlock("hidden")},
+	}}, td, &first, &mode)
+
+	sink.mu.Lock()
+	progress, body := sink.progress, sink.text.String()
+	sink.mu.Unlock()
+	if progress != 1 {
+		t.Fatalf("a hidden thought is still progress: Progress calls=%d want 1", progress)
+	}
+	if body != "" {
+		t.Fatalf("a hidden thought must render nothing, got %q", body)
+	}
+
+	// A plan update is the counter-case: bookkeeping a wedged agent's
+	// harness keeps emitting, which must NOT reset the clock.
+	drainProcessChunk(acp.SessionNotification{Update: acp.SessionUpdate{
+		Plan: &acp.SessionUpdatePlan{},
+	}}, td, &first, &mode)
+
+	sink.mu.Lock()
+	progress = sink.progress
+	sink.mu.Unlock()
+	if progress != 1 {
+		t.Fatalf("a plan update must not count as progress: Progress calls=%d want 1", progress)
+	}
+}

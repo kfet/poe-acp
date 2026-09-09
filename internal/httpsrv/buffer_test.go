@@ -20,7 +20,6 @@ type recordSink struct {
 	emojis     []string
 	models     []string
 	statuses   [][2]string
-	progress   int
 	toolLabels []string
 	plans      [][]statusline.PlanEntry
 }
@@ -43,7 +42,7 @@ func (r *recordSink) SetModelInfo(e, m string) {
 	r.models = append(r.models, m)
 }
 func (r *recordSink) SetStatus(m, p string)            { r.statuses = append(r.statuses, [2]string{m, p}) }
-func (r *recordSink) Progress()                        { r.progress++ }
+func (r *recordSink) Progress()                        {}
 func (r *recordSink) ToolActivity(label string)        { r.toolLabels = append(r.toolLabels, label) }
 func (r *recordSink) SetPlan(p []statusline.PlanEntry) { r.plans = append(r.plans, p) }
 

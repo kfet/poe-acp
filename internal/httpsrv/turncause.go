@@ -30,12 +30,13 @@ func (c noProgressCause) Unwrap() error { return client.ErrNoProgress }
 
 // turnCeilingCause is client.ErrTurnCeiling carrying the operator's
 // opt-in absolute cap. Unlike noProgressCause this fires on a turn that
-// may have been working the whole time, so it names the knob rather than
-// implying the agent misbehaved.
+// may have been working the whole time, so it says the relay stopped it
+// rather than implying the agent misbehaved. It names no flag: the
+// reader is a Poe user, not the operator who set one.
 type turnCeilingCause struct{ ceiling time.Duration }
 
 func (c turnCeilingCause) Error() string {
-	return fmt.Sprintf("this turn hit the relay's %s ceiling (-turn-timeout)", c.ceiling)
+	return fmt.Sprintf("this turn hit the relay's %s limit", c.ceiling)
 }
 
 func (c turnCeilingCause) Unwrap() error { return client.ErrTurnCeiling }
