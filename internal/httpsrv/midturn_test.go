@@ -3,6 +3,7 @@ package httpsrv
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 )
@@ -106,59 +108,88 @@ func TestSink_MidTurnSpinnerToggleSSE(t *testing.T) {
 	}
 }
 
-// TestSink_SpinnerFrameDoesNotResetWedgeClock proves the invariant that
-// a keepalive spinner frame updates NEITHER the wedge clock (lastWrite)
-// NOR the content-stall clock (lastContent) — only real writes do — so a
-// genuinely hung agent still trips IdleWriteTimeout while its spinner
-// ticks.
-func TestSink_SpinnerFrameDoesNotResetWedgeClock(t *testing.T) {
+// TestSink_SpinnerFrameDoesNotKeepAWedgedTurnAlive proves the invariant
+// that a keepalive spinner frame is not liveness: it neither feeds the
+// wedge clock (so a hung agent is still cut while its spinner ticks) nor
+// resets the content-stall clock (so the spinner keeps re-arming).
+//
+// Replaces TestSink_SpinnerFrameDoesNotResetWedgeClock: the wedge half
+// is now asserted against its effect — the turn IS cut, with acp-kit's
+// ErrNoProgress — instead of against a relay-private timestamp field.
+func TestSink_SpinnerFrameDoesNotKeepAWedgedTurnAlive(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	s := newSink(w, 0, 0, nil)
 
+	live, ctx, stop := client.StartTurnLiveness(context.Background(),
+		client.TurnLivenessConfig{NoProgressTimeout: 60 * time.Millisecond})
+	defer stop()
+	s.attachLiveness(live)
+
 	if err := s.Text("hi"); err != nil {
 		t.Fatal(err)
 	}
-	lw := s.lastWrite.Load()
 	lc := s.lastContent.Load()
+
+	// Tick the spinner far faster than the window, for well past it. If
+	// a frame counted as liveness the turn would never be cut.
 	var spinTick int
-	s.emitSpinnerFrame(&spinTick)
-	s.emitSpinnerFrame(&spinTick)
-	if s.lastWrite.Load() != lw {
-		t.Fatalf("spinner frame reset the wedge clock: %d -> %d", lw, s.lastWrite.Load())
+	deadline := time.After(3 * time.Second)
+	for ctx.Err() == nil {
+		s.emitSpinnerFrame(&spinTick)
+		select {
+		case <-deadline:
+			t.Fatal("a spinner-only stream was never cut: keepalive frames are being counted as liveness")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if !errors.Is(context.Cause(ctx), client.ErrNoProgress) {
+		t.Fatalf("cut cause = %v, want client.ErrNoProgress", context.Cause(ctx))
 	}
 	if s.lastContent.Load() != lc {
 		t.Fatalf("spinner frame reset the content-stall clock: %d -> %d", lc, s.lastContent.Load())
 	}
 }
 
-// TestSink_ToolActivityResetsWedgeClockOnly proves Solution B's
-// invariants at the sink layer: a tool_call update resets the wedge
-// clock (so a long tool isn't cut) but NOT the content-stall clock (so
-// the keepalive still re-arms), records the spinner label, and never
-// marks realWritten (a tool_call is not user-visible content).
-func TestSink_ToolActivityResetsWedgeClockOnly(t *testing.T) {
+// TestSink_ToolActivityIsLivenessNotContent replaces
+// TestSink_ToolActivityResetsWedgeClockOnly. The relay's private wedge
+// clock is gone, so the first half is pinned against acp-kit's watcher —
+// a stream of tool_call updates keeps the turn alive — while the second
+// half (a tool_call does NOT satisfy Poe's content-starvation keepalive)
+// is unchanged, because lastContent/StallThreshold are unchanged. It
+// also keeps the label, realWritten and label-clearing assertions
+// verbatim.
+func TestSink_ToolActivityIsLivenessNotContent(t *testing.T) {
 	rec := httptest.NewRecorder()
 	w, _ := poeproto.NewSSEWriter(rec)
 	_ = w.Meta()
 	s := newSink(w, 0, time.Hour, nil)
 
-	// Backdate both clocks so a reset is observable.
+	// Backdate the content clock so a reset would be observable.
 	old := time.Now().Add(-time.Hour).UnixNano()
-	s.lastWrite.Store(old)
 	s.lastContent.Store(old)
 
-	s.ToolActivity("running bash")
+	live, ctx, stop := client.StartTurnLiveness(context.Background(),
+		client.TurnLivenessConfig{NoProgressTimeout: 80 * time.Millisecond})
+	defer stop()
+	s.attachLiveness(live)
+
+	// Tool activity well past the window: a long-running tool must not
+	// be cut as wedged.
+	for i := 0; i < 6; i++ {
+		time.Sleep(25 * time.Millisecond)
+		s.ToolActivity("running bash")
+		if ctx.Err() != nil {
+			t.Fatalf("a tool-active turn was cut as wedged after %d tool updates: %v", i+1, context.Cause(ctx))
+		}
+	}
 
 	if s.realWritten() {
 		t.Fatal("ToolActivity must not mark realWritten")
 	}
 	if got := s.snapshotActivity(); got != "running bash" {
 		t.Fatalf("activity label = %q, want %q", got, "running bash")
-	}
-	if s.lastWrite.Load() == old {
-		t.Fatal("ToolActivity must reset the wedge clock")
 	}
 	if s.lastContent.Load() != old {
 		t.Fatal("ToolActivity must NOT reset the content-stall clock")

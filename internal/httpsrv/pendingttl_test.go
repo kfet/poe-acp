@@ -7,7 +7,7 @@ package httpsrv
 // which is IdleWriteTimeout, the same "maximum tolerable silence" the
 // owner uses to declare its own turn wedged. Turns legitimately run for
 // tens of minutes (hence the 30m swap-drain deadline), so the owner
-// republishes its marker from watchIdle for as long as the turn is
+// republishes its marker from watchTurn for as long as the turn is
 // demonstrably alive. A wedged or killed owner stops refreshing and the
 // marker expires, releasing the waiter instead of pinning it.
 
@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/poe-acp/internal/router"
 )
 
@@ -119,11 +120,11 @@ func TestPending_SweepIsSuffixAware(t *testing.T) {
 }
 
 // THE FIX: a turn that outlives pendingTTL keeps its marker live, because
-// watchIdle republishes it while the turn is alive — and the redrive on
+// watchTurn republishes it while the turn is alive — and the redrive on
 // another generation is therefore still served instead of re-running.
 func TestPending_LongTurnKeepsMarkerLiveAndRedriveIsServed(t *testing.T) {
 	stateDir := t.TempDir()
-	// pendingTTL = 2s, so watchIdle ticks every 500ms. The turn stays
+	// pendingTTL = 2s, so watchTurn ticks every 500ms. The turn stays
 	// well inside the wedge window for the length of this test.
 	agentA := &absorbAgent{fakeAgent: &fakeAgent{}, entered: make(chan struct{}), release: make(chan struct{})}
 	agentB := &absorbAgent{fakeAgent: &fakeAgent{}, entered: make(chan struct{}), release: make(chan struct{})}
@@ -341,5 +342,69 @@ func TestPending_DeadClientWithNoOwnerStillRunsAndBuffers(t *testing.T) {
 	}
 	if _, ok := h.answers.take(answerKey("c1", "m1")); !ok {
 		t.Fatal("absorbed turn was not buffered for the redrive")
+	}
+}
+
+// TestWatchTurn_CutStopsTheMarkerRefresh pins the half of the
+// pending-marker contract that the wedge cut owns: an absorbed turn
+// republishes its marker on every tick, but the instant the liveness
+// watcher cuts the turn the loop returns, so a wedged owner stops
+// refreshing and its marker is allowed to expire — releasing any redrive
+// waiting behind it instead of pinning it forever.
+//
+// Before Stage 2 this was implicit in watchIdle's control flow (the cut
+// branch returned). It is now a return on turnCtx.Done(), which reacts
+// AT the cut rather than up to a quarter-window later, so it is worth
+// pinning directly.
+func TestWatchTurn_CutStopsTheMarkerRefresh(t *testing.T) {
+	h := newGenOpts(t, t.TempDir(), &fakeAgent{}, time.Minute, 40*time.Millisecond)
+
+	ticked := make(chan struct{}, 64)
+	h.idleTickHook = func() {
+		select {
+		case ticked <- struct{}{}:
+		default:
+		}
+	}
+	cut := make(chan struct{})
+	h.idleWriteCancelHook = func() { close(cut) }
+
+	// A turn with no progress at all: the watcher cuts it after the
+	// window, exactly as a wedged agent would be cut.
+	_, turnCtx, stop := client.StartTurnLiveness(context.Background(),
+		client.TurnLivenessConfig{
+			NoProgressTimeout: 40 * time.Millisecond,
+			NoProgressCause:   noProgressCause{window: 40 * time.Millisecond},
+		})
+	defer stop()
+
+	key := answerKey("c1", "m1")
+	h.answers.markPending(key)
+	var absorbed atomic.Bool
+	absorbed.Store(true)
+
+	done := make(chan struct{})
+	defer close(done)
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		h.watchTurn(turnCtx, done, "c1", key, &absorbed)
+	}()
+
+	select {
+	case <-cut:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the liveness watcher never cut a turn with no progress")
+	}
+	select {
+	case <-returned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("watchTurn kept refreshing the marker after the turn was cut")
+	}
+	// The refresh loop is gone, so nothing can extend the marker: it
+	// expires on its own TTL and a redrive is free to re-run.
+	backdate(t, h.answers.store.path(key, sufPending), time.Hour)
+	if h.answers.store.pendingLive(key) {
+		t.Fatal("a cut turn's marker was still being kept alive")
 	}
 }

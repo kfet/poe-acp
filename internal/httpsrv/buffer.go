@@ -289,7 +289,7 @@ func (b *answerBuffer) takeMem(key string) ([]recCall, bool) {
 // since Poe redrives seconds after the drop while the turn runs for
 // minutes — would see nothing and re-run from scratch.
 //
-// It doubles as the marker REFRESH: watchIdle re-marks on every tick for
+// It doubles as the marker REFRESH: watchTurn re-marks on every tick for
 // as long as the turn is demonstrably alive, which is what decouples the
 // marker's lifetime from AnswerTTL without pinning a waiter behind a
 // wedged or killed owner. See answerstore.go's package comment.
@@ -325,7 +325,7 @@ const (
 // this request's own client goes away — every exit is bounded, so a
 // redrive can never wedge on it.
 //
-// The marker IS refreshed while the owning turn is alive (watchIdle), so
+// The marker IS refreshed while the owning turn is alive (watchTurn), so
 // this wait tracks a genuinely long turn instead of timing out at
 // AnswerTTL. A wedged owner stops refreshing and the marker expires.
 func (b *answerBuffer) waitPending(ctx context.Context, key string) ([]recCall, waitOutcome) {
