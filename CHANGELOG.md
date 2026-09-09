@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-09-09
+
 ### Fixed
 
 - **A wedged turn now tells the user why it stopped.** The idle-write
