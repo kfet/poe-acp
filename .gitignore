@@ -4,3 +4,4 @@
 # also swallow internal/dist/, silently leaving the package untracked.
 /dist/
 /poe-acp
+STATUS-*.md
