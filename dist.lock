@@ -1,8 +1,8 @@
 {
-  "poe_acp": "0.72.0",
-  "fir": "1.10.2",
+  "poe_acp": "0.73.0",
+  "fir": "1.10.3",
   "exts": {
     "github.com/kfet/fir-exts": "78398e2a800977f21502a046fa326fd67d63e8d3"
   },
-  "resolved_at": "2026-09-15T07:18:42Z"
+  "resolved_at": "2026-09-15T23:07:36Z"
 }
