@@ -67,9 +67,11 @@ Point your Poe bot at `https://<host>/poe` (with any reverse proxy or
 For the personal bot fleet, **a bot IS a dist spec**: one declarative JSON
 file under `bots/<name>.json` fully describes a bot — host, supervisor,
 server flags, relay config, agent, fir extensions, credential *references*
-(never contents). `dist.lock` at the repo root pins the fleet-wide target
-versions: poe-acp, fir (released from `kfet/fir-dist`), each fir
-extension repo by git rev, and under `relays` the tracked sibling relays.
+(never contents). poe-acp's own wanted version is the repo's `VERSION`
+file — the release commit bumps it and cuts `vVERSION` in one step, so
+wanted ≡ latest release by construction and there is nothing to bump
+afterwards. `dist.lock` at the repo root pins only the EXTERNAL deps:
+fir (released from `kfet/fir-dist`) and each fir extension repo by git rev.
 
 Two tiers:
 
@@ -87,8 +89,8 @@ process, never converged, never counted as drift.
 ```bash
 scripts/converge.sh status           # READ-ONLY fleet sweep — what runs where, and is it stale?
 scripts/converge.sh <bot>            # dry run (default): diff of what would change
-scripts/converge.sh <bot> --apply    # make the host match bots/<bot>.json + dist.lock
-scripts/converge.sh --tot            # resolve latest-of-everything ONCE into dist.lock
+scripts/converge.sh <bot> --apply    # make the host match bots/<bot>.json + VERSION + dist.lock
+scripts/converge.sh --tot            # resolve latest fir + fir-exts ONCE into dist.lock
 ```
 
 **`status` is the closing step of every deploy, release and update.** It
@@ -107,9 +109,10 @@ Every overwrite leaves a `.bak-<timestamp>` next to the file. A second
 run reports "already converged" and does nothing.
 
 `tot` is a **verb, not a state** — no host is ever "rolling". `--tot`
-resolves the latest releases once, rewrites `dist.lock`, and stops; you
-review the diff, commit, then converge each bot from the recorded lock.
-Resolution never happens on a host, and `--tot` never converges.
+resolves the latest external deps once, rewrites `dist.lock`, and stops;
+you review the diff, commit, then converge each bot from the recorded
+lock. It does NOT resolve poe-acp itself — that is `VERSION`. Resolution
+never happens on a host, and `--tot` never converges.
 
 For testing without ssh: `--target-root DIR` applies against a local
 fake host root; `scripts/converge.sh render <bot> <config|execstart|unit|plist>`
@@ -600,7 +603,8 @@ context and is fine.
 poe-acp/
   bots/                    the fleet relay registry: one spec per relay instance
                            (poe-acp managed; slack-acp/zulip-acp tracked)
-  dist.lock                fleet-wide pinned versions (poe-acp, fir, ext revs)
+  VERSION                  poe-acp's own version = what converge installs
+  dist.lock                pinned EXTERNAL deps (fir, fir-exts revs)
   scripts/converge.sh      the only sanctioned way to touch a bot host
   cmd/poe-acp/             entry point + flag wiring
   docs/                    design doc + Poe protocol reference

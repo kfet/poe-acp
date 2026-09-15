@@ -2,7 +2,12 @@
 # converge.sh — the only sanctioned way to change a poe-acp bot host, and the
 # fleet-wide registry of every relay instance (poe-acp, slack-acp, zulip-acp).
 #
-# Reads bots/<instance>.json + dist.lock and makes the target host match.
+# Reads bots/<instance>.json + VERSION + dist.lock and makes the target host match.
+#
+# poe-acp's OWN wanted version is this repo's VERSION file — NOT the lock.
+# VERSION is bumped by the release commit that also cuts the tag, so
+# "wanted" ≡ "latest release" by construction and there is nothing to bump
+# afterwards. dist.lock pins only the EXTERNAL deps (fir, fir-exts).
 #
 # Usage:
 # #                                              wanted vs running, drift, unregistered
@@ -13,7 +18,8 @@
 #   converge.sh <bot> --target-root DIR        act on a local fake host rooted at DIR
 #                                              (no ssh; for testing)
 #   converge.sh --tot                          resolve latest-of-everything ONCE and
-#                                              rewrite dist.lock; NEVER converges
+#                                              rewrite dist.lock (fir + fir-exts
+#                                              only); NEVER converges
 #   converge.sh render <bot> <artefact>        render one artefact to stdout
 #                                              artefact: config | execstart | unit | plist
 #   converge.sh plan-recycle <supervisor> <unit_changed> <running> <version> \
@@ -39,6 +45,7 @@ set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BOTS_DIR="$REPO_ROOT/bots"
 LOCK="$REPO_ROOT/dist.lock"
+VERSION_FILE="$REPO_ROOT/VERSION"
 STAMP=$(date +%Y%m%d-%H%M%S)
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT
@@ -557,6 +564,22 @@ spec_state()   { jq -r '.state // "active"' "$1"; }
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# poe-acp's wanted version comes from this repo, not from dist.lock: the
+# release commit bumps VERSION and cuts vVERSION together, so the two can
+# never disagree. Refuse to converge to a version that was never tagged —
+# that would point the download URL at a release that does not exist.
+own_version() {
+  local v
+  [ -f "$VERSION_FILE" ] || die "missing $VERSION_FILE"
+  v=$(tr -d '[:space:]' <"$VERSION_FILE")
+  [ -n "$v" ] || die "$VERSION_FILE is empty"
+  if ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/v$v" >/dev/null 2>&1; then
+    git -C "$REPO_ROOT" ls-remote --tags "$POE_ACP_REPO" "refs/tags/v$v" 2>/dev/null \
+      | grep -q . || die "VERSION is $v but no tag v$v exists locally or on origin — cut the release first"
+  fi
+  printf '%s\n' "$v"
+}
+
 # Converge
 # ---------------------------------------------------------------------------
 converge() {
@@ -568,7 +591,7 @@ converge() {
   [ "$(spec_state "$SPEC")" = retire ] \
     && die "$bot is proposed for RETIREMENT, not convergence — see bots/$bot.json notes"
 
-  want_pa=$(jq -r '.poe_acp' "$LOCK")
+  want_pa=$(own_version)
   want_fir=$(jq -r '.fir' "$LOCK")
   want_ext=$(jq -r '.exts["github.com/kfet/fir-exts"]' "$LOCK")
 
@@ -934,24 +957,21 @@ head_rev() { # <repo-url>
 
 tot() {
   need git
-  local old_pa old_fir old_ext new_pa new_fir new_ext moved=0
+  local old_fir old_ext new_fir new_ext moved=0
   if [ -f "$LOCK" ]; then
-    old_pa=$(jq -r '.poe_acp' "$LOCK")
     old_fir=$(jq -r '.fir' "$LOCK")
     old_ext=$(jq -r '.exts["github.com/kfet/fir-exts"]' "$LOCK")
   else
-    old_pa=none; old_fir=none; old_ext=none
+    old_fir=none; old_ext=none
   fi
 
-  echo "== tot: resolving latest releases (this is the ONLY place resolution happens)"
-  new_pa=$(latest_tag "$POE_ACP_REPO")
+  echo "== tot: resolving latest EXTERNAL deps (this is the ONLY place resolution happens)"
+  echo "   poe-acp itself is not resolved here — its wanted version is VERSION ($(tr -d '[:space:]' <"$VERSION_FILE"))."
   new_fir=$(latest_tag "$FIR_DIST_REPO")
   new_ext=$(head_rev "https://github.com/kfet/fir-exts")
-  [ -n "$new_pa" ]  || die "could not resolve latest poe-acp tag"
   [ -n "$new_fir" ] || die "could not resolve latest fir-dist tag"
   [ -n "$new_ext" ] || die "could not resolve fir-exts HEAD"
 
-  [ "$old_pa" != "$new_pa" ]   && { note "poe-acp: $old_pa → $new_pa"; moved=1; }
   [ "$old_fir" != "$new_fir" ] && { note "fir:     $old_fir → $new_fir"; moved=1; }
   [ "$old_ext" != "$new_ext" ] && { note "fir-exts: ${old_ext:0:12} → ${new_ext:0:12}"; moved=1; }
 
@@ -961,9 +981,9 @@ tot() {
 
   [ "$moved" = 0 ] && { echo "== tot: lock already at latest, nothing moved"; return 0; }
 
-  jq -n --arg pa "$new_pa" --arg fir "$new_fir" --arg ext "$new_ext" \
+  jq -n --arg fir "$new_fir" --arg ext "$new_ext" \
         --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{poe_acp: $pa, fir: $fir, exts: {"github.com/kfet/fir-exts": $ext},
+        '{fir: $fir, exts: {"github.com/kfet/fir-exts": $ext},
           resolved_at: $at}' \
     >"$LOCK"
   echo "== tot: dist.lock rewritten. Review the diff, commit it, then converge each bot:"
