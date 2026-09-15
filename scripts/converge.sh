@@ -5,8 +5,7 @@
 # Reads bots/<instance>.json + dist.lock and makes the target host match.
 #
 # Usage:
-#   converge.sh status [host]                  READ-ONLY fleet sweep: what runs where,
-#                                              wanted vs running, drift, unregistered
+# #                                              wanted vs running, drift, unregistered
 #   converge.sh <bot>                          dry-run (default): show what would change
 #   converge.sh <bot> --apply                  actually converge the host
 #   converge.sh <bot> --local                  act on THIS machine directly (no ssh);
@@ -544,284 +543,18 @@ mech_label() { # <supervisor> <mech>
 }
 
 # ---------------------------------------------------------------------------
-# The registry: bots/*.json is one entry per RELAY INSTANCE, not per poe-acp
-# bot. Two tiers, because the three relays do not share a deploy story:
+# bots/*.json is one entry per poe-acp instance: its DEPLOY PAYLOAD.
 #
-#   managed (default, relay=poe-acp) — converge renders config+unit, fetches
-#       the binary and recycles the service. Full `converge.sh <name> --apply`.
-#   tracked (`"managed": false`)     — slack-acp and zulip-acp have their own
-#       repos, VERSION files, release flows and unit shapes. The registry knows
-#       host/unit/binary/wanted-version so `status` can report drift; applying
-#       is refused and points at that repo's own deploy skill. Re-implementing
-#       their units here would be the parallel system the registry exists to
-#       avoid.
-#
-# `"state": "retire"` marks an instance that is RUNNING but proposed for
-# removal. It is registered only so the sweep names it instead of reporting an
-# unknown process; it is never converged and never counted as drift.
-# ---------------------------------------------------------------------------
+#   bots/ describes ONLY poe-acp instances and only their deploy payload.
+#   Fleet-wide identity (every relay, every host) lives in the inventory at
+#   ~/sync/shared/fleet/inventory/, and `fleet.sh status` is the sweep.
 spec_relay()   { jq -r '.relay // "poe-acp"' "$1"; }
-spec_managed() { jq -r 'if .managed == false then 0 else 1 end' "$1"; }
 spec_state()   { jq -r '.state // "active"' "$1"; }
 
-# wanted_version <relay> — what the lock says this relay should be running.
-wanted_version() {
-  [ -f "$LOCK" ] || die "missing $LOCK"
-  case "$1" in
-    poe-acp) jq -r '.poe_acp // empty' "$LOCK" ;;
-    *)       jq -r --arg r "$1" '.relays[$r] // empty' "$LOCK" ;;
-  esac
-}
-
-# sup_unit_name <spec> — the supervisor's name for the instance.
-sup_unit_name() {
-  case "$(jq -r '.supervisor' "$1")" in
-    systemd-user) echo "$(jq -r '.unit' "$1").service" ;;
-    *)            jq -r '.unit' "$1" ;;
-  esac
-}
-
+# The fleet sweep ("what runs where, and is it stale?") is NOT here: it spans
+# all three relays, so it lives in ~/sync/shared/fleet/fleet.sh. Run
+# `fleet.sh status` to finish a deploy. converge.sh only deploys poe-acp.
 # ---------------------------------------------------------------------------
-# status — read-only fleet sweep
-#
-# Answers "what runs where, and is it stale?" from REAL supervisor state.
-# Rules that this verb exists to enforce:
-#   - presence is asked of systemd/launchd, never inferred from a binary or a
-#     glob (`ls ~/.local/bin/*-acp` ABORTS the command on a zsh host when it
-#     matches nothing, and the empty result reads as "not installed");
-#   - the version is read from the RUNNING image (/proc/<pid>/exe --version),
-#     never from the on-disk file — on rn the on-disk poe-acp is three
-#     releases ahead of every process using it, and on airm1 the running
-#     image is not even the same inode as the file at that path;
-#   - every acp-named unit the supervisor knows about is listed, so an
-#     instance that is not in the registry is reported as UNREGISTERED
-#     rather than silently invisible.
-# ---------------------------------------------------------------------------
-
-# drift_verdict <state> <supervisor_ver> <worker_vers-csv> <wanted>
-# Prints "<ok|DRIFT|DOWN|?>|<why>". Pure, so it is unit-testable via the
-# `plan-drift` subcommand.
-#
-# The workers serve traffic, so they decide; ONE worker on the wanted version
-# is current (the previous worker keeps draining for up to 30m after a swap).
-# The supervisor is consulted only when there are no workers at all. A version
-# we could not read is reported as "?" and never as drift — silence is not
-# evidence, and this verb must not manufacture a rollout.
-drift_verdict() {
-  local state=$1 supver=$2 wvers=$3 want=$4 v
-  case "$state" in
-    active|running) ;;
-    missing) echo "DOWN|no such unit on the host"; return 0 ;;
-    unreachable) echo "?|host unreachable"; return 0 ;;
-    *) echo "DOWN|unit is $state"; return 0 ;;
-  esac
-  [ -n "$want" ] || { echo "?|no wanted version in dist.lock"; return 0; }
-  if [ -n "$wvers" ]; then
-    local IFS=,
-    for v in $wvers; do
-      [ "$v" = "$want" ] && { echo "ok|a worker executes $want"; return 0; }
-    done
-    echo "DRIFT|no worker executes $want (workers: $wvers)"; return 0
-  fi
-  if [ -n "$supver" ]; then
-    [ "$supver" = "$want" ] \
-      && echo "ok|process executes $want" \
-      || echo "DRIFT|process executes $supver, wanted $want"
-    return 0
-  fi
-  echo "?|running version unreadable"
-}
-
-# status_probe_linux — remote script: one TSV line per acp-named systemd user
-# unit. Fields: unit, state, pid, exe, version, worker-versions(csv).
-status_probe_linux() {
-  cat <<'EOS'
-{ systemctl --user list-units --type=service --all --no-legend --plain 2>/dev/null | awk '{print $1}'
-  systemctl --user list-unit-files --no-legend --plain 2>/dev/null | awk '{print $1}'
-} | grep -E '\.service$' | grep -- acp | sort -u | while read -r u; do
-  st=$(systemctl --user show -p ActiveState --value "$u" 2>/dev/null)
-  pid=$(systemctl --user show -p MainPID --value "$u" 2>/dev/null)
-  case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
-  exe=''; ver=''; wv=''
-  if [ "$pid" -gt 0 ]; then
-    exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true); exe=${exe% (deleted)}
-    if [ -n "$exe" ]; then
-      ver=$("/proc/$pid/exe" --version 2>/dev/null | head -1 | awk '{print $NF}' || true)
-      for c in $(pgrep -P "$pid" 2>/dev/null || true); do
-        ce=$(readlink "/proc/$c/exe" 2>/dev/null || true); ce=${ce% (deleted)}
-        [ "${ce##*/}" = "${exe##*/}" ] || continue
-        cv=$("/proc/$c/exe" --version 2>/dev/null | head -1 | awk '{print $NF}' || true)
-        [ -n "$cv" ] && wv="$wv${wv:+,}$cv"
-      done
-    fi
-  fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$u" "${st:-unknown}" "$pid" "$exe" "$ver" "$wv"
-done
-EOS
-}
-
-# status_probe_darwin — same TSV for launchd labels.
-#
-# macOS has no /proc, so the running image cannot be executed to ask its
-# version. lsof gives the inode of the text image the process is ACTUALLY
-# running; only when that inode is still the file at that path may the on-disk
-# --version be quoted for the running process (marked "=disk"). A mismatch is
-# reported as an unreadable version with the image path — never as the
-# on-disk version, which is exactly the lie this sweep exists to prevent.
-status_probe_darwin() {
-  cat <<'EOS'
-launchctl list 2>/dev/null | awk '$3 ~ /acp/ {print $3}' | sort -u | while read -r l; do
-  out=$(launchctl print "gui/$(id -u)/$l" 2>/dev/null || true)
-  pid=$(printf '%s\n' "$out" | awk -F'= *' '/^[[:space:]]*pid =/{print $2; exit}')
-  case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
-  st=stopped
-  printf '%s\n' "$out" | grep -q 'state = running' && [ "$pid" -gt 0 ] && st=running
-  exe=''; ver=''; wv=''
-  if [ "$st" = running ]; then
-    exe=$(lsof -p "$pid" -Fdin 2>/dev/null \
-          | awk '$0=="ftxt"{t=1;next} t&&/^i/{i=substr($0,2);next} t&&/^n/{print substr($0,2)"\t"i; exit}')
-    ino=${exe#*	}; exe=${exe%%	*}
-    if [ -n "$exe" ] && [ "$ino" = "$(stat -f %i "$exe" 2>/dev/null)" ]; then
-      ver=$("$exe" --version 2>/dev/null | head -1 | awk '{print $NF}' || true)
-      [ -n "$ver" ] && ver="$ver=disk"
-    fi
-  fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$l" "$st" "$pid" "$exe" "$ver" "$wv"
-done
-EOS
-}
-
-# status — sweep every registered instance, plus anything acp-shaped the
-# supervisors know about that is NOT registered.
-status() {
-  local filter=${1:-} spec name host plat relay managed state unit
-  local hosts='' h probe out line
-  need jq
-  [ -f "$LOCK" ] || die "missing $LOCK"
-
-  SSH_OPTS="-o ConnectTimeout=8 -o BatchMode=yes"
-
-  # Which hosts do we have to talk to?
-  for spec in "$BOTS_DIR"/*.json; do
-    host=$(jq -r '.host' "$spec")
-    case " $hosts " in *" $host "*) ;; *) hosts="$hosts $host" ;; esac
-  done
-  hosts=${hosts# }
-  [ -n "$filter" ] && hosts=$(printf '%s\n' $hosts | grep -Fx "$filter" || printf '%s\n' $hosts)
-
-  # One ssh per host, all hosts in parallel; results cached in $TMPD by host.
-  for h in $hosts; do
-    plat=$(jq -rs --arg h "$h" 'map(select(.host==$h))[0].platform' "$BOTS_DIR"/*.json)
-    case "$plat" in darwin/*) probe=$(status_probe_darwin) ;; *) probe=$(status_probe_linux) ;; esac
-    (
-      HOST="$h"; LOCAL=0; TARGET_ROOT=""
-      if out=$(rsh "$probe" 2>/dev/null); then
-        printf '%s\n' "$out" >"$TMPD/host.$h"
-      else
-        : >"$TMPD/host.$h"; printf 'unreachable\n' >"$TMPD/unreachable.$h"
-      fi
-    ) &
-  done
-  wait
-
-  echo "== relay fleet — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "   registry: bots/*.json   lock: dist.lock (resolved $(jq -r .resolved_at "$LOCK"))"
-  echo "   versions are read from the RUNNING process, not the on-disk binary."
-  echo
-  local FMT='%-13s %-10s %-10s %-32s %-11s %-8s %s\n'
-  # shellcheck disable=SC2059  # FMT is a fixed local format string
-  printf "$FMT" INSTANCE RELAY HOST UNIT RUNNING WANTED STATUS
-  # shellcheck disable=SC2059
-  printf "$FMT" ------------- ---------- ---------- -------------------------------- ----------- -------- ------
-
-  local n_ok=0 n_drift=0 n_down=0 n_unk=0 n_retire=0 n_unreg=0
-  local reasons='' fixes='' quiet=''
-  local seen_units=''
-
-  for spec in $(printf '%s\n' "$BOTS_DIR"/*.json | sort); do
-    name=$(jq -r '.name' "$spec")
-    host=$(jq -r '.host' "$spec")
-    relay=$(spec_relay "$spec")
-    managed=$(spec_managed "$spec")
-    state=$(spec_state "$spec")
-    unit=$(sup_unit_name "$spec")
-    case " $hosts " in *" $host "*) ;; *) continue ;; esac
-    seen_units="$seen_units $host:$unit"
-
-    local ustate='missing' upid=0 uver='' uwv='' uexe=''
-    if [ -f "$TMPD/unreachable.$host" ]; then
-      ustate=unreachable
-    else
-      line=$(awk -F'\t' -v u="$unit" '$1==u {print; exit}' "$TMPD/host.$host" || true)
-      [ -n "$line" ] && IFS=$'\t' read -r _ ustate upid uexe uver uwv <<<"$line"
-    fi
-
-    local want verdict mark why run_disp want_disp
-    want=$(wanted_version "$relay")
-    verdict=$(drift_verdict "$ustate" "$uver" "$uwv" "$want")
-    mark=${verdict%%|*}; why=${verdict#*|}
-    # macOS has no /proc: say WHY the version is unreadable rather than
-    # leaving a bare "?" that reads like a probe bug.
-    if [ "$mark" = '?' ] && [ "$ustate" = running ] && [ -n "$uexe" ]; then
-      why="running image is $uexe, whose inode is no longer the file at that path — macOS has no /proc, so its version cannot be read; treat as DRIFT until recycled"
-    fi
-    run_disp=${uwv:-$uver}; run_disp=${run_disp:--}
-    want_disp=${want:--}
-
-    if [ "$state" = retire ]; then
-      mark=RETIRE; want_disp=-; n_retire=$((n_retire + 1))
-      reasons="$reasons\n  $name ($host): proposed for retirement — see bots/$name.json"
-    else
-      case "$mark" in
-        ok)    n_ok=$((n_ok + 1)) ;;
-        DRIFT) n_drift=$((n_drift + 1)); reasons="$reasons\n  $name ($host): $why"
-               if [ "$managed" = 1 ]; then
-                 fixes="$fixes\n  scripts/converge.sh $name --apply"
-               else
-                 fixes="$fixes\n  $name: deploy from the $relay repo ($(jq -r '.source.deploy_skill // "its deploy skill"' "$spec"))"
-               fi ;;
-        DOWN)  n_down=$((n_down + 1)); reasons="$reasons\n  $name ($host): $why" ;;
-        '?')   n_unk=$((n_unk + 1)); reasons="$reasons\n  $name ($host): $why" ;;
-      esac
-    fi
-    [ "$managed" = 1 ] || relay="$relay*"
-
-    # shellcheck disable=SC2059
-    printf "$FMT" "$name" "$relay" "$host" "$unit" "$run_disp" "$want_disp" "$mark"
-  done
-
-  # Anything the supervisors know about that the registry does not. Only
-  # ACTIVE units are listed as UNREGISTERED: the discovery grep also catches
-  # oneshot helpers (acp-tmux-reap, poe-acp-acptmux-watchdog) that are
-  # inactive between timer firings and are not relays. Inactive strays are
-  # still counted and named on one line so they are not silently dropped.
-  for h in $hosts; do
-    [ -f "$TMPD/host.$h" ] || continue
-    while IFS=$'\t' read -r u st pid exe ver wv; do
-      [ -n "$u" ] || continue
-      case " $seen_units " in *" $h:$u "*) continue ;; esac
-      case "$st" in
-        active|running)
-          n_unreg=$((n_unreg + 1))
-          # shellcheck disable=SC2059
-          printf "$FMT" '(none)' '?' "$h" "$u" "${wv:-${ver:--}}" '-' 'UNREGISTERED'
-          reasons="$reasons\n  $h:$u is RUNNING with no spec — add bots/<name>.json or retire it" ;;
-        *) quiet="$quiet $h:$u($st)" ;;
-      esac
-    done <"$TMPD/host.$h"
-  done
-
-  echo
-  echo "  $n_ok current · $n_drift drifting · $n_down down · $n_unk unreadable · $n_retire retire-proposed · $n_unreg unregistered"
-  echo "  * = tracked only (own repo/release flow); converge.sh will not --apply it"
-  [ -n "$reasons" ] && { echo; echo "  why:"; printf '%b\n' "${reasons#\\n}"; }
-  [ -n "$fixes" ] && { echo; echo "  to converge:"; printf '%b\n' "${fixes#\\n}"; }
-  [ -n "$quiet" ] && { echo; echo "  inactive acp-named units, not relays (ignored):$quiet"; }
-  for h in $hosts; do
-    [ -f "$TMPD/unreachable.$h" ] && echo "  !! host $h did not answer — its rows are unverified"
-  done
-  return 0
-}
 
 # ---------------------------------------------------------------------------
 # Converge
@@ -832,12 +565,6 @@ converge() {
 
   [ -f "$LOCK" ] || die "missing $LOCK"
 
-  # Tier guard. A tracked instance has no renderer here on purpose — see the
-  # registry comment above. Refuse loudly rather than half-converge it.
-  if [ "$(spec_relay "$SPEC")" != "poe-acp" ] || [ "$(spec_managed "$SPEC")" != 1 ]; then
-    die "$bot is a TRACKED instance ($(spec_relay "$SPEC")), not converge-managed.
-    'converge.sh status' reports its drift; deploy it from its own repo: $(jq -r '.source.repo // "see bots/'"$bot"'.json"' "$SPEC")"
-  fi
   [ "$(spec_state "$SPEC")" = retire ] \
     && die "$bot is proposed for RETIREMENT, not convergence — see bots/$bot.json notes"
 
@@ -1208,7 +935,6 @@ head_rev() { # <repo-url>
 tot() {
   need git
   local old_pa old_fir old_ext new_pa new_fir new_ext moved=0
-  local relay old_r new_r relays_json='{}'
   if [ -f "$LOCK" ]; then
     old_pa=$(jq -r '.poe_acp' "$LOCK")
     old_fir=$(jq -r '.fir' "$LOCK")
@@ -1232,34 +958,18 @@ tot() {
   # Tracked relays: their wanted version is their own repo's latest release
   # tag. tot records it so `status` can report drift for them too; it never
   # deploys them (they have no renderer here — see the registry comment).
-  # .relays holds the relays that are NOT poe-acp (which has its own top-level
-  # key). Select on the relay name, never on `.managed`: jq's `//` treats
-  # `false` as absent, so the old `(.managed // true) != true` evaluated to
-  # `true != true` for every managed:false spec, selected nothing, and silently
-  # rewrote .relays as {} -- blinding `status` for slack-acp and zulip-acp.
-  for relay in $(printf '%s\n' "$BOTS_DIR"/*.json \
-                 | xargs -r jq -r 'select((.relay // "poe-acp") != "poe-acp") | .relay' \
-                 | sort -u); do
-    old_r=$(jq -r --arg r "$relay" '.relays[$r] // "none"' "$LOCK" 2>/dev/null || echo none)
-    new_r=$(latest_tag "https://github.com/kfet/$relay")
-    [ -n "$new_r" ] || die "could not resolve latest $relay tag"
-    [ "$old_r" != "$new_r" ] && { note "$relay: $old_r → $new_r"; moved=1; }
-    relays_json=$(printf '%s' "$relays_json" | jq --arg r "$relay" --arg v "$new_r" '.[$r]=$v')
-  done
 
   [ "$moved" = 0 ] && { echo "== tot: lock already at latest, nothing moved"; return 0; }
 
   jq -n --arg pa "$new_pa" --arg fir "$new_fir" --arg ext "$new_ext" \
-        --argjson relays "$relays_json" \
         --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{poe_acp: $pa, fir: $fir, exts: {"github.com/kfet/fir-exts": $ext},
-          relays: $relays, resolved_at: $at}' \
+          resolved_at: $at}' \
     >"$LOCK"
   echo "== tot: dist.lock rewritten. Review the diff, commit it, then converge each bot:"
   echo "   git diff dist.lock"
   for f in "$BOTS_DIR"/*.json; do
-    [ "$(spec_relay "$f")" = poe-acp ] && [ "$(spec_managed "$f")" = 1 ] \
-      && [ "$(spec_state "$f")" = active ] \
+    [ "$(spec_state "$f")" = active ] \
       && echo "   scripts/converge.sh $(basename "$f" .json) --apply"
   done
   echo "   scripts/converge.sh status      # <- and finish HERE: the fleet, not one host"
@@ -1271,10 +981,6 @@ tot() {
 usage() {
   cat >&2 <<'EOF'
 usage:
-  converge.sh status [host]                  READ-ONLY fleet sweep: what runs where,
-                                             wanted vs running version, drift, and any
-                                             running relay that is NOT in the registry.
-                                             This is the closing step of every deploy.
   converge.sh <bot>                          dry-run (default): show what would change
   converge.sh <bot> --apply                  actually converge the host
   converge.sh <bot> --local                  act on THIS machine directly (no ssh)
@@ -1295,9 +1001,6 @@ usage:
   converge.sh match-image <basename> <paname>
                                              print whether that image basename
                                              counts as our binary (test hook)
-  converge.sh plan-drift <state> <supervisor_ver> <worker_vers-csv> <want>
-                                             print the status verdict for one
-                                             instance (test hook)
 EOF
   exit 1
 }
@@ -1305,9 +1008,6 @@ EOF
 [ $# -ge 1 ] || usage
 
 case "$1" in
-  status)
-    [ $# -le 2 ] || usage
-    status "${2:-}" ;;
   --tot)
     [ $# -eq 1 ] || die "--tot takes no other arguments (tot never converges)"
     tot ;;
@@ -1341,10 +1041,6 @@ case "$1" in
     ( paname=$3
       eval "$(image_match_snippet)"
       if is_pa_image "$2"; then echo match; else echo no-match; fi ) ;;
-  plan-drift)
-    # Test hook: exercise the status verdict without a host.
-    [ $# -eq 5 ] || usage
-    drift_verdict "$2" "$3" "$4" "$5" ;;
   -*) usage ;;
   *)
     BOT=$1; shift

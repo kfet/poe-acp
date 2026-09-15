@@ -84,11 +84,17 @@ brew info kfet/ai/poe-acp | head -5
 
 ## Finish on the FLEET, not on one host
 
+The sweep is NOT in this repo. It spans all three relays (poe-acp,
+slack-acp, zulip-acp), so it lives in `~/sync/shared/fleet/` alongside the
+inventory, and runs from any host — primary krpi2one, fallback rn. There is
+no fleet lock: a relay's wanted version is its `.pin`, else its repo's
+latest tag, so tagging IS the declaration and there is nothing to bump.
+
 **A deploy is done when the fleet is converged, not when a host is.** Close with
 the read-only sweep — always, every time:
 
 ```bash
-cd ~/src/poe-acp && ./scripts/converge.sh status
+~/sync/shared/fleet/fleet.sh status
 ```
 
 It reports every registered relay instance on every host — poe-acp, slack-acp

@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-09-15
+
+### Removed
+
+- **The fleet registry and `converge.sh status` move out of this repo.**
+  Three relays that release independently cannot share a desired-state
+  lock, and the `.relays` block proved it: it was stale on its first read
+  and then had to be bumped three entries at a time purely to stop
+  reporting drift that tagging had created. Fleet-wide identity now lives
+  in `~/sync/shared/fleet/inventory/`, and the sweep is `fleet.sh status`,
+  which resolves each relay's wanted version from `.pin` or its repo's
+  latest tag -- so there is nothing to bump and nothing to go stale.
+  Removed here: the `status` and `plan-drift` verbs, `dist.lock.relays`
+  (and its resolution in `--tot`), the `managed` flag and the two-tier
+  guard, and the slack-two / zulip-zbox specs. `converge.sh` is ~290 lines
+  smaller and once again does exactly one thing: deploy poe-acp.
+
+### Changed
+
+- `bots/*.json` is now what it always should have been -- deploy payload
+  for poe-acp instances only. `dist.lock` still pins poe-acp + fir +
+  fir-exts as the bundle converge installs together; it simply no longer
+  claims to know anything about the other two relays.
+
 ## [0.72.0] - 2026-09-15
 
 ### Added

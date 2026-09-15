@@ -441,75 +441,8 @@ esac
 grep -q -- "--user restart" "$fake4/.stub/log" \
   && bad "moved-aside image must not be hard restarted" \
   || ok "no restart issued for the moved-aside image"
-echo "== registry: every relay instance is covered, and the tiers are enforced"
-for f in "$ROOT"/bots/*.json; do
-  n=$(basename "$f" .json)
-  jq -e . "$f" >/dev/null 2>&1 && ok "$n: valid json" || bad "$n: invalid json"
-  [ "$(jq -r .name "$f")" = "$n" ] && ok "$n: .name matches filename" \
-    || bad "$n: .name is $(jq -r .name "$f"), filename says $n"
-  r=$(jq -r '.relay // "poe-acp"' "$f")
-  # Every relay a spec names must have a wanted version in the lock, or
-  # `status` can never answer "is it stale?" for it.
-  if [ "$r" = poe-acp ]; then w=$(jq -r '.poe_acp // empty' "$ROOT/dist.lock")
-  else w=$(jq -r --arg r "$r" '.relays[$r] // empty' "$ROOT/dist.lock"); fi
-  [ -n "$w" ] && ok "$n: lock pins $r = $w" || bad "$n: dist.lock has no wanted version for $r"
-done
-# The three live relays must all be represented — this is the whole point.
-for r in poe-acp slack-acp zulip-acp; do
-  jq -rs --arg r "$r" 'map(select((.relay // "poe-acp") == $r)) | length' "$ROOT"/bots/*.json \
-    | grep -qv '^0$' && ok "registry covers $r" || bad "registry has no $r instance"
-done
-# Tier guard: a tracked or retire-marked instance must never converge.
-for n in slack-two zulip-zbox firtest fir-air-test; do
-  if "$CONVERGE" "$n" >/dev/null 2>&1; then
-    bad "$n must refuse to converge"
-  else
-    ok "$n refuses to converge"
-  fi
-done
 
-echo "== tot: the .relays selector must see every tracked relay"
-# Regression: `(.managed // true) != true` looks right but jq's `//` treats
-# `false` as absent, so every managed:false spec evaluated to `true != true`
-# and the selector matched NOTHING -- tot then wrote "relays": {} and `status`
-# went blind for slack-acp and zulip-acp. Assert on the real bots/ specs.
-tot_relays=$(printf '%s\n' "$ROOT"/bots/*.json \
-  | xargs -r jq -r 'select((.relay // "poe-acp") != "poe-acp") | .relay' | sort -u)
-[ -n "$tot_relays" ] \
-  && ok "tot selector is non-empty ($(echo $tot_relays | tr '\n' ' '))" \
-  || bad "tot selector matched nothing -- .relays would be rewritten as {}"
-for r in slack-acp zulip-acp; do
-  printf '%s\n' "$tot_relays" | grep -qx "$r" \
-    && ok "tot selector covers $r" \
-    || bad "tot selector misses $r -- status cannot report its drift"
-done
-# The poe-acp instances marked managed:false (retire-proposed) must NOT leak
-# into .relays: poe-acp's wanted version lives in the top-level poe_acp key.
-printf '%s\n' "$tot_relays" | grep -qx poe-acp \
-  && bad "tot selector leaked poe-acp into .relays" \
-  || ok "tot selector excludes poe-acp (it has its own lock key)"
 
-echo "== status drift verdicts (the sweep's decision rule)"
-xdrift() { # <expected> <label> <args...>
-  local want=$1 label=$2; shift 2
-  local got; got=$("$CONVERGE" plan-drift "$@")
-  case "$got" in
-    "$want|"*) ok "$label ($got)" ;;
-    *) bad "$label: wanted $want, got $got" ;;
-  esac
-}
-#                                                       state      supver workers        want
-xdrift ok    "worker on the wanted version"             active     0.63.0 0.68.0         0.68.0
-xdrift ok    "a draining old worker does not count"     active     0.68.0 0.68.0,0.65.0  0.68.0
-xdrift DRIFT "every worker behind"                      active     0.68.0 0.65.0,0.60.0  0.68.0
-xdrift ok    "single process on the wanted version"     active     0.68.0 ''             0.68.0
-xdrift DRIFT "single process behind"                    active     0.56.0 ''             0.68.0
-xdrift DOWN  "an inactive unit is down, not drifting"   inactive   ''     ''             0.68.0
-xdrift DOWN  "a unit the host does not have"            missing    ''     ''             0.68.0
-xdrift '?'   "an unreachable host is never drift"       unreachable '' '' 0.68.0
-xdrift '?'   "unreadable version is never drift"        active     ''     ''             0.68.0
-xdrift '?'   "no wanted version in the lock"            active     0.5.0  ''             ''
-xdrift ok    "launchd running state"                    running    0.15.0 ''             0.15.0
 
 echo
 echo "passed=$pass failed=$fail"

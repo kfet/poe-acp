@@ -304,11 +304,17 @@ See the `update` skill (`.fir/skills/update/SKILL.md`) for the per-host upgrade 
 
 ## Finish on the FLEET, not on one host
 
+The sweep is NOT in this repo. It spans all three relays (poe-acp,
+slack-acp, zulip-acp), so it lives in `~/sync/shared/fleet/` alongside the
+inventory, and runs from any host — primary krpi2one, fallback rn. There is
+no fleet lock: a relay's wanted version is its `.pin`, else its repo's
+latest tag, so tagging IS the declaration and there is nothing to bump.
+
 **A deploy is done when the fleet is converged, not when a host is.** Close with
 the read-only sweep — always, every time:
 
 ```bash
-cd ~/src/poe-acp && ./scripts/converge.sh status
+~/sync/shared/fleet/fleet.sh status
 ```
 
 It reports every registered relay instance on every host — poe-acp, slack-acp
@@ -371,7 +377,7 @@ Paste its output into your reply. Canonical note:
 - [ ] `~/.config/poe-acp/config.json` exists with `bot_name` matching the Poe slug (or intentionally omitted; auto-refetch will be skipped).
 - [ ] `-introduction` flag set to the intended greeting (or intentionally omitted).
 - [ ] New bot has a `bots/<name>.json` spec, so converge owns it from now on.
-- [ ] **`./scripts/converge.sh status` run, and the FLEET shows no DRIFT and no UNREGISTERED row.**
+- [ ] **`fleet.sh status` run, and the FLEET shows no DRIFT and no UNREGISTERED row.**
 
 ## Multi-bot on one host
 
