@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [0.72.0] - 2026-09-15
+
+### Added
+
+- **`bots/` is now a fleet-wide relay registry, and `converge.sh status`
+  sweeps it.** The registry covers all three ACP relays rather than
+  poe-acp alone, in two tiers: *managed* instances, which converge can
+  `--apply`, and *tracked* ones (slack-acp, zulip-acp), whose drift is
+  reported here but whose deploys stay in their own repo. The new
+  read-only `status` verb reports every instance's running version
+  against `dist.lock`, reads that version from the RUNNING process via
+  `/proc/<pid>/exe --version` rather than the on-disk binary, and flags
+  any live acp-named unit with no spec as UNREGISTERED. `dist.lock`
+  gains a `.relays` section for the tracked relays' wanted versions.
+
+### Fixed
+
+- **`--tot` silently wiped the tracked relays out of `dist.lock`.** The
+  selector `(.managed // true) != true` reads as "pick the tracked
+  specs", but jq's `//` is a falsy operator, not null-coalescing: for a
+  spec with `"managed": false` it evaluates `false // true` to `true`,
+  then `true != true` to false. Every tracked spec was skipped, the
+  selector matched nothing, and `tot` rewrote the lock with
+  `"relays": {}` -- blinding `status` to slack-acp and zulip-acp drift
+  the first time it ran. Selection is now by relay name, the same rule
+  the converge tier guard already used, with a regression test the old
+  expression fails.
+
+### Changed
+
+- `dist.lock` resolved to fir 1.10.0, fir-exts 78398e2, slack-acp 0.7.0
+  and zulip-acp 0.29.3. poe-acp stays at 0.71.0, already latest.
+
 ## [0.71.0] - 2026-09-09
 
 ### Changed
