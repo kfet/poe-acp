@@ -468,6 +468,27 @@ for n in slack-two zulip-zbox firtest fir-air-test; do
   fi
 done
 
+echo "== tot: the .relays selector must see every tracked relay"
+# Regression: `(.managed // true) != true` looks right but jq's `//` treats
+# `false` as absent, so every managed:false spec evaluated to `true != true`
+# and the selector matched NOTHING -- tot then wrote "relays": {} and `status`
+# went blind for slack-acp and zulip-acp. Assert on the real bots/ specs.
+tot_relays=$(printf '%s\n' "$ROOT"/bots/*.json \
+  | xargs -r jq -r 'select((.relay // "poe-acp") != "poe-acp") | .relay' | sort -u)
+[ -n "$tot_relays" ] \
+  && ok "tot selector is non-empty ($(echo $tot_relays | tr '\n' ' '))" \
+  || bad "tot selector matched nothing -- .relays would be rewritten as {}"
+for r in slack-acp zulip-acp; do
+  printf '%s\n' "$tot_relays" | grep -qx "$r" \
+    && ok "tot selector covers $r" \
+    || bad "tot selector misses $r -- status cannot report its drift"
+done
+# The poe-acp instances marked managed:false (retire-proposed) must NOT leak
+# into .relays: poe-acp's wanted version lives in the top-level poe_acp key.
+printf '%s\n' "$tot_relays" | grep -qx poe-acp \
+  && bad "tot selector leaked poe-acp into .relays" \
+  || ok "tot selector excludes poe-acp (it has its own lock key)"
+
 echo "== status drift verdicts (the sweep's decision rule)"
 xdrift() { # <expected> <label> <args...>
   local want=$1 label=$2; shift 2
