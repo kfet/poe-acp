@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A release no longer leaves converge installing the previous version.**
+  `dist.lock.poe_acp` was a second, hand-maintained copy of this repo's own
+  version, and the release flow never bumped it: v0.73.0 shipped while
+  converge kept installing 0.72.0 (lock-driven) and the fleet sweep wanted
+  0.73.0 (tag-driven), costing a manual `--tot` + commit + full re-converge.
+  poe-acp's wanted version is now read from `VERSION`, which the release
+  commit bumps in the same step that cuts `vVERSION` — so wanted ≡ latest
+  release by construction, with nothing left to forget. `converge.sh` refuses
+  to converge to a `VERSION` that has no matching tag locally or on origin.
+
+### Changed
+
+- `dist.lock` pins only EXTERNAL deps now (fir, fir-exts); `--tot` no longer
+  resolves poe-acp and the `poe_acp` key is gone.
+
 ## [0.73.0] - 2026-09-15
 
 ### Removed

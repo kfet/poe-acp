@@ -7,10 +7,11 @@ description: Update poe-acp on a single host, or restart / reload a running bot.
 # Update Skill
 
 > **Fleet hosts: converge is the only sanctioned way to touch a host.** For a
-> bot with a spec in `bots/<name>.json`, version moves go through the lock:
-> `scripts/converge.sh --tot` (rewrites `dist.lock`; review + commit), then
-> `scripts/converge.sh <bot> --apply` per host. Do not hand-upgrade a fleet
-> host to an unlocked version. Converge also picks the recycle mechanism for
+> bot with a spec in `bots/<name>.json`, run `scripts/converge.sh <bot> --apply`
+> per host. A poe-acp version move needs no lock edit — the release commit
+> bumped `VERSION` and that IS the declaration. For fir / fir-exts moves run
+> `scripts/converge.sh --tot` first (rewrites `dist.lock`; review + commit).
+> Do not hand-upgrade a fleet host. Converge also picks the recycle mechanism for
 > you — graceful SIGHUP worker swap for a binary/config-only change on a
 > running ≥ 0.36.0 supervisor, hard restart only when the unit/plist changed,
 > the supervisor is down, or it predates the shim — and prints which and why.

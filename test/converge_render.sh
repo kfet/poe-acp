@@ -94,10 +94,11 @@ fi
 echo "== fake-target converge (dry-run, apply, idempotence)"
 fake="$tmpd/fakehost"
 mkdir -p "$fake/.local/bin"
-# Track the lock rather than a hardcoded version: this asserts "already
-# converged is detected", not "the fleet is pinned to X".
-LOCKED_POE_ACP=$(jq -r .poe_acp "$ROOT/dist.lock")
-printf '#!/bin/sh\necho %s\n' "$LOCKED_POE_ACP" >"$fake/.local/bin/poe-acp"
+# Track VERSION rather than a hardcoded version: this asserts "already
+# converged is detected", not "the fleet is pinned to X". poe-acp's wanted
+# version is VERSION (bumped by the release commit), never dist.lock.
+WANT_POE_ACP=$(tr -d "[:space:]" <"$ROOT/VERSION")
+printf '#!/bin/sh\necho %s\n' "$WANT_POE_ACP" >"$fake/.local/bin/poe-acp"
 chmod +x "$fake/.local/bin/poe-acp"
 
 out=$("$CONVERGE" two-fir --target-root "$fake")
@@ -106,7 +107,7 @@ case "$out" in
   *) bad "expected DRY RUN banner"; echo "$out" ;;
 esac
 case "$out" in
-  *"poe-acp $LOCKED_POE_ACP ✓"*) ok "stub binary version matches lock" ;;
+  *"poe-acp $WANT_POE_ACP ✓"*) ok "stub binary version matches VERSION" ;;
   *) bad "expected poe-acp version ✓"; echo "$out" ;;
 esac
 [ ! -f "$fake/.config/poe-acp/bot-two-fir/config.json" ] \
@@ -220,7 +221,7 @@ mkdir -p "$fake3/.local/bin" "$fake3/.stub"
 printf '%s\n' 999001 >"$fake3/.stub/worker"
 printf '%s\n' 999000 >"$fake3/.stub/sup"
 printf '%s\n' poe-acp >"$fake3/.stub/comm"
-printf '#!/bin/sh\necho %s\n' "$LOCKED_POE_ACP" >"$fake3/.local/bin/poe-acp"
+printf '#!/bin/sh\necho %s\n' "$WANT_POE_ACP" >"$fake3/.local/bin/poe-acp"
 cat >"$fake3/.local/bin/systemctl" <<'STUB'
 #!/bin/sh
 s="$HOME/.stub"
@@ -395,7 +396,7 @@ mkdir -p "$fake4/.local/bin" "$fake4/.stub"
 printf '%s\n' 999001 >"$fake4/.stub/worker"
 printf '%s\n' 999000 >"$fake4/.stub/sup"
 printf '%s\n' poe-acp.running-0.65.0 >"$fake4/.stub/comm"
-printf '#!/bin/sh\necho %s\n' "$LOCKED_POE_ACP" >"$fake4/.local/bin/poe-acp"
+printf '#!/bin/sh\necho %s\n' "$WANT_POE_ACP" >"$fake4/.local/bin/poe-acp"
 for f in systemctl pgrep ps; do cp "$fake3/.local/bin/$f" "$fake4/.local/bin/$f" 2>/dev/null || true; done
 cat >"$fake4/.local/bin/systemctl" <<'STUB'
 #!/bin/sh

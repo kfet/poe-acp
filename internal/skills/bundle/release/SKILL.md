@@ -24,6 +24,8 @@ If the user provides a version, use it. Otherwise, auto-determine:
 3. **Determine version** — follow the rules above if the user didn't specify one. State the version and proceed.
 4. **Update CHANGELOG** — rename `## [Unreleased]` to `## [VERSION] - YYYY-MM-DD` (today's date) and add a fresh empty `## [Unreleased]` section above it. Keep reverse-chronological order.
 5. **Update VERSION** — write the new version to the `VERSION` file (single line, trailing newline).
+   This is also what `scripts/converge.sh` installs on fleet hosts — there is no
+   separate lock entry to bump. `dist.lock` pins external deps only (fir, fir-exts).
 6. **Commit** — check `git status` first. Stage **all** uncommitted changes with `git add -A`, then `git commit -m "release: vVERSION"`.
 7. **Tag** — use `git tag -a vVERSION -m "release: vVERSION"` (pass `-m` to avoid opening an editor).
 8. **Install** — `make install` to install the new version locally into `$GOBIN`.
