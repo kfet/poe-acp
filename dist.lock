@@ -1,12 +1,12 @@
 {
   "poe_acp": "0.71.0",
-  "fir": "1.8.1",
+  "fir": "1.10.0",
   "exts": {
-    "github.com/kfet/fir-exts": "35e262cc8bbf9f0ab3bd1823108cfefbcffa8b8a"
+    "github.com/kfet/fir-exts": "78398e2a800977f21502a046fa326fd67d63e8d3"
   },
   "relays": {
-    "slack-acp": "0.5.0",
-    "zulip-acp": "0.15.0"
+    "slack-acp": "0.7.0",
+    "zulip-acp": "0.29.3"
   },
-  "resolved_at": "2026-09-09T04:36:08Z"
+  "resolved_at": "2026-09-15T01:00:30Z"
 }
