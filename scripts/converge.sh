@@ -1232,8 +1232,13 @@ tot() {
   # Tracked relays: their wanted version is their own repo's latest release
   # tag. tot records it so `status` can report drift for them too; it never
   # deploys them (they have no renderer here — see the registry comment).
+  # .relays holds the relays that are NOT poe-acp (which has its own top-level
+  # key). Select on the relay name, never on `.managed`: jq's `//` treats
+  # `false` as absent, so the old `(.managed // true) != true` evaluated to
+  # `true != true` for every managed:false spec, selected nothing, and silently
+  # rewrote .relays as {} -- blinding `status` for slack-acp and zulip-acp.
   for relay in $(printf '%s\n' "$BOTS_DIR"/*.json \
-                 | xargs -r jq -r 'select((.managed // true) != true) | .relay' \
+                 | xargs -r jq -r 'select((.relay // "poe-acp") != "poe-acp") | .relay' \
                  | sort -u); do
     old_r=$(jq -r --arg r "$relay" '.relays[$r] // "none"' "$LOCK" 2>/dev/null || echo none)
     new_r=$(latest_tag "https://github.com/kfet/$relay")
