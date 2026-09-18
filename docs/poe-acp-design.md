@@ -40,9 +40,13 @@ So: the relay is a pure **ACP client** that drives ACP-compliant agents
 
 ## Non-goals (v1)
 
-- **No multi-agent pool.** One fir process multiplexes all sessions. If it
-  crashes, all convs reconnect on the next Poe message. (A pool can be
-  added later if contention becomes visible.)
+- **No multi-agent pool BY DEFAULT.** One fir process multiplexes all
+  sessions; if it crashes, all convs reconnect on the next Poe message.
+  Since v0.75.0 an operator may opt in to one agent process PER
+  SELECTABLE HOST (`hosts[i].agent_cmd`) — see _Host placement_ below —
+  which is the only thing that can satisfy "run the agent over there",
+  because `fir --mode acp` cannot relocate itself. Sharding conv_ids
+  across N processes on the SAME host is still not a thing.
 - **No MCP server surface.** If a session wants MCP tools, the *agent*
   loads them from its own config (fir reads `.fir/mcp.json` in the cwd).
 - **No user auth / allowlist.** Any request with the correct
@@ -136,16 +140,19 @@ right thing with zero modifications.
 - Serial per conv: while a prompt is in flight for conv X, new inbound
   for X waits (mutex on `sessionState`). New Poe queries for **different**
   convs proceed concurrently.
-- Idle GC: sessions idle > `SESSION_TTL` removed from map. Agent proc
-  itself runs until relay shutdown (no pool).
+- Idle GC: sessions idle > `SESSION_TTL` removed from map. Each evicted
+  session is released on ITS OWN agent (a session id means nothing to
+  another process). Agent processes themselves run until relay shutdown;
+  a pooled one is replaced only if it dies.
 
 #### Host placement (`_meta.host`)
 
-The relay starts exactly ONE agent process, and that invariant is not
-negotiable: the boot-time model probe, the command broker and the
-drain/swap supervisor all assume it. Per-conversation host selection is
-therefore expressed as a hint to that single agent rather than as a pool
-of processes:
+Host selection has TWO shapes, and which one applies is per host entry.
+
+**(a) Hint semantics — the default.** The relay's single agent process
+serves the conversation and the chosen host travels to it as a
+create-time hint, for an agent that multiplexes placement itself
+(acp-tmux puts the session's tmux pane there):
 
 - Config declares a CURATED `hosts` list (+ optional `defaults.host`).
   Nothing is enumerated from `~/.ssh/config`.
@@ -164,6 +171,44 @@ of processes:
   is an absent/empty hint and the literal `"local"` would fail its
   allowlist. Without it, configuring any `hosts` would make the agent's
   own host unselectable.
+**(b) Per-host agent processes — opt-in.** A host entry that declares
+its own `agent_cmd` is served by its OWN child process
+(`internal/agentpool`), started lazily on the first conversation that
+resolves to it. This is what "let the user choose which host the agent
+runs on" actually requires: `fir --mode acp` cannot relocate a running
+process, so the process IS the placement.
+
+- `hosts[i].agent_cmd` is the command that reaches that host (e.g.
+  `ssh -T miki .local/bin/fir --mode acp`); `hosts[i].ssh_host` (default
+  `value`, or `"local"` for this machine) is the filesystem that agent
+  sees, used for the per-conv cwd and attachment staging/fetch-back.
+  `agent_cmd` on the reserved `"local"` entry is a config error — that
+  sentinel means the relay's own `--agent-cmd`.
+- A pooled host sends NO `_meta.host`: the hint would be a second,
+  contradictory answer to a question the process choice already settled,
+  and a real fir would reject it.
+- `sessionState.target` pins `{Agent, Provisioner}` at create time.
+  Every per-session call — prompt, cancel, set_model, list/resume,
+  release, cwd + attachment provisioning — goes through it. Only the
+  DEFAULT agent backs the relay-wide surfaces: the boot model probe and
+  thus `parameter_controls`, the `!command` broker, `!status`, and the
+  worker-recycle-on-agent-death. A pooled host whose model catalog
+  differs (or cannot be probed) is not a boot error; a model it lacks
+  fails that one `session/set_model`.
+- The pool never hands out a dead process: an exited agent is dropped
+  and respawned on the next conversation. Entries are otherwise never
+  reaped — they hold live ACP sessions the relay cannot re-home.
+- A pooled agent's death does NOT recycle the worker (only the default
+  agent's does), and a start failure is reported to the user as visible
+  assistant text — they chose that host, they can choose another.
+- The `poe` MCP server is NOT offered to a pooled agent on another
+  machine: it is reached through a unix socket in the relay's runtime
+  dir, which that agent cannot dial. The relay warns at boot rather than
+  handing over a tool surface that fails on every call. (Same constraint
+  applies to `agent_ssh_host`.)
+- With no `agent_cmd` anywhere, behaviour is exactly the pre-pool relay:
+  one process, hint semantics untouched.
+
 - **Create-time only.** `sessionState.host` is immutable for the life of
   the session. A live conversation whose dropdown changes keeps its
   session and gets a one-off notice (`Router.noteHostChange`): moving it
@@ -376,8 +421,10 @@ this (tailscaled/WireGuard path does not present the same reuse hazard).
 - **Embedded Tailscale Funnel mode.** `tsnet.Server` + `ListenFunnel`
   to get public HTTPS from the binary itself, no reverse proxy. Not
   needed for our deployment (we sit behind a node already on tailnet).
-- **Multi-agent pool.** Shard conv_ids across N fir processes for
-  resilience and isolation. Only if one process becomes a bottleneck.
+- **Multi-agent pool, same host.** Shard conv_ids across N fir
+  processes on one machine for resilience and isolation. Only if one
+  process becomes a bottleneck. (Per-HOST pooling is implemented — see
+  _Host placement_.)
 - **Remote ACP transport.** "ACP over ws" so agents can live on a
   different host than the relay.
 - **Attachments.** Implemented. See _Components → router → Attachments_

@@ -202,7 +202,7 @@ func TestBuildPromptBlocksPushesStagedAttachments(t *testing.T) {
 			{Name: "b.txt", URL: srv.URL + "/b", ContentType: "text/plain"},
 		},
 	}
-	blocks := r.buildPromptBlocks(t.Context(), cwd, []Turn{turn}, turn, "look", false, false)
+	blocks := r.buildPromptBlocks(t.Context(), stFor(r, cwd), []Turn{turn}, turn, "look", false, false)
 
 	_, pushes := p.snapshot()
 	if len(pushes) != 1 {
@@ -231,7 +231,7 @@ func TestBuildPromptBlocksNoPushWithoutStagedFiles(t *testing.T) {
 			{URL: ""}, // skipped entirely
 		},
 	}
-	r.buildPromptBlocks(t.Context(), t.TempDir(), []Turn{turn}, turn, "look", false, false)
+	r.buildPromptBlocks(t.Context(), stFor(r, t.TempDir()), []Turn{turn}, turn, "look", false, false)
 	if _, pushes := p.snapshot(); len(pushes) != 0 {
 		t.Fatalf("pushes = %v, want none", pushes)
 	}
@@ -251,7 +251,7 @@ func TestBuildPromptBlocksPushFailureDegradesToHTTPS(t *testing.T) {
 			{Name: "a.txt", URL: srv.URL + "/a", ContentType: "text/plain"},
 		},
 	}
-	blocks := r.buildPromptBlocks(t.Context(), t.TempDir(), []Turn{turn}, turn, "look", false, false)
+	blocks := r.buildPromptBlocks(t.Context(), stFor(r, t.TempDir()), []Turn{turn}, turn, "look", false, false)
 	if n := countFileLinks(blocks); n != 0 {
 		t.Errorf("file:// links = %d, want 0 after a failed push", n)
 	}
@@ -276,7 +276,7 @@ func TestBuildPromptBlocksPushFailureKeepsInlineImage(t *testing.T) {
 			{Name: "a.png", URL: srv.URL + "/a.png", ContentType: "image/png"},
 		},
 	}
-	blocks := r.buildPromptBlocks(t.Context(), t.TempDir(), []Turn{turn}, turn, "look", false, false)
+	blocks := r.buildPromptBlocks(t.Context(), stFor(r, t.TempDir()), []Turn{turn}, turn, "look", false, false)
 	var images int
 	for _, b := range blocks {
 		if b.Image != nil {
@@ -373,7 +373,7 @@ func TestUploadAgentFileFetchesFromTheAgentHost(t *testing.T) {
 	r := routerWithProvisioner(t, p)
 	r.uploader = poeupload.New("k", srv.URL, srv.Client())
 
-	if _, err := r.uploadAgentFile(t.Context(), "/on/agent/out.txt"); err != nil {
+	if _, err := r.uploadAgentFile(t.Context(), nil, "/on/agent/out.txt"); err != nil {
 		t.Fatalf("uploadAgentFile: %v", err)
 	}
 	p.mu.Lock()
@@ -390,7 +390,7 @@ func TestUploadAgentFileFetchesFromTheAgentHost(t *testing.T) {
 func TestUploadAgentFileFetchFails(t *testing.T) {
 	r := routerWithProvisioner(t, &fakeProvisioner{fetchErr: errors.New("no route to host")})
 	r.uploader = poeupload.New("k", "http://127.0.0.1:1", nil)
-	if _, err := r.uploadAgentFile(t.Context(), "/on/agent/out.txt"); err == nil ||
+	if _, err := r.uploadAgentFile(t.Context(), nil, "/on/agent/out.txt"); err == nil ||
 		!strings.Contains(err.Error(), "no route to host") {
 		t.Fatalf("err = %v", err)
 	}
@@ -401,7 +401,7 @@ func TestUploadAgentFileScratchDirFails(t *testing.T) {
 		return "", errors.New("mkdtemp-fail")
 	})()
 	r := routerWithProvisioner(t, &fakeProvisioner{})
-	if _, err := r.uploadAgentFile(t.Context(), "/x"); err == nil ||
+	if _, err := r.uploadAgentFile(t.Context(), nil, "/x"); err == nil ||
 		!strings.Contains(err.Error(), "mkdtemp-fail") {
 		t.Fatalf("err = %v", err)
 	}
@@ -415,5 +415,20 @@ func TestProvisionErrorUnwraps(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("Error() = %q", err.Error())
+	}
+}
+
+// stFor is the minimal sessionState the prompt-building helpers need: a
+// cwd plus the router's default agent target (the single-agent shape
+// every test here exercises).
+func stFor(r *Router, cwd string) *sessionState {
+	return &sessionState{cwd: cwd, target: r.defaultTarget()}
+}
+
+// uploadVia binds a provisioner to the router's agent-file uploader,
+// the way newAttachScanner does for a real session.
+func uploadVia(r *Router, prov remotefs.Provisioner) func(context.Context, string) (poeupload.Result, error) {
+	return func(ctx context.Context, path string) (poeupload.Result, error) {
+		return r.uploadAgentFile(ctx, prov, path)
 	}
 }

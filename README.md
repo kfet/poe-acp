@@ -323,7 +323,13 @@ keep working.
   "hosts": [
     { "value": "local", "name": "this box (local)" },
     { "value": "zboxserver", "name": "zbox (server)" },
-    { "value": "boxy" }
+    { "value": "boxy" },
+    {
+      "value": "miki",
+      "name": "miki (own agent)",
+      "agent_cmd": "ssh -T miki .local/bin/fir --mode acp",
+      "ssh_host": "miki"
+    }
   ],
   "agent_ssh_host": "miki",
   "agent": {
@@ -429,6 +435,30 @@ keep working.
   configured. The literal string never reaches the agent. If you have a
   real ssh host named `local`, alias it to something else in
   `~/.ssh/config` — the sentinel shadows it.
+- **`hosts[i].agent_cmd`** — run a DEDICATED agent process for this
+  host instead of hinting placement to the single default agent. The
+  value is the command that reaches the host, e.g.
+  `"ssh -T miki .local/bin/fir --mode acp"`. This is what makes the
+  `Host` dropdown actually move the agent: `fir --mode acp` cannot
+  relocate itself, so a per-conversation host choice needs one process
+  per host. The process is started lazily on the first conversation
+  that picks the host, kept for the relay's life, and replaced only if
+  it dies. A host with `agent_cmd` sends no `_meta.host` — the process
+  choice *is* the placement. Not allowed on the reserved `"local"`
+  entry, which by definition means the relay's own `--agent-cmd`.
+  Notes: the relay's model dropdown, `!commands` and `!status` come from
+  the DEFAULT agent (a pooled host with a different catalog is fine —
+  only a `set_model` for a model it lacks fails); a pooled agent dying
+  does not restart the relay's worker; and if the host is another
+  machine, the self-hosted `poe` MCP server (`poe_mcp`, `attach`) is not
+  offered to it, because its unix socket only exists on the relay's box.
+- **`hosts[i].ssh_host`** — the machine whose filesystem a pooled
+  agent sees, so the relay can create the per-conversation cwd and
+  stage/fetch attachments there. Defaults to `value`; use `"local"`
+  when the pooled agent runs on this machine (a second local agent).
+  Only meaningful with `agent_cmd` (rejected at boot otherwise) — the
+  per-host analogue of the top-level `agent_ssh_host`, which only ever
+  described the default agent.
 - **`defaults.host`** — the ssh target new conversations run on. Must
   appear in `hosts` when that list is non-empty (rejected at boot
   otherwise); set on its own it pins every conversation to one host

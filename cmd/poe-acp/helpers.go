@@ -19,8 +19,12 @@ import (
 	"strings"
 	"time"
 
+	acp "github.com/coder/acp-go-sdk"
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/mcphost"
+	"github.com/kfet/acp-kit/remotefs"
 	kitsysprompt "github.com/kfet/acp-kit/sysprompt"
+	"github.com/kfet/poe-acp/internal/agentpool"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/paramctl"
 	"github.com/kfet/poe-acp/internal/poeproto"
@@ -304,4 +308,118 @@ func watchAgent(a agentLiveness, restart bool, exit func(int)) {
 		log.Printf("agent exited unexpectedly: %v; exiting for a supervisor respawn", err)
 		exit(1)
 	}()
+}
+
+// hostSpecs turns the operator's `hosts` list into the pool's spec
+// table: one entry per host that declares its own `agent_cmd`. Hosts
+// without one are absent by design — they keep the pre-pool contract
+// (the default agent plus a `_meta.host` hint), which the pool reports
+// as agentpool.ErrNotPooled.
+func hostSpecs(hosts []config.Host) (map[string]agentpool.Spec, error) {
+	var specs map[string]agentpool.Spec
+	for _, h := range hosts {
+		if !h.Pooled() {
+			continue
+		}
+		if specs == nil {
+			specs = make(map[string]agentpool.Spec)
+		}
+		spec := agentpool.Spec{Host: h.Value, Argv: strings.Fields(h.AgentCmd)}
+		// Provision() is "" for an agent that shares this machine's
+		// filesystem, which is exactly remotefs.Local (nil).
+		if dest := h.Provision(); dest != "" {
+			// Already validated at config load; re-checked because a
+			// silently-nil provisioner would mean staging attachments
+			// onto the wrong machine.
+			ssh, err := remotefs.New(dest)
+			if err != nil {
+				return nil, fmt.Errorf("hosts[%q].ssh_host: %w", h.Value, err)
+			}
+			spec.Prov = ssh
+		}
+		specs[h.Value] = spec
+	}
+	return specs, nil
+}
+
+// remoteHostSpec reports whether the pooled host named h runs its agent
+// on a different machine than the relay. Used only to warn about the
+// MCP server's locality.
+func remoteHostSpec(hosts []config.Host, h string) bool {
+	for _, c := range hosts {
+		if c.Value == h {
+			return c.Provision() != ""
+		}
+	}
+	return false
+}
+
+// startPooledAgent spawns one pooled host's agent child.
+//
+// lifetime owns the process (acp-kit binds the child to the context it
+// is given), so it must be the worker's root context and never a
+// per-conversation one. The template is the default agent's client
+// config: a pooled agent gets the same environment, access key, admin
+// token and client metadata — only the command line and the MCP wiring
+// differ.
+//
+// The `poe` MCP server is offered ONLY to an agent that shares this
+// machine's filesystem: it is reached through a unix socket in this
+// process's runtime dir, which an agent on another host cannot dial.
+// Handing it the config anyway would give the agent a tool surface that
+// fails on every call.
+func startPooledAgent(lifetime context.Context, template client.Config, spec agentpool.Spec, mcpHost *mcphost.Host) (*client.AgentProc, error) {
+	cfg := template
+	cfg.Command = spec.Argv
+	cfg.MCPServersForSession = pooledMCPServers(mcpHost, spec)
+	agent, err := client.Start(lifetime, cfg)
+	if err != nil {
+		return nil, err
+	}
+	// Best-effort catalog probe so `session/set_model` on this host has
+	// something to validate against. A host whose catalog differs from
+	// the default agent's — or which cannot be probed at all — is NOT
+	// an error: the relay's schema is built from the default agent, and
+	// a model this host does not have simply fails that one set_model.
+	probeCtx, cancel := context.WithTimeout(lifetime, 30*time.Second)
+	defer cancel()
+	if err := agent.ProbeModels(probeCtx); err != nil {
+		log.Printf("agent pool: host %q model probe failed (continuing): %v", spec.Host, err)
+	} else {
+		models, current := agent.Models()
+		log.Printf("agent pool: host %q probed %d models (current=%s)", spec.Host, len(models), current)
+	}
+	return agent, nil
+}
+
+// pooledMCPServers is the per-session MCP wiring a pooled agent gets:
+// the relay's own `poe` server when the agent shares this machine's
+// filesystem, and nothing at all when it does not (see
+// startPooledAgent).
+func pooledMCPServers(mcpHost *mcphost.Host, spec agentpool.Spec) func(string) []acp.McpServer {
+	if mcpHost == nil || spec.Prov != nil {
+		return nil
+	}
+	return func(cwd string) []acp.McpServer {
+		return mcpHost.ServerConfigForSession(filepath.Base(cwd))
+	}
+}
+
+// agentTargetFunc adapts the pool to router.Config.AgentFor.
+//
+// ErrNotPooled is the ordinary case, not a failure: that host has no
+// agent process of its own, so the router's default target serves it
+// and the host travels to the agent as a `_meta.host` hint exactly as
+// before per-host processes existed.
+func agentTargetFunc(pool *agentpool.Pool[*client.AgentProc]) func(context.Context, string) (router.AgentTarget, error) {
+	return func(ctx context.Context, host string) (router.AgentTarget, error) {
+		e, err := pool.Get(ctx, host)
+		switch {
+		case errors.Is(err, agentpool.ErrNotPooled):
+			return router.AgentTarget{}, nil
+		case err != nil:
+			return router.AgentTarget{}, err
+		}
+		return router.AgentTarget{Agent: e.Agent, Prov: e.Spec.Prov, Pooled: true}, nil
+	}
 }

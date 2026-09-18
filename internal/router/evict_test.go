@@ -228,8 +228,9 @@ func TestEvictSession_TeardownGraceTimeout(t *testing.T) {
 
 // newDetachedSession builds a sessionState with no drain/run goroutines, so
 // runOneTurn's teardown escapes can be driven directly.
-func newDetachedSession(chunkCap int) *sessionState {
+func newDetachedSession(r *Router, chunkCap int) *sessionState {
 	return &sessionState{
+		target:    r.defaultTarget(),
 		convID:    "c",
 		sessionID: "sid",
 		chunkCh:   make(chan chunkMsg, chunkCap),
@@ -247,7 +248,7 @@ func TestRunOneTurn_BeginTurnAfterTeardown(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	})
 	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
-	st := newDetachedSession(0)
+	st := newDetachedSession(r, 0)
 	close(st.drainStop)
 
 	sink := &captureSink{}
@@ -281,7 +282,7 @@ func TestRunOneTurn_EndTurnAckTimeout(t *testing.T) {
 	})
 	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	r.endTurnAckTimeout = 10 * time.Millisecond
-	st := newDetachedSession(4) // buffered: sends succeed, nothing ever acks
+	st := newDetachedSession(r, 4) // buffered: sends succeed, nothing ever acks
 
 	sink := &captureSink{}
 	req := &turnReq{kind: turnUser, ctx: context.Background(), sink: sink, done: make(chan struct{})}
@@ -311,7 +312,7 @@ func TestRunOneTurn_EndTurnAfterTeardown(t *testing.T) {
 	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	// cap 1: beginTurn fills the buffer, so the endTurn send blocks and
 	// drainStop is the only ready case — no select coin-flip.
-	st := newDetachedSession(1)
+	st := newDetachedSession(r, 1)
 
 	sink := &captureSink{}
 	req := &turnReq{kind: turnUser, ctx: context.Background(), sink: sink, done: make(chan struct{})}
@@ -339,7 +340,7 @@ func TestRunOneTurn_AckLostToTeardown(t *testing.T) {
 		return acp.StopReasonEndTurn, nil
 	})
 	r, _ := New(Config{Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour})
-	st := newDetachedSession(0) // unbuffered: the test IS the drain
+	st := newDetachedSession(r, 0) // unbuffered: the test IS the drain
 
 	sink := &captureSink{}
 	req := &turnReq{kind: turnUser, ctx: context.Background(), sink: sink, done: make(chan struct{})}

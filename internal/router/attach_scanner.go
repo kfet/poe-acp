@@ -64,11 +64,15 @@ type attachScanner struct {
 }
 
 // newAttachScanner returns nil if uploads are not configured.
-func (r *Router) newAttachScanner(sink ChunkSink, cwd string) *attachScanner {
+func (r *Router) newAttachScanner(sink ChunkSink, st *sessionState) *attachScanner {
 	if r.uploader == nil {
 		return nil
 	}
-	return &attachScanner{upload: r.uploadAgentFile, sink: sink, cwd: cwd}
+	prov := st.provisioner()
+	upload := func(ctx context.Context, path string) (poeupload.Result, error) {
+		return r.uploadAgentFile(ctx, prov, path)
+	}
+	return &attachScanner{upload: upload, sink: sink, cwd: st.cwd}
 }
 
 // Feed processes a chunk of assistant message text.

@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/kfet/acp-kit/client"
@@ -80,8 +81,11 @@ type Config struct {
 	//
 	// Empty (the default) means the Host dropdown is omitted entirely
 	// and no `host` is ever sent to the agent, i.e. every session runs
-	// wherever the agent itself runs. Only meaningful with an agent
-	// that understands the create-time `_meta.host` hint (acp-tmux).
+	// wherever the agent itself runs. An entry with no AgentCmd is
+	// meaningful only with an agent that understands the create-time
+	// `_meta.host` hint (acp-tmux); an entry WITH one gets its own
+	// agent process instead, which is what moves a plain `fir --mode
+	// acp` session to another machine (see Host.AgentCmd).
 	Hosts []Host `json:"hosts,omitempty"`
 
 	// PinnedModels lists model ids ("<provider>/<modelId>") that are
@@ -150,6 +154,59 @@ type Host struct {
 	// Name is the label shown in the Poe dropdown. Empty means "use
 	// Value".
 	Name string `json:"name,omitempty"`
+
+	// AgentCmd, when non-empty, makes this host a POOLED host: the
+	// relay runs its OWN ACP agent process for it, spawned with this
+	// command line (e.g. `ssh -T miki .local/bin/fir --mode acp`),
+	// lazily on the first conversation that resolves to the host and
+	// kept for the worker's lifetime.
+	//
+	// This is the difference between "tell the one agent where to put
+	// its pane" (`_meta.host`, what a bare `hosts` entry does — see
+	// Hosts) and "run the agent over there". An agent like `fir --mode
+	// acp` cannot relocate itself, so a real per-conversation host
+	// choice needs one process per host. A pooled host therefore sends
+	// NO `_meta.host`: the process choice IS the placement.
+	//
+	// Empty (the default) keeps today's behaviour exactly: the host is
+	// served by the relay's own `--agent-cmd` agent and is sent as a
+	// `_meta.host` hint. Rejected on the reserved "local" entry, which
+	// by definition means the relay's own agent command.
+	AgentCmd string `json:"agent_cmd,omitempty"`
+
+	// SSHHost names the machine whose filesystem the POOLED agent
+	// process sees, so the relay can create per-conversation cwds and
+	// stage/fetch attachment files there (ssh/tar). It is the per-host
+	// analogue of the top-level AgentSSHHost, which only ever described
+	// the single default agent.
+	//
+	// Empty defaults to Value — an entry's value is an ssh destination
+	// by contract. The literal "local" means "the relay's own
+	// filesystem" for a pooled agent that runs on this machine. Only
+	// meaningful with AgentCmd; set alone it is a config error, because
+	// a hint host's filesystem is the default agent's.
+	SSHHost string `json:"ssh_host,omitempty"`
+}
+
+// Pooled reports whether this host runs its own agent process (rather
+// than being a `_meta.host` hint to the relay's single default agent).
+func (h Host) Pooled() bool { return h.AgentCmd != "" }
+
+// Provision returns the ssh destination whose filesystem a POOLED
+// agent for this host sees, or "" when that filesystem is the relay's
+// own (an explicit `ssh_host: "local"`, or a non-pooled host). Empty
+// SSHHost defaults to Value.
+func (h Host) Provision() string {
+	if !h.Pooled() {
+		return ""
+	}
+	if h.SSHHost != "" {
+		if h.SSHHost == LocalHost {
+			return ""
+		}
+		return h.SSHHost
+	}
+	return h.Value
 }
 
 // Label returns the dropdown label for this host: Name when set,
@@ -481,6 +538,20 @@ func (c Config) Validate() error {
 			return fmt.Errorf("hosts[%d].value: duplicate %q", i, h.Value)
 		}
 		seen[h.Value] = struct{}{}
+		if h.Value == LocalHost && h.AgentCmd != "" {
+			return fmt.Errorf("hosts[%d].agent_cmd: not allowed on the reserved %q entry (it means the relay's own --agent-cmd)", i, LocalHost)
+		}
+		if h.AgentCmd == "" && h.SSHHost != "" {
+			return fmt.Errorf("hosts[%d].ssh_host: only meaningful with `agent_cmd` (a hint host uses the default agent's filesystem)", i)
+		}
+		if h.AgentCmd != "" && len(strings.Fields(h.AgentCmd)) == 0 {
+			return fmt.Errorf("hosts[%d].agent_cmd: must not be blank", i)
+		}
+		if dest := h.Provision(); dest != "" {
+			if _, err := remotefs.New(dest); err != nil {
+				return fmt.Errorf("hosts[%d].ssh_host: %w", i, err)
+			}
+		}
 	}
 	if c.Defaults.Host != "" && len(c.Hosts) > 0 {
 		if _, ok := seen[c.Defaults.Host]; !ok {

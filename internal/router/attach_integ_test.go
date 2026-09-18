@@ -42,7 +42,7 @@ func TestScanner_FileEventErrorConsumesDirective(t *testing.T) {
 func newScannerFor(srv *httptest.Server, sink ChunkSink, cwd string) *attachScanner {
 	r := &Router{}
 	r.uploader = newUploaderForURL(srv)
-	return r.newAttachScanner(sink, cwd)
+	return r.newAttachScanner(sink, stFor(r, cwd))
 }
 
 // TestRouter_AttachmentEndToEnd drives a full turn through Prompt with

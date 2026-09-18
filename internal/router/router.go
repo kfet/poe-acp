@@ -196,10 +196,49 @@ type Options struct {
 	Host string
 }
 
+// AgentTarget is the agent process a conversation's session lives in,
+// together with the filesystem that process sees. One conversation
+// resolves a target exactly once, at session-create time, and is pinned
+// to it for the session's life.
+//
+// Before per-host agent processes existed there was only ever one
+// target: the relay's single `--agent-cmd` child plus the top-level
+// `agent_ssh_host` provisioner. That is still the default target, and
+// still the only one unless an operator declares `agent_cmd` on a host.
+type AgentTarget struct {
+	// Agent drives the session. Never nil.
+	Agent Agent
+	// Prov makes the cwd and staged attachments exist on the machine
+	// Agent runs on. Nil means remotefs.Local.
+	Prov remotefs.Provisioner
+	// Pooled is true when this target IS the requested host — a
+	// process started specifically for it — rather than the default
+	// agent being asked to place a session there. A pooled target
+	// therefore sends NO `_meta.host`: the process choice is the
+	// placement, and the hint would be a second, contradictory answer
+	// to the same question.
+	Pooled bool
+}
+
 // Config configures a Router.
 type Config struct {
-	// Agent drives sessions. *client.AgentProc satisfies this.
+	// Agent drives sessions on the DEFAULT target: the relay's own
+	// `--agent-cmd` child. *client.AgentProc satisfies this. It also
+	// backs every relay-wide surface that is not a conversation — the
+	// model catalog, the command broker, `!status` — so it is required
+	// even when every host is pooled.
 	Agent Agent
+	// AgentFor, when set, resolves a RESOLVED host (post-allowlist, so
+	// it is either "" / config.LocalHost or a member of Hosts) to the
+	// agent process that serves it, starting that process on first use.
+	// Returning a target with Pooled=false — which is what the default
+	// resolution does — keeps the pre-pool contract exactly: the
+	// default agent serves the session and the host travels as a
+	// `_meta.host` hint.
+	//
+	// Nil means "every host is served by Config.Agent", i.e. the
+	// single-process relay.
+	AgentFor func(ctx context.Context, host string) (AgentTarget, error)
 	// StateDir is the root for per-conv working dirs. Each conv gets
 	// StateDir/convs/<conv_id>/ as its cwd.
 	StateDir string
@@ -266,6 +305,9 @@ type Config struct {
 	// falls back to $HOME. So a provisioning failure must fail session
 	// creation outright rather than fall through to a session whose cwd
 	// is quietly wrong. See config.AgentSSHHost.
+	//
+	// This describes the DEFAULT target only. A pooled host carries its
+	// own provisioner through AgentFor (config `hosts[i].ssh_host`).
 	Provisioner remotefs.Provisioner
 	// Now overrides the clock for tests. Defaults to time.Now.
 	Now func() time.Time
@@ -416,6 +458,14 @@ type sessionState struct {
 	// before the session is installed; read-only afterwards.
 	host string
 
+	// target is the agent process this session lives in and the
+	// filesystem that process sees, resolved once in getOrCreate from
+	// the session's host and pinned for the session's lifetime. Every
+	// per-session call — prompt, cancel, set_model, resume, release,
+	// cwd/attachment provisioning — goes through here rather than
+	// Config.Agent, which is only the DEFAULT target. Written once
+	// before the session is installed; read-only afterwards.
+	target AgentTarget
 	// applied tracks the last successfully-applied agent options, so
 	// we only call set_model / set_config_option when values change.
 	// Read/written only by the runTurns goroutine; no lock needed.
@@ -1339,7 +1389,7 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 
 	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query, opts.Host)
 	if err != nil {
-		r.failTurn(sink, "relay", err)
+		r.failTurn(sink, "relay", err, nil)
 		return err
 	}
 
@@ -1351,7 +1401,7 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	// command. Skip transcript flattening / inline injection so the "/" stays first.
 	isCommand := strings.HasPrefix(strings.TrimSpace(latestText), "/")
 
-	blocks := r.buildPromptBlocks(ctx, st.cwd, query, latestTurn, latestText, freshSeed, isCommand)
+	blocks := r.buildPromptBlocks(ctx, st, query, latestTurn, latestText, freshSeed, isCommand)
 
 	return r.submitTurn(ctx, convID, userID, query, latestTurn, latestText, opts, sink, st, blocks, isCommand, false)
 }
@@ -1360,13 +1410,14 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 // text (or the flattened transcript on a fresh-seed cold start) followed by
 // any attachment blocks for the latest user turn. A slash-command turn is
 // never flattened so the leading "/" survives for agent-side dispatch.
-func (r *Router) buildPromptBlocks(ctx context.Context, cwd string, query []Turn, latestTurn Turn, latestText string, freshSeed, isCommand bool) []acp.ContentBlock {
+func (r *Router) buildPromptBlocks(ctx context.Context, st *sessionState, query []Turn, latestTurn Turn, latestText string, freshSeed, isCommand bool) []acp.ContentBlock {
+	cwd := st.cwd
 	promptText := latestText
 	if freshSeed && !isCommand {
 		promptText = flattenTranscript(query)
 	}
 	blocks := []acp.ContentBlock{acp.TextBlock(promptText)}
-	embedded := r.cfg.Agent.Caps().EmbeddedContext
+	embedded := st.agent().Caps().EmbeddedContext
 	// latestTurn is non-zero here: latestText is only non-empty when
 	// the query had a user turn, and the caller short-circuited otherwise.
 	msgID := turnMsgID(latestTurn)
@@ -1387,7 +1438,7 @@ func (r *Router) buildPromptBlocks(ctx context.Context, cwd string, query []Turn
 	// after all downloads have completed and their roots are closed.
 	if staged {
 		msgDir := filepath.Join(cwd, attachmentDirName, msgID)
-		if err := r.provisioner().Push(context.WithoutCancel(ctx), msgDir, filepath.Join(cwd, attachmentDirName)); err != nil {
+		if err := st.provisioner().Push(context.WithoutCancel(ctx), msgDir, filepath.Join(cwd, attachmentDirName)); err != nil {
 			// A prompt is never failed because of attachment IO — but
 			// it must not carry paths the agent cannot open either, so
 			// every staged attachment degrades to its https link.
@@ -1426,14 +1477,17 @@ const agentDownMsg = "⚠️ The backing agent is not running — the relay is r
 // work), whereas the process's own exit is unambiguous. A short grace
 // closes the race where the failing write beats the wait() by a
 // millisecond.
-func (r *Router) agentGone() bool {
-	if r.cfg.Agent.Err() != nil {
+func (r *Router) agentGone(a Agent) bool {
+	if a == nil {
+		a = r.cfg.Agent
+	}
+	if a.Err() != nil {
 		return true
 	}
 	t := time.NewTimer(r.cfg.AgentDeathGrace)
 	defer t.Stop()
 	select {
-	case <-r.cfg.Agent.Done():
+	case <-a.Done():
 		return true
 	case <-t.C:
 		return false
@@ -1454,6 +1508,46 @@ func (e provisionError) Error() string {
 }
 func (e provisionError) Unwrap() error { return e.err }
 
+// agentStartError marks a session that could not be created because the
+// agent process for the chosen host could not be started — a pooled
+// host whose box is down or whose agent command is wrong. Like
+// provisionError it is reported as visible assistant text: the user
+// picked that host, so the user is the one who can pick another.
+type agentStartError struct {
+	host string
+	err  error
+}
+
+func (e agentStartError) Error() string {
+	return "start agent for host " + e.host + ": " + e.err.Error()
+}
+func (e agentStartError) Unwrap() error { return e.err }
+
+// agentBoundError ties a failure to the agent process it happened on.
+//
+// Session acquisition can fail for a conversation whose agent is a
+// POOLED process, and the reason is often that that very process has
+// just died. failTurn's outage check has no session to consult at that
+// point — the session is exactly what failed to be created — so it
+// would judge liveness by the DEFAULT agent and report a generic
+// `error` event, which Poe renders as an empty bubble. Carrying the
+// agent on the error keeps the "the agent is not running" answer
+// available on the one path that cannot look it up.
+type agentBoundError struct {
+	agent Agent
+	err   error
+}
+
+func (e agentBoundError) Error() string { return e.err.Error() }
+func (e agentBoundError) Unwrap() error { return e.err }
+
+// bindAgent tags err with the agent it happened on, so failTurn can
+// still tell an outage from an ordinary failure.
+func bindAgent(a Agent, err error) error { return agentBoundError{agent: a, err: err} }
+
+// agentStartFailedMsg prefixes the user-visible form of an agentStartError.
+const agentStartFailedMsg = "⚠️ The agent for the selected host could not be started, so this conversation was not started: "
+
 // provisionFailedMsg prefixes the user-visible form of a provisionError.
 const provisionFailedMsg = "⚠️ The agent's host could not be prepared for this conversation, so it was not started: "
 
@@ -1461,9 +1555,17 @@ const provisionFailedMsg = "⚠️ The agent's host could not be prepared for th
 // process is gone it says so in plain language as visible text; anything
 // else keeps the existing `error` event with its diagnostic prefix — bar
 // a provisionError, which is text for the same reason.
-func (r *Router) failTurn(sink ChunkSink, prefix string, err error) {
-	if r.agentGone() {
-		log.Printf("agent is gone (%v); reporting the outage to the user instead of %q", r.cfg.Agent.Err(), err)
+func (r *Router) failTurn(sink ChunkSink, prefix string, err error, a Agent) {
+	if a == nil {
+		var abe agentBoundError
+		if errors.As(err, &abe) {
+			a = abe.agent
+		} else {
+			a = r.cfg.Agent
+		}
+	}
+	if r.agentGone(a) {
+		log.Printf("agent is gone (%v); reporting the outage to the user instead of %q", a.Err(), err)
 		_ = sink.Text(agentDownMsg)
 		_ = sink.Done()
 		return
@@ -1471,6 +1573,12 @@ func (r *Router) failTurn(sink ChunkSink, prefix string, err error) {
 	var pe provisionError
 	if errors.As(err, &pe) {
 		_ = sink.Text(provisionFailedMsg + pe.err.Error())
+		_ = sink.Done()
+		return
+	}
+	var ae agentStartError
+	if errors.As(err, &ae) {
+		_ = sink.Text(agentStartFailedMsg + ae.err.Error())
 		_ = sink.Done()
 		return
 	}
@@ -1549,10 +1657,10 @@ func (r *Router) recoverAndReplay(ctx context.Context, convID, userID string, qu
 	// in-memory session, which session/release + the idle reaper now reclaim.
 	st, freshSeed, err := r.getOrCreate(ctx, convID, userID, query, opts.Host)
 	if err != nil {
-		r.failTurn(sink, "relay", err)
+		r.failTurn(sink, "relay", err, nil)
 		return err
 	}
-	blocks := r.buildPromptBlocks(ctx, st.cwd, query, latestTurn, latestText, freshSeed, isCommand)
+	blocks := r.buildPromptBlocks(ctx, st, query, latestTurn, latestText, freshSeed, isCommand)
 	return r.submitTurn(ctx, convID, userID, query, latestTurn, latestText, opts, sink, st, blocks, isCommand, true)
 }
 
@@ -1611,7 +1719,7 @@ const defaultEndTurnAckTimeout = 30 * time.Second
 // serving a NEW turn and must not wait on the old one.
 func (r *Router) teardownEvicted(st *sessionState) {
 	cctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
-	if err := r.cfg.Agent.Cancel(cctx, st.sessionID); err != nil {
+	if err := st.agent().Cancel(cctx, st.sessionID); err != nil {
 		kitlog.Debugf("teardownEvicted conv=%s sid=%s: cancel: %v", st.convID, string(st.sessionID), err)
 	}
 	cancel()
@@ -1847,7 +1955,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 		showTools:       req.opts.ShowTools,
 		showToolDetails: req.opts.ShowTools && req.opts.ShowToolDetails,
 		tools:           newToolStates(req.opts),
-		scanner:         r.newAttachScanner(sink, st.cwd),
+		scanner:         r.newAttachScanner(sink, st),
 		escaper:         &flagEscaper{withHost: len(r.cfg.Hosts) > 0},
 	}}:
 	case <-st.drainStop:
@@ -1868,10 +1976,10 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	if tt, ok := sink.(TurnTokener); ok {
 		tt.SetTurnToken(token)
 	}
-	r.setActiveTurn(st.convID, sink, st.cwd, token)
+	r.setActiveTurn(st.convID, sink, st, token)
 	defer r.clearActiveTurn(st.convID)
 
-	stop, err := r.cfg.Agent.Prompt(ctx, st.sessionID, blocks)
+	stop, err := st.agent().Prompt(ctx, st.sessionID, blocks)
 
 	// endTurn ack: drain processes every chunk emitted before
 	// Agent.Prompt returned, then closes endDone. Only after that do
@@ -1939,7 +2047,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 			req.err = err
 			return
 		}
-		r.failTurn(sink, "acp prompt", err)
+		r.failTurn(sink, "acp prompt", err, st.agent())
 		req.err = err
 		return
 	}
@@ -1981,14 +2089,14 @@ func (r *Router) applyOptions(ctx context.Context, st *sessionState, opts Option
 		st.applied.Model, st.applied.Thinking)
 	if opts.Model != "" && opts.Model != st.applied.Model {
 		kitlog.Debugf("  -> set_model %q (was %q)", opts.Model, st.applied.Model)
-		if err := r.cfg.Agent.SetModel(ctx, st.sessionID, opts.Model); err != nil {
+		if err := st.agent().SetModel(ctx, st.sessionID, opts.Model); err != nil {
 			return fmt.Errorf("set_model %s: %w", opts.Model, err)
 		}
 		st.applied.Model = opts.Model
 	}
 	if opts.Thinking != "" && opts.Thinking != st.applied.Thinking {
 		kitlog.Debugf("  -> set_config thinking_level=%q (was %q)", opts.Thinking, st.applied.Thinking)
-		if err := r.cfg.Agent.SetConfigOption(ctx, st.sessionID, "thinking_level", opts.Thinking); err != nil {
+		if err := st.agent().SetConfigOption(ctx, st.sessionID, "thinking_level", opts.Thinking); err != nil {
 			// Common case: the current model doesn't support the
 			// requested thinking level (e.g. non-reasoning models
 			// only accept "off"). The Poe dropdown advertises a
@@ -2585,13 +2693,16 @@ func (r *Router) attachmentBlocks(
 // agent's filesystem, which is this one only when the agent is local —
 // so it is fetched back first (a no-op, and the same path, for a local
 // agent) into a scratch directory that is removed either way.
-func (r *Router) uploadAgentFile(ctx context.Context, path string) (poeupload.Result, error) {
+func (r *Router) uploadAgentFile(ctx context.Context, prov remotefs.Provisioner, path string) (poeupload.Result, error) {
+	if prov == nil {
+		prov = r.provisioner()
+	}
 	dir, err := osMkdirTemp("", "poe-acp-fetch-")
 	if err != nil {
 		return poeupload.Result{}, err
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	local, err := r.provisioner().Fetch(ctx, path, dir)
+	local, err := prov.Fetch(ctx, path, dir)
 	if err != nil {
 		return poeupload.Result{}, err
 	}
@@ -2606,6 +2717,41 @@ func (r *Router) provisioner() remotefs.Provisioner {
 	}
 	return remotefs.Local
 }
+
+// defaultTarget is the relay's own `--agent-cmd` child plus the
+// top-level provisioner — the only target a single-process relay has.
+func (r *Router) defaultTarget() AgentTarget {
+	return AgentTarget{Agent: r.cfg.Agent, Prov: r.provisioner()}
+}
+
+// targetFor resolves an already-allowlisted host to the agent process
+// that will serve it. Falls back to the default target when no pool is
+// wired, or when the pool declines the host (a plain hint host).
+func (r *Router) targetFor(ctx context.Context, host string) (AgentTarget, error) {
+	if r.cfg.AgentFor == nil {
+		return r.defaultTarget(), nil
+	}
+	t, err := r.cfg.AgentFor(ctx, host)
+	if err != nil {
+		return AgentTarget{}, err
+	}
+	if t.Agent == nil {
+		t.Agent = r.cfg.Agent
+	}
+	if t.Prov == nil {
+		t.Prov = r.provisioner()
+	}
+	return t, nil
+}
+
+// agent is the session's agent process.
+func (st *sessionState) agent() Agent { return st.target.Agent }
+
+// provisioner is the session's filesystem provisioner. Never nil:
+// targetFor is the only producer of a session target and it substitutes
+// the router's own provisioner (remotefs.Local when unset) for a nil
+// one, so there is no fallback to get wrong here.
+func (st *sessionState) provisioner() remotefs.Provisioner { return st.target.Prov }
 
 func (r *Router) maxInlineImageBytes() int64 {
 	if r.cfg.MaxInlineImageBytes > 0 {
@@ -2871,7 +3017,7 @@ func (r *Router) Cancel(ctx context.Context, convID string) error {
 	if !ok {
 		return nil
 	}
-	return r.cfg.Agent.Cancel(ctx, st.sessionID)
+	return st.agent().Cancel(ctx, st.sessionID)
 }
 
 // CancelTurn cancels the conversation's in-flight prompt ONLY IF the live
@@ -2906,7 +3052,7 @@ func (r *Router) CancelTurn(ctx context.Context, convID string, token uint64) er
 			convID, token, live)
 		return nil
 	}
-	return r.cfg.Agent.Cancel(ctx, st.sessionID)
+	return st.agent().Cancel(ctx, st.sessionID)
 }
 
 // turnTokenSeq issues process-unique, monotonically increasing turn
@@ -3090,7 +3236,17 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		// thinking, plan, pins) rather than reseeding from chat text only.
 		// isRedrive is kept for diagnostics; it no longer forces a reseed.
 		redrive := isRedrive(existing.seenUserIDs, latest)
-		if !transcriptDiverged(existing.seenTurns, incomingFP) {
+		// A session whose own agent process has exited is worthless:
+		// its session id means nothing to the replacement child, so
+		// every turn would fail until the idle GC eventually reaped it.
+		// The DEFAULT agent's death takes the whole worker down (and
+		// with it this map), but a POOLED agent's does not — the pool
+		// just respawns it — so this is the only place that notices.
+		// Rebuilding is not forceFresh: the resume tier is welcome to
+		// reload the conversation's on-disk session onto the fresh
+		// process, which is exactly the recovery the user wants.
+		agentDead := existing.agent().Err() != nil
+		if !agentDead && !transcriptDiverged(existing.seenTurns, incomingFP) {
 			for id := range incomingIDs {
 				existing.seenUserIDs[id] = struct{}{}
 			}
@@ -3106,23 +3262,48 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		// session we are discarding.
 		staleSID := existing.sessionID
 		r.mu.Unlock()
-		kitlog.Debugf("getOrCreate conv=%s -> DIVERGED (redrive=%v, latest id=%s), reseeding fresh (stale sid=%s)", convID, redrive, latest.MessageID, string(staleSID))
+		if agentDead {
+			log.Printf("conv=%s: the agent for host %q has exited; rebuilding the session on its replacement (stale sid=%s)",
+				convID, existing.host, string(staleSID))
+		} else {
+			kitlog.Debugf("getOrCreate conv=%s -> DIVERGED (redrive=%v, latest id=%s), reseeding fresh (stale sid=%s)", convID, redrive, latest.MessageID, string(staleSID))
+			forceFresh = true
+		}
 		r.evictSession(convID, existing)
-		if staleSID != "" {
+		// Nothing to release on a process that is gone.
+		if staleSID != "" && !agentDead {
 			go func() {
 				rctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
 				defer cancel()
-				if rerr := r.cfg.Agent.ReleaseSession(rctx, staleSID); rerr != nil {
+				if rerr := existing.agent().ReleaseSession(rctx, staleSID); rerr != nil {
 					r.noteReleaseError("getOrCreate conv="+convID, staleSID, rerr)
 				}
 			}()
 		}
-		forceFresh = true
 	} else {
 		r.mu.Unlock()
 	}
 	host = r.resolveHost(host)
 	kitlog.Debugf("getOrCreate conv=%s user=%s -> miss, query_len=%d force_fresh=%v host=%q", convID, userID, len(query), forceFresh, host)
+
+	// Which agent process serves this host. Resolved BEFORE the cwd is
+	// provisioned: a pooled host provisions onto its own machine, not
+	// the default agent's, so the target has to exist first. Detached
+	// from the caller's cancellation for the same reason acquisition is
+	// — a pooled agent's cold start (an ssh handshake plus fir's own
+	// startup) easily outlives a flaky first request, and throwing it
+	// away would wedge the conversation.
+	// Bounded by SessionCreateTimeout exactly like acquisition below: a
+	// pooled agent's cold start is an ssh handshake plus the agent's own
+	// startup, which can hang indefinitely on a half-dead box, and a
+	// turn that waits forever is worse than one that says so.
+	tgtCtx, cancelTgt := context.WithTimeout(context.WithoutCancel(ctx), r.cfg.SessionCreateTimeout)
+	defer cancelTgt()
+	target, terr := r.targetFor(tgtCtx, host)
+	if terr != nil {
+		log.Printf("ERROR conv=%s: no agent for host %q: %v", convID, host, terr)
+		return nil, false, agentStartError{host: host, err: terr}
+	}
 
 	cwd := filepath.Join(r.cfg.StateDir, "convs", convDirName(convID))
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
@@ -3135,9 +3316,9 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	// bug. Detached from the caller's cancellation for the same reason
 	// acquisition is (see acqCtx below); remotefs applies its own
 	// per-operation deadline.
-	if err := r.provisioner().Mkdir(context.WithoutCancel(ctx), cwd); err != nil {
+	if err := target.Prov.Mkdir(context.WithoutCancel(ctx), cwd); err != nil {
 		log.Printf("ERROR conv=%s: cannot provision %s on the agent's host: %v", convID, cwd, err)
-		return nil, false, provisionError{err}
+		return nil, false, bindAgent(target.Agent, provisionError{err})
 	}
 
 	st = &sessionState{
@@ -3146,6 +3327,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		cwd:          cwd,
 		systemPrompt: r.systemPromptForSession(),
 		host:         host,
+		target:       target,
 		applied:      Options{Host: host},
 		lastUsedNs:   r.cfg.Now().UnixNano(),
 		chunkCh:      make(chan chunkMsg, 256),
@@ -3171,12 +3353,12 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	acqCtx, cancelAcq := context.WithTimeout(context.WithoutCancel(ctx), r.cfg.SessionCreateTimeout)
 	defer cancelAcq()
 
-	caps := r.cfg.Agent.Caps()
+	caps := st.agent().Caps()
 	if !forceFresh && caps.ListSessions && caps.ResumeSession {
-		sessions, lerr := r.cfg.Agent.ListSessions(acqCtx, cwd)
+		sessions, lerr := st.agent().ListSessions(acqCtx, cwd)
 		if lerr == nil && len(sessions) > 0 {
 			sid := acp.SessionId(sessions[0].SessionId)
-			if rerr := r.cfg.Agent.ResumeSession(acqCtx, cwd, sid, st); rerr == nil {
+			if rerr := st.agent().ResumeSession(acqCtx, cwd, sid, st); rerr == nil {
 				st.sessionID = sid
 				// Resume: the previous session may have had the system
 				// prompt installed, but we have no way to confirm. On
@@ -3210,13 +3392,16 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	// is never sent again for the life of the session. The reserved
 	// "local" value resolves to that same absent hint — the literal
 	// string is relay-side only and would fail the agent's allowlist.
+	// A POOLED host needs none of it: its agent process runs there, so
+	// the placement question is already answered and a hint would be a
+	// second answer to it (and would fail the agent's own allowlist).
 	var extraMeta map[string]any
-	if !isLocalHost(host) {
+	if !isLocalHost(host) && !target.Pooled {
 		extraMeta = map[string]any{poeproto.ParamHost: host}
 	}
-	sid, nerr := r.cfg.Agent.NewSessionWithMeta(acqCtx, cwd, st, sysBlocks, extraMeta)
+	sid, nerr := st.agent().NewSessionWithMeta(acqCtx, cwd, st, sysBlocks, extraMeta)
 	if nerr != nil {
-		return nil, false, fmt.Errorf("acp new session: %w", nerr)
+		return nil, false, bindAgent(st.agent(), fmt.Errorf("acp new session: %w", nerr))
 	}
 	st.sessionID = sid
 	// Fallback path for new sessions: agent didn't advertise the cap,
@@ -3341,7 +3526,15 @@ func (r *Router) RunGC(ctx context.Context, every time.Duration) (stop func()) {
 
 func (r *Router) gcOnce() {
 	cutoff := r.cfg.Now().Add(-r.cfg.SessionTTL).UnixNano()
-	var evicted []acp.SessionId
+	// Each evicted session is released on ITS OWN agent: with per-host
+	// agent processes the session id is only meaningful to the process
+	// that issued it, and releasing it on the default agent would be a
+	// session-not-found against the wrong child.
+	type evictee struct {
+		sid   acp.SessionId
+		agent Agent
+	}
+	var evicted []evictee
 	r.mu.Lock()
 	for id, st := range r.sessions {
 		if st.lastUsedNs >= cutoff {
@@ -3357,7 +3550,7 @@ func (r *Router) gcOnce() {
 		close(st.drainStop) // stop the session-lifetime drain goroutine
 		close(st.runStop)
 		if st.sessionID != "" {
-			evicted = append(evicted, st.sessionID)
+			evicted = append(evicted, evictee{sid: st.sessionID, agent: st.agent()})
 		}
 		delete(r.sessions, id)
 	}
@@ -3367,10 +3560,10 @@ func (r *Router) gcOnce() {
 	// session's extension/MCP subprocesses instead of leaking them until
 	// full shutdown. Best-effort and done OUTSIDE r.mu — never hold the
 	// router lock across a network RPC.
-	for _, sid := range evicted {
+	for _, e := range evicted {
 		rctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
-		if err := r.cfg.Agent.ReleaseSession(rctx, sid); err != nil {
-			r.noteReleaseError("gcOnce", sid, err)
+		if err := e.agent.ReleaseSession(rctx, e.sid); err != nil {
+			r.noteReleaseError("gcOnce", e.sid, err)
 		}
 		cancel()
 	}
@@ -3533,14 +3726,18 @@ func (r *Router) Debug() []DebugInfo {
 // in-flight turn, used by the MCP attach relay. token identifies WHICH
 // turn is live so an external canceller can prove it owns it (CancelTurn).
 type activeTurn struct {
-	sink  ChunkSink
-	cwd   string
+	sink ChunkSink
+	cwd  string
+	// prov is the filesystem of the agent process running this turn, so
+	// a file the agent hands to the MCP `attach` tool is fetched off the
+	// right machine when hosts run their own agents.
+	prov  remotefs.Provisioner
 	token uint64
 }
 
-func (r *Router) setActiveTurn(convID string, sink ChunkSink, cwd string, token uint64) {
+func (r *Router) setActiveTurn(convID string, sink ChunkSink, st *sessionState, token uint64) {
 	r.activeMu.Lock()
-	r.active[convID] = activeTurn{sink: sink, cwd: cwd, token: token}
+	r.active[convID] = activeTurn{sink: sink, cwd: st.cwd, prov: st.provisioner(), token: token}
 	r.activeMu.Unlock()
 }
 
@@ -3573,7 +3770,7 @@ func (r *Router) AttachActive(convID, path, name string, inline bool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	res, err := r.uploadAgentFile(ctx, path)
+	res, err := r.uploadAgentFile(ctx, at.prov, path)
 	if err != nil {
 		return err
 	}

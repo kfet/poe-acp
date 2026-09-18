@@ -27,6 +27,7 @@ import (
 	"github.com/kfet/acp-kit/remotefs"
 	"github.com/kfet/distkit"
 	"github.com/kfet/poe-acp/internal/agentcfg"
+	"github.com/kfet/poe-acp/internal/agentpool"
 	"github.com/kfet/poe-acp/internal/config"
 	"github.com/kfet/poe-acp/internal/dist"
 	"github.com/kfet/poe-acp/internal/httpsrv"
@@ -240,6 +241,41 @@ func main() {
 			return mcpHost.ServerConfigForSession(filepath.Base(cwd))
 		}
 	}
+	// Per-host agent processes. A host that declares its own
+	// `agent_cmd` is served by its OWN child, started lazily on the
+	// first conversation that picks it: `fir --mode acp` cannot
+	// relocate itself, so a real per-conversation host choice needs one
+	// process per host. With no such host configured this is an empty
+	// pool and everything below behaves exactly as the single-agent
+	// relay always did.
+	specs, err := hostSpecs(cfg.Hosts)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	pool, err := agentpool.New(agentpool.Config[*client.AgentProc]{
+		Specs: specs,
+		Logf:  log.Printf,
+		Start: func(spec agentpool.Spec) (*client.AgentProc, error) {
+			// ctx (the worker's root) owns the child's lifetime — NOT
+			// the conversation that happened to trigger the start.
+			return startPooledAgent(ctx, clientCfg, spec, mcpHost)
+		},
+	})
+	if err != nil {
+		log.Fatalf("agent pool: %v", err)
+	}
+	defer pool.Close()
+	if hosts := pool.Hosts(); len(hosts) > 0 {
+		log.Printf("agent pool: %d per-host agent process(es) configured: %v (started lazily)", len(hosts), hosts)
+		if mcpEnabled {
+			for _, h := range hosts {
+				if remoteHostSpec(cfg.Hosts, h) {
+					log.Printf("agent pool: WARN host %q runs its agent on another machine; the `poe` MCP server (attach tool, relay controls) is NOT offered to it — its unix socket only exists on this host", h)
+				}
+			}
+		}
+	}
+
 	agent, err := client.Start(ctx, clientCfg)
 	if err != nil {
 		log.Fatalf("start agent: %v", err)
@@ -249,7 +285,13 @@ func main() {
 	// Nothing but this worker can see the agent die: it is our child,
 	// not the supervisor's. Watch it and convert an unexpected exit into
 	// a worker exit, which the supervisor already knows how to respawn.
-	watchAgent(agent, cfg.Agent.RestartEnabled(), os.Exit)
+	// Pooled children are OUR children too, and this exit path skips
+	// every defer: close them explicitly or a respawned worker leaves a
+	// pile of orphaned ssh pipes behind.
+	watchAgent(agent, cfg.Agent.RestartEnabled(), func(code int) {
+		pool.Close()
+		os.Exit(code)
+	})
 	if !cfg.Agent.RestartEnabled() {
 		log.Printf("agent restart DISABLED by config; an agent death will not recycle this worker")
 	}
@@ -311,6 +353,7 @@ func main() {
 	rtr, err := router.New(router.Config{
 		Provisioner:          provisioner,
 		Agent:                agent,
+		AgentFor:             agentTargetFunc(pool),
 		StateDir:             stateDir,
 		SessionTTL:           *ttl,
 		SessionCreateTimeout: *sessCreateTO,
@@ -438,6 +481,7 @@ func main() {
 	// rather than orphan-locking the port.
 	supervisor.WatchParent(func() {
 		log.Printf("supervisor gone; worker exiting to free socket")
+		pool.Close()
 		os.Exit(0)
 	})
 

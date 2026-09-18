@@ -56,7 +56,7 @@ func newTestScanner(t *testing.T, sink ChunkSink, cwd string) (*attachScanner, *
 	t.Cleanup(srv.Close)
 	r := &Router{}
 	r.uploader = poeupload.New("k", srv.URL, srv.Client())
-	return &attachScanner{upload: r.uploadAgentFile, sink: sink, cwd: cwd}, &uploads
+	return &attachScanner{upload: uploadVia(r, nil), sink: sink, cwd: cwd}, &uploads
 }
 
 func TestScanner_PlainTextStreamsThrough(t *testing.T) {
@@ -171,7 +171,7 @@ func TestScanner_UploadErrorSurfacesNote(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
 	r := &Router{}
 	r.uploader = poeupload.New("k", srv.URL, srv.Client())
-	sc := &attachScanner{upload: r.uploadAgentFile, sink: sink, cwd: dir}
+	sc := &attachScanner{upload: uploadVia(r, nil), sink: sink, cwd: dir}
 	sc.Feed(`<!--poe-attach path="f.txt"-->` + "\n")
 	sc.Flush()
 	if len(sink.files) != 0 {
@@ -196,11 +196,11 @@ func TestScanner_DirectiveAtFlushNoNewline(t *testing.T) {
 
 func TestNewAttachScanner_NilWhenDisabled(t *testing.T) {
 	r := &Router{}
-	if sc := r.newAttachScanner(&scanSink{}, ""); sc != nil {
+	if sc := r.newAttachScanner(&scanSink{}, stFor(r, "")); sc != nil {
 		t.Fatal("want nil scanner when uploader unset")
 	}
 	r.uploader = poeupload.New("k", "", nil)
-	if sc := r.newAttachScanner(&scanSink{}, "/tmp"); sc == nil {
+	if sc := r.newAttachScanner(&scanSink{}, stFor(r, "/tmp")); sc == nil {
 		t.Fatal("want scanner when uploader set")
 	}
 }
