@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-09-18
+
 ### Fixed
 
 - **A release no longer leaves converge installing the previous version.**
@@ -15,6 +17,13 @@
   to converge to a `VERSION` that has no matching tag locally or on origin.
 
 ### Changed
+
+- acp-kit v0.19.1: the `schedule` loopback tool now tells the agent when to
+  reach for it. A turn ends when the agent stops writing, and nothing wakes it
+  again by itself, so an intention stated in prose never runs. The tool
+  description now instructs the agent to schedule the wake-up in the same turn
+  it forms the intention — returning to a task, checking a subagent or a job it
+  started — and to say what to verify in the prompt text.
 
 - `dist.lock` pins only EXTERNAL deps now (fir, fir-exts); `--tot` no longer
   resolves poe-acp and the `poe_acp` key is gone.
