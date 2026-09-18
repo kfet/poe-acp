@@ -106,7 +106,7 @@ func TestAgentGoneWaitsOutTheExitRace(t *testing.T) {
 	if agent.Err() != nil {
 		t.Fatal("Err() must still be nil for this to exercise the Done() branch")
 	}
-	if !r.agentGone() {
+	if !r.agentGone(nil) {
 		t.Fatal("agentGone = false, want true once the exit lands")
 	}
 }
@@ -117,11 +117,11 @@ func TestAgentGoneLiveAgent(t *testing.T) {
 	t.Parallel()
 	agent := newFakeAgent(nil)
 	r := mustRouterWithConfig(t, agent, Config{AgentDeathGrace: time.Millisecond})
-	if r.agentGone() {
+	if r.agentGone(nil) {
 		t.Fatal("agentGone = true for a live agent")
 	}
 	agent.die(client.ErrAgentClosed)
-	if !r.agentGone() {
+	if !r.agentGone(nil) {
 		t.Fatal("agentGone = false after the agent exited")
 	}
 }

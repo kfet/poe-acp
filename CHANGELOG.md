@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The `Host` dropdown can now actually move the agent, not just hint at
+  placement.** A `hosts[i]` entry may declare its own `agent_cmd` (plus an
+  optional `ssh_host`), and the relay then runs a DEDICATED agent process for
+  that host, started lazily on the first conversation that picks it. This is
+  the only thing that can satisfy "let the user choose which host the agent
+  runs on": `fir --mode acp` cannot relocate a running process, so the process
+  choice has to be the placement — and a pooled host therefore sends no
+  `_meta.host` at all. A conversation is pinned to its host's agent and
+  filesystem for its whole life: prompts, cancels, `set_model`, resume,
+  release, the per-conversation cwd and attachment staging/fetch-back all go
+  to the machine the user picked. Relay-wide surfaces (model catalog and thus
+  `parameter_controls`, `!commands`, `!status`, worker-recycle-on-agent-death)
+  stay on the default `--agent-cmd` agent; a pooled host with a different
+  catalog is not a boot error. A pooled agent that dies is respawned on the
+  next conversation and the affected conversations are rebuilt on the
+  replacement process (the relay's worker is NOT recycled — that stays the
+  default agent's privilege). With no `agent_cmd` configured anywhere,
+  behaviour is byte-for-byte the previous single-process relay.
+
+
 ## [0.74.0] - 2026-09-18
 
 ### Fixed

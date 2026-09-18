@@ -438,6 +438,7 @@ func TestPrompt_SessionTornDown(t *testing.T) {
 
 	// Pre-populate a session whose queue is already stopped.
 	st := &sessionState{
+		target:    r.defaultTarget(),
 		convID:    "torn",
 		queue:     newSessionQueue(),
 		runStop:   make(chan struct{}),
