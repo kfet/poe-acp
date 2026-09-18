@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-09-18
+
 ### Added
 
 - **The `Host` dropdown can now actually move the agent, not just hint at
