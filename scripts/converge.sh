@@ -406,13 +406,13 @@ stale_decision() {
   if [ -n "$wvers" ]; then
     local IFS=,
     for v in $wvers; do
-      [ "$v" = "$want" ] && { echo "current|a worker executes $want"; return 0; }
+      ver_ge "$v" "$want" && { echo "current|a worker executes $v (>= $want)"; return 0; }
     done
-    echo "stale|no worker executes $want (workers: $wvers)"; return 0
+    echo "stale|no worker executes $want or later (workers: $wvers)"; return 0
   fi
   if [ -n "$supver" ]; then
-    [ "$supver" = "$want" ] \
-      && echo "current|single process executes $want" \
+    ver_ge "$supver" "$want" \
+      && echo "current|single process executes $supver (>= $want)" \
       || echo "stale|single process executes $supver, wanted $want"
     return 0
   fi
@@ -430,7 +430,7 @@ stale_decision() {
 swap_verdict() {
   local repl=$1 rver=$2 want=$3
   [ -n "$repl" ] || { echo "fail|did not survive the swap"; return 0; }
-  if [ -n "$rver" ] && [ "$rver" != "$want" ]; then
+  if [ -n "$rver" ] && ! ver_ge "$rver" "$want"; then
     echo "fail|was replaced by worker $repl running $rver, wanted $want"; return 0
   fi
   echo "ok|superseded by a later swap, worker → $repl${rver:+ running $rver}"
@@ -639,7 +639,7 @@ converge() {
 
   # -- 1. poe-acp version ---------------------------------------------------
   cur=$(rsh "\"$(p_home "$binary")\" --version 2>/dev/null || true")
-  if [ "$cur" = "$want_pa" ]; then
+  if ver_ge "$cur" "$want_pa"; then
     note "poe-acp $cur ✓"
   else
     changes=$((changes + 1))
@@ -881,8 +881,8 @@ converge() {
     if [ "$supervisor" = systemd-user ]; then
       wver=$(worker_version "$wpid_after")
       if [ -n "$wver" ]; then
-        [ "$wver" = "$want_pa" ] \
-          || die "$sup_unit: new worker $wpid_after runs $wver, wanted $want_pa"
+        ver_ge "$wver" "$want_pa" \
+          || die "$sup_unit: new worker $wpid_after runs $wver, wanted $want_pa or later"
       fi
     fi
     sleep 1
@@ -931,13 +931,13 @@ converge() {
     if [ "$run_before" = 1 ] && [ "$pid_after" = "$pid_before" ]; then
       die "$sup_unit: supervisor pid $pid_before did not move across a hard restart"
     fi
-    if [ -n "$ver_after" ] && [ "$ver_after" != "$want_pa" ]; then
-      die "$sup_unit: restarted supervisor runs $ver_after, wanted $want_pa"
+    if [ -n "$ver_after" ] && ! ver_ge "$ver_after" "$want_pa"; then
+      die "$sup_unit: restarted supervisor runs $ver_after, wanted $want_pa or later"
     fi
     note "$sup_unit: $(mech_label "$supervisor" hard) ✓ ($reason; supervisor pid ${pid_before} → ${pid_after})"
   fi
   cur=$(rsh "\"$(p_home "$binary")\" --version")
-  [ "$cur" = "$want_pa" ] || die "post-recycle version check failed: $cur != $want_pa"
+  ver_ge "$cur" "$want_pa" || die "post-recycle version check failed: $cur < $want_pa"
   echo "== $bot: converged ($changes change(s) applied)"
 }
 
