@@ -192,6 +192,9 @@ xstale current "supervisor left behind by a swap is fine" 1 0.64.0 0.36.0 0.64.0
 xstale stale   "single-process host on the old binary" 1 0.64.0 0.63.0 ''
 xstale current "single-process host already current"   1 0.64.0 0.64.0 ''
 xstale current "unreadable version is never evidence"  1 0.64.0 ''     ''
+xstale current "a worker AHEAD of wanted is not stale"  1 0.64.0 0.64.0 0.65.0
+xstale current "single process ahead of wanted"        1 0.64.0 0.65.0 ''
+xstale current "0.70.0 is not behind 0.9.0 (numeric)"  1 0.9.0  0.70.0 ''
 xstale current "a stopped bot is not stale"            0 0.64.0 ''     ''
 
 echo "== post-swap verdict when the observed worker is gone"
