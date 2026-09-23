@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"github.com/kfet/acp-kit/convo"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +38,7 @@ func mkRouterWithUploader(t *testing.T, uploadOK bool) *Router {
 }
 
 func TestAttachActive_NoUploader(t *testing.T) {
-	r := &Router{active: map[string]activeTurn{}}
+	r := &Router{active: convo.NewActive()}
 	if err := r.AttachActive("c", "/p", "", false); err == nil {
 		t.Fatal("want error when uploader nil")
 	}
@@ -52,7 +53,7 @@ func TestAttachActive_NoActiveTurn(t *testing.T) {
 
 func TestAttachActive_MissingPath(t *testing.T) {
 	r := mkRouterWithUploader(t, true)
-	r.setActiveTurn("c", &captureSink{}, stFor(r, t.TempDir()), 1)
+	r.setActiveTurn("c", &captureSink{}, stFor(r, t.TempDir()))
 	if err := r.AttachActive("c", "", "", false); err == nil {
 		t.Fatal("want error for empty path")
 	}
@@ -63,7 +64,7 @@ func TestAttachActive_UploadError(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "f.txt")
 	os.WriteFile(fp, []byte("x"), 0o644)
-	r.setActiveTurn("c", &captureSink{}, stFor(r, dir), 1)
+	r.setActiveTurn("c", &captureSink{}, stFor(r, dir))
 	if err := r.AttachActive("c", "f.txt", "", false); err == nil {
 		t.Fatal("want upload error")
 	}
@@ -74,7 +75,7 @@ func TestAttachActive_Success_RelativePath(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "doc.md"), []byte("hi"), 0o644)
 	sink := &captureSink{}
-	r.setActiveTurn("c", sink, stFor(r, dir), 1)
+	r.setActiveTurn("c", sink, stFor(r, dir))
 	if err := r.AttachActive("c", "doc.md", "", false); err != nil {
 		t.Fatalf("AttachActive: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestAttachActive_Inline_AbsolutePath(t *testing.T) {
 	fp := filepath.Join(dir, "c.png")
 	os.WriteFile(fp, []byte("x"), 0o644)
 	sink := &captureSink{}
-	r.setActiveTurn("c", sink, stFor(r, dir), 1)
+	turn := r.setActiveTurn("c", sink, stFor(r, dir))
 	if err := r.AttachActive("c", fp, "Chart", true); err != nil {
 		t.Fatalf("AttachActive: %v", err)
 	}
@@ -103,8 +104,8 @@ func TestAttachActive_Inline_AbsolutePath(t *testing.T) {
 	if got := sink.text.String(); !contains(got, "![Chart][") {
 		t.Fatalf("want inline markdown ref, got %q", got)
 	}
-	r.clearActiveTurn("c")
-	if _, ok := r.active["c"]; ok {
+	r.active.End(turn)
+	if r.active.Running("c") {
 		t.Fatal("active not cleared")
 	}
 }
@@ -113,7 +114,7 @@ func TestAttachActive_SinkFileError(t *testing.T) {
 	r := mkRouterWithUploader(t, true)
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
-	r.setActiveTurn("c", errFileSink2{&captureSink{}}, stFor(r, dir), 1)
+	r.setActiveTurn("c", errFileSink2{&captureSink{}}, stFor(r, dir))
 	if err := r.AttachActive("c", "f.txt", "n", false); err == nil {
 		t.Fatal("want error when sink.File fails")
 	}

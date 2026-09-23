@@ -118,7 +118,7 @@ func TestReportReaction_PersistsWhenQueueSheds(t *testing.T) {
 		[]Turn{{Role: "user", Content: "hi"}}, Options{}, &captureSink{}); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
-	r.sessions["c"].queue.stop()
+	r.sessions["c"].queue.Stop()
 
 	if err := r.ReportReaction(context.Background(), "c", "u", "m", "👍", "added"); err != nil {
 		t.Fatalf("ReportReaction: %v", err)

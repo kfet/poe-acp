@@ -549,7 +549,7 @@ func TestRelayInfo(t *testing.T) {
 	// Inject a live session + sticky override for c1.
 	r.mu.Lock()
 	r.sessions["c1"] = &sessionState{convID: "c1", sessionID: acp.SessionId("sid-1")}
-	r.overrides["c1"] = "override-model"
+	_ = r.convo.Overrides().Set("c1", "override-model")
 	r.mu.Unlock()
 	info2 := r.RelayInfo("c1")
 	if info2.SessionID != "sid-1" || info2.EffectiveModel != "override-model" || info2.ActiveSessions != 1 {

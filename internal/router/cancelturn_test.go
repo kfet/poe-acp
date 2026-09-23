@@ -111,3 +111,33 @@ func TestCancelTurn_NoOpPaths(t *testing.T) {
 		t.Fatalf("no-op paths issued %d cancels", n)
 	}
 }
+
+// TestCancelTurn_LiveTokenNoSession: a live token whose session has
+// already left the map cancels nothing on the wire and reports no error.
+func TestCancelTurn_LiveTokenNoSession(t *testing.T) {
+	r := newCmdRouter(t, newFakeAgent(nil), "")
+	turn := r.active.Begin("gone", nil, activeTurn{})
+	defer r.active.End(turn)
+	if err := r.CancelTurn(context.Background(), "gone", turn.Token); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRouterSessions_Adapter covers the convo.Sessions adapter's
+// session-scoped Cancel (the convo core's own !stop path, which poe-acp
+// leaves off) and Len.
+func TestRouterSessions_Adapter(t *testing.T) {
+	r := newCmdRouter(t, newFakeAgent(nil), "")
+	s := routerSessions{r}
+	s.Cancel(context.Background(), "none")
+	if s.Len() != 0 {
+		t.Fatal("len")
+	}
+}
+
+func TestConvoAccessor(t *testing.T) {
+	r := newCmdRouter(t, newFakeAgent(nil), "")
+	if r.Convo() == nil || r.Convo().Overrides() == nil {
+		t.Fatal("no convo manager")
+	}
+}

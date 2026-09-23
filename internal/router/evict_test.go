@@ -37,9 +37,7 @@ func waitQueued(t *testing.T, r *Router, convID string, n int) *sessionState {
 		st := r.sessions[convID]
 		r.mu.Unlock()
 		if st != nil {
-			st.queue.mu.Lock()
-			got := len(st.queue.q)
-			st.queue.mu.Unlock()
+			got := st.queue.Len()
 			if got >= n {
 				return st
 			}
@@ -364,29 +362,5 @@ func TestRunOneTurn_AckLostToTeardown(t *testing.T) {
 	defer sink.mu.Unlock()
 	if !sink.done {
 		t.Fatal("sink not finalised after a lost ack")
-	}
-}
-
-// TestSessionQueue_WaitIdleTimeout: waitIdle is bounded and reports the
-// in-flight turn honestly when the window expires.
-func TestSessionQueue_WaitIdleTimeout(t *testing.T) {
-	sq := newSessionQueue()
-	if !sq.waitIdle(time.Second) {
-		t.Fatal("empty queue is idle")
-	}
-	req := &turnReq{kind: turnReaction, done: make(chan struct{})}
-	if !sq.push(req) {
-		t.Fatal("push failed")
-	}
-	if got := sq.popOrWait(make(chan struct{})); got != req {
-		t.Fatal("pop failed")
-	}
-	if sq.waitIdle(10 * time.Millisecond) {
-		t.Fatal("waitIdle reported idle with a turn in flight")
-	}
-	// A turn that finishes wakes the waiter.
-	go sq.finishInFlight()
-	if !sq.waitIdle(5 * time.Second) {
-		t.Fatal("waitIdle missed the finish signal")
 	}
 }
