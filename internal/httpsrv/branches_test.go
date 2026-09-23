@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kfet/acp-kit/convo"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -287,11 +288,11 @@ func TestHandler_CancelOnDisconnect(t *testing.T) {
 func TestHandler_AuthBrokerError(t *testing.T) {
 	stub := &errAuth{err: errors.New("agent down")}
 	broker := command.New(stub)
-	rtr, err := router.New(router.Config{Agent: &fakeAgent{}, StateDir: t.TempDir(), SessionTTL: time.Hour})
+	rtr, err := router.New(router.Config{Broker: broker, Agent: &fakeAgent{}, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, Commands: broker, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: rtr.Convo(), HeartbeatInterval: 0})
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c1", "user_id": "u",
 		"query": []map[string]any{{"role": "user", "content": "/login anthropic"}},
@@ -403,29 +404,22 @@ func TestSink_FirstChunkWhileSpinning(t *testing.T) {
 	}
 }
 
-// fakeBroker returns whatever (out, err) is set.
-type fakeBroker struct {
-	pending bool
-	isCmd   bool
-	out     *command.Outcome
-	err     error
-	passOut string
-	passOK  bool
+// fakeDispatcher returns a fixed result.
+type fakeDispatcher struct{ res convo.Result }
+
+func (f *fakeDispatcher) Dispatch(_ context.Context, in convo.In) convo.Result {
+	if !f.res.Handled && f.res.Prompt == "" {
+		return convo.Result{Prompt: in.Text}
+	}
+	return f.res
 }
 
-func (f *fakeBroker) HasPending(string) bool { return f.pending }
-func (f *fakeBroker) IsCommand(string) bool  { return f.isCmd }
-func (f *fakeBroker) Handle(context.Context, string, string) (*command.Outcome, error) {
-	return f.out, f.err
-}
-func (f *fakeBroker) Passthrough(string) (string, bool) { return f.passOut, f.passOK }
-
-func TestHandler_AuthBroker_NilOutcome(t *testing.T) {
+func TestHandler_HandledWithoutReply(t *testing.T) {
 	rtr, err := router.New(router.Config{Agent: &fakeAgent{}, StateDir: t.TempDir(), SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, Commands: &fakeBroker{pending: true}, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: &fakeDispatcher{res: convo.Result{Handled: true}}, HeartbeatInterval: 0})
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c1",
 		"query": []map[string]any{{"role": "user", "content": "anything"}},
@@ -1226,7 +1220,7 @@ func TestHandler_PassthroughRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := New(Config{Router: rtr, HeartbeatInterval: 0,
-		Commands: &fakeBroker{passOut: "/reload", passOK: true}})
+		Commands: &fakeDispatcher{res: convo.Result{Prompt: "/reload"}}})
 
 	body := mustJSON(map[string]any{
 		"type": "query", "conversation_id": "c1", "user_id": "u1", "message_id": "m1",

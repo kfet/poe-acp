@@ -23,13 +23,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
+	"github.com/kfet/acp-kit/convo"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/remotefs"
 	"github.com/kfet/poe-acp/internal/config"
@@ -357,6 +357,9 @@ type Config struct {
 	AgentCmd string
 	// StartTime is the relay process start; uptime in !relay is now-StartTime.
 	StartTime time.Time
+	// Broker is the chat-command broker. New wires the router's convo
+	// Manager into it as its Controller; nil disables chat commands.
+	Broker *command.Broker
 	// MCPAttachEnabled reports whether the self-hosted MCP `attach` tool
 	// is exposed to the agent. When true the sentinel system-prompt
 	// clause is suppressed (the tool is self-describing via MCP); the
@@ -398,12 +401,13 @@ type Router struct {
 	// MCP `attach` tool (relayed from a subprocess) can deliver a file
 	// onto the correct live SSE stream. Set for the duration of
 	// Agent.Prompt, cleared when the turn ends.
-	activeMu sync.Mutex
-	active   map[string]activeTurn
+	active *convo.Active
 
-	mu        sync.Mutex
-	sessions  map[string]*sessionState
-	overrides map[string]string // convID → sticky model id set via !model
+	mu       sync.Mutex
+	sessions map[string]*sessionState
+	// convo is acp-kit's shared conversation core: the sticky !model
+	// overrides, the command.Controller and the command Dispatch.
+	convo *convo.Manager
 
 	// reactionLogMu serialises appends to the reactions ledger so
 	// concurrent reaction events never interleave a partial line.
@@ -580,168 +584,20 @@ const reactionMaxAge = 60 * time.Second
 // (the queue grows past the cap if it has to).
 const sessionQueueCap = 32
 
-// sessionQueue is the per-session FIFO of pending turnReqs. Push and
-// pop are mutex-guarded; runTurns blocks on notify when empty.
-type sessionQueue struct {
-	mu       sync.Mutex
-	q        []*turnReq
-	inFlight bool
-	stopped  bool
-	notify   chan struct{} // buffered cap 1; signals "queue non-empty or stopped"
-	// idleCh is signalled (non-blocking, cap 1) by finishInFlight so an
-	// evicting caller can wait for the in-flight turn to unwind without
-	// polling. Only waitIdle consumes it; a stale signal left over from a
-	// previous turn is harmless because waitIdle re-checks idle() on every
-	// wake.
-	idleCh chan struct{}
-}
+// sessionQueue is the per-session FIFO of pending turnReqs: acp-kit's
+// shared convo.Queue, with reactions sheddable on overflow and real user
+// prompts never dropped. runTurns blocks on it when empty.
+type sessionQueue = convo.Queue[*turnReq]
 
 func newSessionQueue() *sessionQueue {
-	return &sessionQueue{notify: make(chan struct{}, 1), idleCh: make(chan struct{}, 1)}
-}
-
-// push appends req. On overflow it sheds the oldest reaction in the
-// queue; if the new req is itself a reaction and no older reaction is
-// present to shed, the new reaction is dropped (returned shed=true so
-// the caller can log + ack). User prompts always accept, even if the
-// queue grows past the soft cap. Returns shed=true when req itself
-// was rejected; in that case req.done is NOT closed by push (the
-// caller may handle it).
-func (sq *sessionQueue) push(req *turnReq) (accepted bool) {
-	sq.mu.Lock()
-	defer sq.mu.Unlock()
-	if sq.stopped {
-		return false
-	}
-	if len(sq.q) >= sessionQueueCap {
-		shed := -1
-		for i, r := range sq.q {
-			if r.kind == turnReaction {
-				shed = i
-				break
-			}
-		}
-		if shed >= 0 {
-			dropped := sq.q[shed]
-			sq.q = append(sq.q[:shed], sq.q[shed+1:]...)
+	return convo.NewQueue(sessionQueueCap,
+		func(r *turnReq) bool { return r.kind == turnReaction },
+		func(dropped *turnReq) {
 			dropped.shed = true
 			close(dropped.done)
 			kitlog.Debugf("sessionQueue: shed oldest reaction (age=%s) to make room",
 				time.Since(dropped.enqueuedAt))
-		} else if req.kind == turnReaction {
-			// No older reaction to shed, and incoming is a reaction.
-			// Drop the incoming.
-			kitlog.Debugf("sessionQueue: dropping new reaction (queue full of user turns)")
-			return false
-		}
-		// else: incoming is a user turn, no reaction to shed — grow past cap.
-	}
-	sq.q = append(sq.q, req)
-	select {
-	case sq.notify <- struct{}{}:
-	default:
-	}
-	return true
-}
-
-// popOrWait blocks until a req is available or stop fires. Sets
-// inFlight=true on a successful pop. Returns nil when stop fires.
-func (sq *sessionQueue) popOrWait(stop <-chan struct{}) *turnReq {
-	for {
-		sq.mu.Lock()
-		if len(sq.q) > 0 {
-			r := sq.q[0]
-			sq.q = sq.q[1:]
-			sq.inFlight = true
-			sq.mu.Unlock()
-			return r
-		}
-		sq.mu.Unlock()
-		select {
-		case <-stop:
-			return nil
-		case <-sq.notify:
-		}
-	}
-}
-
-// finishInFlight marks the runner as idle again. Called by runOneTurn
-// after every turn (success, error, or skipped-too-old), BEFORE the
-// waiting caller is released.
-func (sq *sessionQueue) finishInFlight() {
-	sq.mu.Lock()
-	sq.inFlight = false
-	sq.mu.Unlock()
-	// Wake any evicting caller parked in waitIdle. Non-blocking: the
-	// channel is a level-ish signal, not a queue of events.
-	select {
-	case sq.idleCh <- struct{}{}:
-	default:
-	}
-}
-
-// idle reports whether the queue is empty AND no turn is currently in
-// flight. Used by gcOnce to gate eviction.
-func (sq *sessionQueue) idle() bool {
-	sq.mu.Lock()
-	defer sq.mu.Unlock()
-	return !sq.inFlight && len(sq.q) == 0
-}
-
-// waitIdle blocks until no turn is in flight or d elapses, reporting
-// whether the queue went idle. Used by the eviction path to keep an
-// evicted session's drain/run goroutines alive just long enough for the
-// in-flight turn to unwind (so it can still get its endTurn ack and
-// finalise its sink) without ever waiting unbounded.
-func (sq *sessionQueue) waitIdle(d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	for {
-		if sq.idle() {
-			return true
-		}
-		select {
-		case <-sq.idleCh:
-		case <-t.C:
-			return sq.idle()
-		}
-	}
-}
-
-// stopIfIdle atomically checks idleness and, only if idle, marks the queue
-// closed — the one-step version of "idle() then stop()". Callers hold
-// Router.mu, but a submitter that already resolved its *sessionState calls
-// push WITHOUT it, so checking and closing in two separate sq.mu
-// acquisitions leaves a gap: a turn queued in that gap is detached with no
-// one left to close its done channel, parking submitTurn forever. Returns
-// ok=false (and detaches nothing) when a turn is queued or in flight.
-//
-// pending is always empty when ok is true — idle means the queue is empty —
-// so unlike stop this never obliges the caller to finalise a sink, and is
-// safe to call with Router.mu held. It is returned anyway so the two
-// teardown paths share one shape.
-func (sq *sessionQueue) stopIfIdle() (pending []*turnReq, ok bool) {
-	sq.mu.Lock()
-	defer sq.mu.Unlock()
-	if sq.inFlight || len(sq.q) > 0 {
-		return nil, false
-	}
-	sq.stopped = true
-	return nil, true
-}
-
-// stop marks the queue closed and detaches any pending reqs, returning
-// them plus whether a turn is still in flight. The caller owns
-// finalising the returned reqs (finalizeShed) — deliberately NOT done
-// here, because stop is called with Router.mu held and a sink write must
-// never happen under the router lock.
-func (sq *sessionQueue) stop() (pending []*turnReq, inFlight bool) {
-	sq.mu.Lock()
-	sq.stopped = true
-	pending, sq.q = sq.q, nil
-	inFlight = sq.inFlight
-	sq.mu.Unlock()
-	return pending, inFlight
+		})
 }
 
 // finalizeShed closes out turns that were shed by stop(): a user turn
@@ -904,8 +760,10 @@ func New(cfg Config) (*Router, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "convs"), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir state: %w", err)
 	}
-	r := &Router{cfg: cfg, sessions: make(map[string]*sessionState), overrides: make(map[string]string), active: make(map[string]activeTurn),
+	r := &Router{cfg: cfg, sessions: make(map[string]*sessionState), active: convo.NewActive(),
 		evictDrainGrace: defaultEvictDrainGrace, endTurnAckTimeout: defaultEndTurnAckTimeout}
+	r.active.OnCancel = r.cancelSession
+	r.convo = mustConvo(r.newConvo())
 	if cfg.AccessKey != "" {
 		r.uploader = poeupload.New(cfg.AccessKey, cfg.UploadEndpoint, cfg.HTTPClient)
 	}
@@ -1370,11 +1228,9 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	}
 	// Sticky per-conv model override (set via the !model command) wins
 	// over the per-turn Poe parameter so the choice survives turns.
-	r.mu.Lock()
-	if ov := r.overrides[convID]; ov != "" {
+	if ov, ok := r.convo.Overrides().Get(convID); ok {
 		opts.Model = ov
 	}
-	r.mu.Unlock()
 	// Effective text for the latest user turn: Poe content if non-empty,
 	// else a synthesised attachment placeholder, else "" (rejected). When
 	// query has no user turn, latestUserTurnRef returns the zero Turn and
@@ -1598,7 +1454,7 @@ func (r *Router) submitTurn(ctx context.Context, convID, userID string, query []
 		done:       make(chan struct{}),
 		noRecover:  recovered,
 	}
-	if !st.queue.push(req) {
+	if !st.queue.Push(req) {
 		// Session was being torn down between getOrCreate and push.
 		// Treat as a transient error to the caller.
 		_ = sink.Error("relay: session unavailable", "user_caused_error")
@@ -1693,7 +1549,7 @@ func (r *Router) evictSession(convID string, st *sessionState) {
 	if !deleted {
 		return
 	}
-	pending, inFlight := st.queue.stop()
+	pending, inFlight := st.queue.Stop()
 	finalizeShed(pending)
 	if inFlight {
 		go r.teardownEvicted(st)
@@ -1723,7 +1579,7 @@ func (r *Router) teardownEvicted(st *sessionState) {
 		kitlog.Debugf("teardownEvicted conv=%s sid=%s: cancel: %v", st.convID, string(st.sessionID), err)
 	}
 	cancel()
-	if !st.queue.waitIdle(r.evictDrainGrace) {
+	if !st.queue.WaitIdle(r.evictDrainGrace) {
 		// The agent ignored session/cancel. Tear down anyway — the runner's
 		// own waits are bounded and drainStop-guarded, so it will finalise
 		// its sink as soon as Prompt returns instead of parking forever.
@@ -1778,7 +1634,7 @@ func (r *Router) ReportReaction(ctx context.Context, convID, userID, messageID, 
 		enqueuedAt: r.cfg.Now(),
 		done:       make(chan struct{}),
 	}
-	if !st.queue.push(req) {
+	if !st.queue.Push(req) {
 		log.Printf("router: dropped reaction (conv=%s msg=%s kind=%s action=%s): queue full / stopped",
 			convID, messageID, kind, action)
 		return nil
@@ -1859,8 +1715,8 @@ func (d discardSink) SetPlan([]statusline.PlanEntry) {}
 // them to completion. Exits when runStop is closed.
 func (r *Router) runTurns(st *sessionState) {
 	for {
-		req := st.queue.popOrWait(st.runStop)
-		if req == nil {
+		req, ok := st.queue.PopOrWait(st.runStop)
+		if !ok {
 			return
 		}
 		r.runOneTurn(st, req)
@@ -1882,7 +1738,7 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	// action the agent asked for (today only `new_session`) must see an
 	// idle session, or ResetSession refuses it as busy.
 	defer r.turnEnded(st.convID)
-	defer st.queue.finishInFlight()
+	defer st.queue.Finish()
 	defer r.touch(st.convID)
 
 	// Liveness safeguard: reactions older than reactionMaxAge are
@@ -1972,12 +1828,11 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 
 	// Bind this turn's identity to the sink BEFORE it goes live, so the
 	// sink's owner can cancel exactly this turn (and nothing after it).
-	token := turnTokenSeq.Add(1)
+	live := r.setActiveTurn(st.convID, sink, st)
+	defer r.active.End(live)
 	if tt, ok := sink.(TurnTokener); ok {
-		tt.SetTurnToken(token)
+		tt.SetTurnToken(live.Token)
 	}
-	r.setActiveTurn(st.convID, sink, st, token)
-	defer r.clearActiveTurn(st.convID)
 
 	stop, err := st.agent().Prompt(ctx, st.sessionID, blocks)
 
@@ -3026,38 +2881,27 @@ func (r *Router) Cancel(ctx context.Context, convID string) error {
 // so a plain session-scoped Cancel issued by turn N's owner can land on
 // turn N+1 if it fires in the window where N has just finished and N+1 has
 // started — the HTTP handler's disconnect watcher does exactly that. The
-// token check under activeMu makes the cancel turn-scoped: a stale token
-// is a no-op.
-//
-// Residual window: the token is compared under activeMu but the
-// session/cancel RPC is issued after releasing it (never hold a lock
-// across a wire write). A turn ending in those few instructions could
-// still be followed by a mis-aimed cancel; the pathological seconds-wide
-// window the watcher had is gone.
+// token check in acp-kit's convo.Active makes the cancel turn-scoped: a
+// stale token is a no-op (see Active.CancelToken for the residual window).
 func (r *Router) CancelTurn(ctx context.Context, convID string, token uint64) error {
-	if token == 0 {
-		return nil // caller never had a turn token; nothing it owns is live
+	ok, err := r.active.CancelToken(ctx, convID, token)
+	if !ok {
+		kitlog.Debugf("CancelTurn conv=%s: token %d is not the live turn; ignoring", convID, token)
 	}
+	return err
+}
+
+// cancelSession is the Active registry's OnCancel: session/cancel on the
+// conversation's live session, if it still has one.
+func (r *Router) cancelSession(ctx context.Context, convID string) error {
 	r.mu.Lock()
 	st, ok := r.sessions[convID]
 	r.mu.Unlock()
 	if !ok {
 		return nil
 	}
-	r.activeMu.Lock()
-	at, live := r.active[convID]
-	r.activeMu.Unlock()
-	if !live || at.token != token {
-		kitlog.Debugf("CancelTurn conv=%s: token %d is not the live turn (live=%v); ignoring",
-			convID, token, live)
-		return nil
-	}
 	return st.agent().Cancel(ctx, st.sessionID)
 }
-
-// turnTokenSeq issues process-unique, monotonically increasing turn
-// tokens. Zero is never issued so it can mean "no turn".
-var turnTokenSeq atomic.Uint64
 
 // TurnTokener is implemented by sinks that want to know which turn they
 // are bound to. The router calls SetTurnToken exactly once per turn, just
@@ -3066,24 +2910,83 @@ var turnTokenSeq atomic.Uint64
 // cancel their own turn.
 type TurnTokener interface{ SetTurnToken(uint64) }
 
+// The command.Controller surface below is acp-kit's shared convo
+// Manager (r.convo): the model-override table, !status / !relay
+// snapshots and model validation live there, shared with zulip-acp and
+// slack-acp. What stays here are poe-acp's hooks into it — the
+// "default" conversation for an empty id, a !new that refuses a busy
+// session instead of stopping it, and a status that reports the bot's
+// configured default model and thinking level rather than whatever the
+// agent happens to be on. The methods remain on Router so existing
+// callers (httpsrv, relaytool via the broker) keep one handle.
+
+// newConvo builds the router's convo Manager and wires it into the
+// broker. poe-acp has no !stop: it answers one HTTP request per turn, so
+// no later message can reach an in-flight turn (NoStop).
+func (r *Router) newConvo() (*convo.Manager, error) {
+	return convo.New(convo.Config{
+		Agent:      r.cfg.Agent,
+		Sessions:   routerSessions{r},
+		Broker:     r.cfg.Broker,
+		NoCommands: r.cfg.Broker == nil,
+		NoStop:     true,
+		ModelOrder: r.cfg.ModelOrder,
+		Version:    r.cfg.Version,
+		AgentCmd:   r.cfg.AgentCmd,
+		StartTime:  r.cfg.StartTime,
+		Now:        r.cfg.Now,
+		Hooks: convo.Hooks{
+			Resolve:   func(tok string) (string, bool) { return convKey(tok), true },
+			Reset:     func(_ context.Context, tok string) error { return r.resetSession(convKey(tok)) },
+			Status:    r.decorateStatus,
+			RelayInfo: r.decorateRelayInfo,
+		},
+	})
+}
+
+// convKey maps the broker's token onto the session-map key.
+func convKey(convID string) string {
+	if convID == "" {
+		return "default"
+	}
+	return convID
+}
+
+// routerSessions adapts the router's session map to convo.Sessions.
+type routerSessions struct{ r *Router }
+
+func (s routerSessions) Live(convID string) (acp.SessionId, time.Time, bool) {
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	st, ok := s.r.sessions[convID]
+	if !ok {
+		return "", time.Time{}, false
+	}
+	return st.sessionID, time.Unix(0, st.lastUsedNs), true
+}
+
+func (s routerSessions) Cancel(ctx context.Context, convID string) {
+	_ = s.r.cancelSession(ctx, convID)
+}
+
+func (s routerSessions) Len() int { return s.r.Len() }
+
+// Convo returns the shared conversation core: its Dispatch is the
+// command intercept httpsrv runs before every turn.
+func (r *Router) Convo() *convo.Manager { return r.convo }
+
 // AvailableModels returns the agent's available models and current id,
 // reordered through cfg.ModelOrder when set. This is THE ordered
 // consumer: httpsrv feeds its result to ParseOptions, so it matches
 // the list paramctl.Build used for the schema's default_value.
-// Satisfies command.Controller.
 func (r *Router) AvailableModels() (models []client.ModelInfo, currentID string) {
-	models, currentID = r.cfg.Agent.Models()
-	if r.cfg.ModelOrder != nil {
-		models = r.cfg.ModelOrder(models)
-	}
-	return models, currentID
+	return r.ctl().AvailableModels()
 }
 
+func (r *Router) ctl() command.Controller { return r.convo.Controller() }
+
 // AgentCommands returns the agent's advertised command catalog.
-// Satisfies command.Controller.
-func (r *Router) AgentCommands() []client.CommandInfo {
-	return r.cfg.Agent.AvailableCommands()
-}
+func (r *Router) AgentCommands() []client.CommandInfo { return r.ctl().AgentCommands() }
 
 // SessionStatus is a race-free snapshot of a conversation's relay state.
 //
@@ -3092,31 +2995,25 @@ func (r *Router) AgentCommands() []client.CommandInfo {
 // alias is what keeps every call site here compiling unchanged.
 type SessionStatus = command.SessionStatus
 
-// StatusFor returns a snapshot for convID. It deliberately does not read
-// the session's goroutine-confined applied options; it reports the
-// configured default, the sticky override, and live session presence.
-// Satisfies command.Controller.
-func (r *Router) StatusFor(convID string) SessionStatus {
-	if convID == "" {
-		convID = "default"
+// StatusFor returns a snapshot for convID.
+func (r *Router) StatusFor(convID string) SessionStatus { return r.ctl().StatusFor(convID) }
+
+// decorateStatus reports the bot's configured defaults: poe-acp's model
+// is a per-request Poe parameter, so "the agent's current model" is not
+// what the conversation runs on — the configured default (or the sticky
+// override) is.
+func (r *Router) decorateStatus(_, convID string, _ bool, st SessionStatus) SessionStatus {
+	st.DefaultModel = r.cfg.Defaults.Model
+	st.EffectiveModel = r.effectiveModel(convID)
+	st.Thinking = r.cfg.Defaults.Thinking
+	return st
+}
+
+func (r *Router) effectiveModel(convID string) string {
+	if ov, ok := r.convo.Overrides().Get(convID); ok {
+		return ov
 	}
-	models, _ := r.cfg.Agent.Models()
-	r.mu.Lock()
-	override := r.overrides[convID]
-	_, hasSession := r.sessions[convID]
-	r.mu.Unlock()
-	eff := r.cfg.Defaults.Model
-	if override != "" {
-		eff = override
-	}
-	return SessionStatus{
-		EffectiveModel:  eff,
-		DefaultModel:    r.cfg.Defaults.Model,
-		OverrideModel:   override,
-		Thinking:        r.cfg.Defaults.Thinking,
-		HasSession:      hasSession,
-		ModelsAvailable: len(models),
-	}
+	return r.cfg.Defaults.Model
 }
 
 // RelayInfo is a snapshot of relay-process realtime state, surfaced by
@@ -3124,80 +3021,34 @@ func (r *Router) StatusFor(convID string) SessionStatus {
 type RelayInfo = command.RelayInfo
 
 // RelayInfo returns a race-free snapshot of relay-process state plus the
-// caller conversation's live session id. Satisfies command.Controller.
-func (r *Router) RelayInfo(convID string) RelayInfo {
-	if convID == "" {
-		convID = "default"
-	}
-	models, _ := r.cfg.Agent.Models()
-	r.mu.Lock()
-	n := len(r.sessions)
-	var sid string
-	if st, ok := r.sessions[convID]; ok {
-		sid = string(st.sessionID)
-	}
-	override := r.overrides[convID]
-	r.mu.Unlock()
-	eff := r.cfg.Defaults.Model
-	if override != "" {
-		eff = override
-	}
-	var up string
-	if !r.cfg.StartTime.IsZero() {
-		up = r.cfg.Now().Sub(r.cfg.StartTime).Round(time.Second).String()
-	}
-	return RelayInfo{
-		Version:         r.cfg.Version,
-		Uptime:          up,
-		AgentCmd:        r.cfg.AgentCmd,
-		ModelsAvailable: len(models),
-		ActiveSessions:  n,
-		SessionID:       sid,
-		EffectiveModel:  eff,
-	}
+// caller conversation's live session id.
+func (r *Router) RelayInfo(convID string) RelayInfo { return r.ctl().RelayInfo(convID) }
+
+func (r *Router) decorateRelayInfo(_, convID string, _ bool, ri RelayInfo) RelayInfo {
+	ri.EffectiveModel = r.effectiveModel(convID)
+	return ri
 }
 
 // SetModelOverride validates modelID against the agent's available models
 // and records it as the sticky model for convID. It takes effect on the
-// next prompt turn. Satisfies command.Controller.
+// next prompt turn.
 func (r *Router) SetModelOverride(convID, modelID string) error {
-	if convID == "" {
-		convID = "default"
-	}
-	models, _ := r.cfg.Agent.Models()
-	if len(models) > 0 {
-		found := false
-		for _, m := range models {
-			if m.ID == modelID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("unknown model %q", modelID)
-		}
-	}
-	r.mu.Lock()
-	r.overrides[convID] = modelID
-	r.mu.Unlock()
-	return nil
+	return r.ctl().SetModelOverride(convID, modelID)
 }
 
 // ResetSession drops the conversation's live agent session so the next
 // turn starts fresh (cleared context). The sticky model override is
-// preserved. Returns ErrSessionBusy if a reply is in flight. Satisfies
-// command.Controller.
-func (r *Router) ResetSession(convID string) error {
-	if convID == "" {
-		convID = "default"
-	}
+// preserved. Returns ErrSessionBusy if a reply is in flight.
+func (r *Router) ResetSession(convID string) error { return r.ctl().ResetSession(convID) }
+
+func (r *Router) resetSession(convID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st, ok := r.sessions[convID]
 	if !ok {
 		return nil // nothing live; next turn is fresh anyway
 	}
-	if _, ok := st.queue.stopIfIdle(); !ok {
+	if !st.queue.StopIfIdle() {
 		return ErrSessionBusy
 	}
 	close(st.drainStop)
@@ -3470,7 +3321,7 @@ func (r *Router) install(convID string, st *sessionState) (*sessionState, bool) 
 	}
 	var pending []*turnReq
 	if st.queue != nil {
-		pending, _ = st.queue.stop()
+		pending, _ = st.queue.Stop()
 	}
 	r.mu.Unlock()
 	// The loser was never published in r.sessions, so no submitter can be
@@ -3544,7 +3395,7 @@ func (r *Router) gcOnce() {
 		// idle() and stop() would be detached with nobody left to release
 		// its submitter. stopIfIdle declines instead, leaving the session
 		// to the next sweep.
-		if _, ok := st.queue.stopIfIdle(); !ok {
+		if !st.queue.StopIfIdle() {
 			continue
 		}
 		close(st.drainStop) // stop the session-lifetime drain goroutine
@@ -3723,28 +3574,20 @@ func (r *Router) Debug() []DebugInfo {
 }
 
 // activeTurn is the live sink + working dir for a conversation's
-// in-flight turn, used by the MCP attach relay. token identifies WHICH
-// turn is live so an external canceller can prove it owns it (CancelTurn).
+// in-flight turn, used by the MCP attach relay. It rides as the
+// convo.Turn's Value; the Turn's token identifies WHICH turn is live so
+// an external canceller can prove it owns it (CancelTurn).
 type activeTurn struct {
 	sink ChunkSink
 	cwd  string
 	// prov is the filesystem of the agent process running this turn, so
 	// a file the agent hands to the MCP `attach` tool is fetched off the
 	// right machine when hosts run their own agents.
-	prov  remotefs.Provisioner
-	token uint64
+	prov remotefs.Provisioner
 }
 
-func (r *Router) setActiveTurn(convID string, sink ChunkSink, st *sessionState, token uint64) {
-	r.activeMu.Lock()
-	r.active[convID] = activeTurn{sink: sink, cwd: st.cwd, prov: st.provisioner(), token: token}
-	r.activeMu.Unlock()
-}
-
-func (r *Router) clearActiveTurn(convID string) {
-	r.activeMu.Lock()
-	delete(r.active, convID)
-	r.activeMu.Unlock()
+func (r *Router) setActiveTurn(convID string, sink ChunkSink, st *sessionState) *convo.Turn {
+	return r.active.Begin(convID, nil, activeTurn{sink: sink, cwd: st.cwd, prov: st.provisioner()})
 }
 
 // AttachActive uploads a host file and emits it as a Poe attachment on
@@ -3756,12 +3599,11 @@ func (r *Router) AttachActive(convID, path, name string, inline bool) error {
 	if r.uploader == nil {
 		return fmt.Errorf("attachments not enabled")
 	}
-	r.activeMu.Lock()
-	at, ok := r.active[convID]
-	r.activeMu.Unlock()
+	t, ok := r.active.Get(convID)
 	if !ok {
 		return fmt.Errorf("no active turn for conversation %s", convID)
 	}
+	at := t.Value.(activeTurn)
 	if path == "" {
 		return fmt.Errorf("path is required")
 	}

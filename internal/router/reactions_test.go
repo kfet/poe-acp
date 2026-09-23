@@ -155,14 +155,12 @@ func TestRouter_ReactionShedOldest(t *testing.T) {
 			enqueuedAt: r.cfg.Now().Add(time.Duration(i) * time.Millisecond),
 			done:       make(chan struct{}),
 		}
-		if !st.queue.push(req) {
+		if !st.queue.Push(req) {
 			t.Fatalf("reaction %d: push failed", i)
 		}
 	}
 	// Snapshot the oldest reaction's done before overflowing.
-	st.queue.mu.Lock()
-	oldest := st.queue.q[0]
-	st.queue.mu.Unlock()
+	oldest := st.queue.Items()[0]
 
 	// Push one more reaction → must shed `oldest`.
 	overflow := &turnReq{
@@ -173,7 +171,7 @@ func TestRouter_ReactionShedOldest(t *testing.T) {
 		enqueuedAt: r.cfg.Now().Add(time.Hour),
 		done:       make(chan struct{}),
 	}
-	if !st.queue.push(overflow) {
+	if !st.queue.Push(overflow) {
 		t.Fatalf("overflow push rejected")
 	}
 	select {
@@ -195,7 +193,7 @@ func TestRouter_ReactionShedOldest(t *testing.T) {
 		enqueuedAt: r.cfg.Now(),
 		done:       make(chan struct{}),
 	}
-	if !st.queue.push(user2) {
+	if !st.queue.Push(user2) {
 		t.Fatalf("user prompt should never be shed")
 	}
 
@@ -232,7 +230,7 @@ func TestRouter_NewReactionDropped(t *testing.T) {
 			enqueuedAt: r.cfg.Now(),
 			done:       make(chan struct{}),
 		}
-		if !st.queue.push(req) {
+		if !st.queue.Push(req) {
 			t.Fatalf("user push %d failed", i)
 		}
 	}
@@ -244,7 +242,7 @@ func TestRouter_NewReactionDropped(t *testing.T) {
 		enqueuedAt: r.cfg.Now(),
 		done:       make(chan struct{}),
 	}
-	if st.queue.push(reaction) {
+	if st.queue.Push(reaction) {
 		t.Fatalf("reaction should have been dropped (queue full of user prompts)")
 	}
 	close(gate)
@@ -277,7 +275,7 @@ func TestRouter_ReactionAgeDrop(t *testing.T) {
 		enqueuedAt: r.cfg.Now().Add(-time.Hour),
 		done:       make(chan struct{}),
 	}
-	st.queue.push(stale)
+	st.queue.Push(stale)
 
 	before := atomic.LoadInt32(&agent.prompts)
 	close(gate) // releases the user prompt; runner then processes stale reaction
@@ -404,10 +402,10 @@ func TestRouter_ReportReactionFireAndForget(t *testing.T) {
 func TestSessionQueue_StopDrainsPending(t *testing.T) {
 	sq := newSessionQueue()
 	req := &turnReq{kind: turnReaction, done: make(chan struct{})}
-	if !sq.push(req) {
+	if !sq.Push(req) {
 		t.Fatal("push failed")
 	}
-	pending, inFlight := sq.stop()
+	pending, inFlight := sq.Stop()
 	if inFlight {
 		t.Fatal("nothing was in flight")
 	}
@@ -422,7 +420,7 @@ func TestSessionQueue_StopDrainsPending(t *testing.T) {
 	}
 	// Push after stop returns false.
 	req2 := &turnReq{kind: turnReaction, done: make(chan struct{})}
-	if sq.push(req2) {
+	if sq.Push(req2) {
 		t.Fatal("push on stopped queue should fail")
 	}
 }
@@ -445,7 +443,7 @@ func TestPrompt_SessionTornDown(t *testing.T) {
 		drainStop: make(chan struct{}),
 		chunkCh:   make(chan chunkMsg, 4),
 	}
-	st.queue.stop()
+	st.queue.Stop()
 	close(st.runStop)
 	close(st.drainStop)
 	r.sessions["torn"] = st
@@ -484,7 +482,7 @@ func TestReportReaction_DroppedWhenQueueFullOfUsers(t *testing.T) {
 		req := &turnReq{kind: turnUser, ctx: context.Background(),
 			sink: discardSink{convID: "c"}, blocks: []acp.ContentBlock{acp.TextBlock("u")},
 			enqueuedAt: r.cfg.Now(), done: make(chan struct{})}
-		st.queue.push(req)
+		st.queue.Push(req)
 	}
 	if err := r.ReportReaction(context.Background(), "c", "u", "m", "👍", "added"); err != nil {
 		t.Fatalf("ReportReaction returned err on full queue: %v", err)

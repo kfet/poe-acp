@@ -360,6 +360,7 @@ func main() {
 		Defaults:             defaults,
 		SystemPromptProvider: systemPromptProvider(cfgPath, stateDir),
 		AuthErrorHint:        broker.OfferLogin,
+		Broker:               broker, // router.New wires its convo Manager in as the Controller
 		Version:              version,
 		AgentCmd:             *agentCmd,
 		StartTime:            time.Now(),
@@ -376,7 +377,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("router: %v", err)
 	}
-	broker.SetController(rtr)
 	stopGC := rtr.RunGC(ctx, *gcEvery)
 	defer stopGC()
 
@@ -441,7 +441,7 @@ func main() {
 			m, _ := agent.Models()
 			return buildControls(m, cfg.PinnedModels, cfg.Hosts, defaults)
 		},
-		Commands: broker,
+		Commands: rtr.Convo(),
 	})
 
 	// Auto-invalidate Poe's cached settings response when the schema

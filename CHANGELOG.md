@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The conversation core now comes from acp-kit v0.24.0's shared `convo`
+  package — the sticky `!model` table, the per-session turn queue, turn-scoped
+  cancellation, the `!command` intercept and the `!status` / `!relay`
+  controller are the same code zulip-acp and slack-acp run. `!status` now also
+  shows what the agent reports for the session (context use, cost, last
+  activity) and the agent's name and version. No other behaviour change.
+
 ## [0.75.0] - 2026-09-18
 
 ### Added

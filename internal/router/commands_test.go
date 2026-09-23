@@ -130,7 +130,7 @@ func TestResetSession(t *testing.T) {
 	// Busy session (queued turn) → ErrSessionBusy.
 	busy := &sessionState{convID: "c2", queue: newSessionQueue(),
 		drainStop: make(chan struct{}), runStop: make(chan struct{})}
-	busy.queue.push(&turnReq{kind: turnUser, done: make(chan struct{})})
+	busy.queue.Push(&turnReq{kind: turnUser, done: make(chan struct{})})
 	r.mu.Lock()
 	r.sessions["c2"] = busy
 	r.mu.Unlock()
@@ -167,6 +167,7 @@ func TestAvailableModels_ModelOrder(t *testing.T) {
 	}
 	r := newCmdRouter(t, a, "")
 	r.cfg.ModelOrder = pin
+	r.convo, _ = r.newConvo() // config is read at construction
 
 	m, cur := r.AvailableModels()
 	if len(m) != 3 || m[0].ID != "openrouter/stealth/ox-alpha" || cur != "anthropic/claude-opus-5" {

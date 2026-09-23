@@ -303,7 +303,7 @@ func TestRouter_QueueIdleWhenPromptReturns(t *testing.T) {
 	if st == nil {
 		t.Fatal("session missing after Prompt")
 	}
-	if !st.queue.idle() {
+	if !st.queue.Idle() {
 		t.Fatal("queue still in flight after Prompt returned: eviction would be skipped")
 	}
 }

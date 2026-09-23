@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/kfet/acp-kit/client"
-	"github.com/kfet/acp-kit/command"
+	"github.com/kfet/acp-kit/convo"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
@@ -49,8 +49,9 @@ type Config struct {
 	// Commands, if set, intercepts relay chat-commands (login family,
 	// !help, !status, !model, !new — any of the sigils /, !, .)
 	// and pasted redirect URLs from in-flight logins before they reach
-	// the router. Optional; nil disables the command surface.
-	Commands CommandHandler
+	// the router. Production passes the router's shared convo Manager.
+	// Optional; nil disables the command surface.
+	Commands Dispatcher
 	// TurnTimeout is an OPTIONAL absolute wall-clock ceiling on a prompt
 	// turn run on a context DECOUPLED from the request ctx. Poe tears
 	// down the bot-facing HTTP connection pre-output on a transport drop;
@@ -164,23 +165,14 @@ const defaultStallThreshold = 8 * time.Second
 // dead reader cannot wedge the terminal `done` forever.
 const defaultSSEWriteTimeout = 30 * time.Second
 
-// CommandHandler is the surface httpsrv depends on; *command.Broker
-// implements it. Extracted so tests can inject handlers that return
-// odd combinations the real one can't produce.
-type CommandHandler interface {
-	HasPending(convID string) bool
-
-	// IsCommand reports whether text is a relay command this broker
-	// handles. A method rather than a package function because the
-	// answer depends on the wired Controller — acp-kit's !stop exists
-	// only where the relay can actually stop a turn, which poe cannot:
-	// it answers one HTTP request per turn, so there is no in-flight
-	// turn a later message could reach.
-	IsCommand(text string) bool
-	Handle(ctx context.Context, convID, text string) (*command.Outcome, error)
-	// Passthrough reports whether text is an allowlisted agent command;
-	// if ok, rewritten is the prompt text to forward to the agent.
-	Passthrough(text string) (rewritten string, ok bool)
+// Dispatcher is the command intercept httpsrv runs on the latest user
+// turn: acp-kit's convo.Manager (via router.Router.Convo) implements it.
+// A command's reply is written to the In's Sink — the request's SSE
+// stream — and Handled is reported; otherwise Prompt is the text to
+// forward, rewritten when it was an allowlisted agent command
+// (`!reload` → `/reload`).
+type Dispatcher interface {
+	Dispatch(ctx context.Context, in convo.In) convo.Result
 }
 
 // Handler serves the /poe endpoint.
@@ -394,12 +386,13 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	if h.cfg.Commands != nil {
 		latest := latestUserTurn(turns)
 		if latest != "" {
-			if h.cfg.Commands.HasPending(req.ConversationID) || h.cfg.Commands.IsCommand(latest) {
-				h.handleAuth(ctx, sse, req.ConversationID, latest)
+			res := h.cfg.Commands.Dispatch(ctx, convo.In{Conv: req.ConversationID, Text: latest, Sink: sseSink{sse}})
+			if res.Handled {
+				_ = sse.Done()
 				return
 			}
-			if rewritten, ok := h.cfg.Commands.Passthrough(latest); ok {
-				turns = rewriteLatestUserTurn(turns, rewritten)
+			if res.Prompt != latest {
+				turns = rewriteLatestUserTurn(turns, res.Prompt)
 			}
 		}
 	}
@@ -1765,25 +1758,15 @@ func (s *sink) maybeAppendFooter() {
 	_ = s.o.userText(footer)
 }
 
-// handleAuth runs an auth-flow turn end-to-end on the SSE stream. Always
-// emits a single text payload + done, regardless of broker outcome.
-func (h *Handler) handleAuth(ctx context.Context, sse *poeproto.SSEWriter, convID, text string) {
-	out, err := h.cfg.Commands.Handle(ctx, convID, text)
-	if err != nil {
-		log.Printf("command (conv=%s): %v", convID, err)
-		_ = sse.Error(err.Error(), "user_caused_error")
-		_ = sse.Done()
-		return
-	}
-	if out == nil {
-		// Should not happen — broker returned nil for an auth turn.
-		_ = sse.Done()
-		return
-	}
-	if out.Text != "" {
-		_ = sse.Text(out.Text)
-	}
-	_ = sse.Done()
+// sseSink delivers a command turn onto the request's SSE stream: the
+// reply as one text payload, a failure as a user-caused error. The
+// caller always ends the stream with done.
+type sseSink struct{ sse *poeproto.SSEWriter }
+
+func (s sseSink) Reply(_ context.Context, _ *convo.In, text string) error { return s.sse.Text(text) }
+
+func (s sseSink) Fail(_ context.Context, _ *convo.In, err error) error {
+	return s.sse.Error(err.Error(), "user_caused_error")
 }
 
 // handleReaction queues an out-of-band reaction turn against the

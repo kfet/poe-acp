@@ -32,6 +32,7 @@ func TestHandler_LoginIntercept(t *testing.T) {
 	broker := command.New(stub)
 
 	rtr, err := router.New(router.Config{
+		Broker:     broker,
 		Agent:      &fakeAgent{},
 		StateDir:   t.TempDir(),
 		SessionTTL: time.Hour,
@@ -39,7 +40,7 @@ func TestHandler_LoginIntercept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, Commands: broker, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: rtr.Convo(), HeartbeatInterval: 0})
 
 	body := mustJSON(map[string]any{
 		"type":            "query",
@@ -89,6 +90,7 @@ func TestHandler_LoginPaste(t *testing.T) {
 	stub.res = client.AuthResult{State: "ok"}
 
 	rtr, err := router.New(router.Config{
+		Broker:     broker,
 		Agent:      &fakeAgent{},
 		StateDir:   t.TempDir(),
 		SessionTTL: time.Hour,
@@ -96,7 +98,7 @@ func TestHandler_LoginPaste(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, Commands: broker, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: rtr.Convo(), HeartbeatInterval: 0})
 
 	body := mustJSON(map[string]any{
 		"type":            "query",
@@ -124,6 +126,7 @@ func TestHandler_NormalPromptUnaffectedByAuthBroker(t *testing.T) {
 	stub := &stubAuth{methods: []client.AuthMethod{{ID: "oauth-anthropic", Type: "agent"}}}
 	broker := command.New(stub)
 	rtr, err := router.New(router.Config{
+		Broker:     broker,
 		Agent:      &fakeAgent{},
 		StateDir:   t.TempDir(),
 		SessionTTL: time.Hour,
@@ -131,7 +134,7 @@ func TestHandler_NormalPromptUnaffectedByAuthBroker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(Config{Router: rtr, Commands: broker, HeartbeatInterval: 0})
+	h := New(Config{Router: rtr, Commands: rtr.Convo(), HeartbeatInterval: 0})
 
 	body := mustJSON(map[string]any{
 		"type":            "query",
