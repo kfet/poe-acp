@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.75.1] - 2026-09-24
+
 ### Changed
 
 - The conversation core now comes from acp-kit v0.24.0's shared `convo`
