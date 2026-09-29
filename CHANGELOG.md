@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- `!model <query>` resolves fuzzily via acp-kit v0.28.0 (`!m anth/opus55` → `anthropic/claude-opus-5-5`, echoing the full id); ambiguous queries list candidates; `!m` is an alias of `!model`.
+- Handled `!model`/`!m` queries log the query and the resolved id (`MODEL conv=… query=… resolved=…`).
+
+### Changed
+- Bump acp-kit to v0.28.0.
+
 ## [0.75.1] - 2026-09-24
 
 ### Changed

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/acp-kit/convo"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/poe-acp/internal/poeproto"
@@ -388,6 +389,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		if latest != "" {
 			res := h.cfg.Commands.Dispatch(ctx, convo.In{Conv: req.ConversationID, Text: latest, Sink: sseSink{sse}})
 			if res.Handled {
+				h.logModelQuery(req.ConversationID, latest)
 				_ = sse.Done()
 				return
 			}
@@ -1831,4 +1833,29 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "…"
+}
+
+// logModelQuery logs a handled `!model <q>` / `!m <q>` with the id the
+// broker resolved it to (same command.ResolveModel rule), so a fuzzy
+// switch is auditable. Anything else is ignored.
+func (h *Handler) logModelQuery(conv, text string) {
+	body, ok := command.StripSigil(strings.TrimSpace(text))
+	if !ok {
+		return
+	}
+	verb, arg, _ := strings.Cut(strings.TrimSpace(body), " ")
+	arg = strings.TrimSpace(arg)
+	if arg == "" || !(strings.EqualFold(verb, "model") || strings.EqualFold(verb, "m")) {
+		return
+	}
+	models, _ := h.cfg.Router.AvailableModels()
+	exact, cands := command.ResolveModel(models, arg)
+	switch {
+	case exact:
+		log.Printf("MODEL conv=%s query=%q resolved=%q exact=true", conv, arg, arg)
+	case len(cands) == 1:
+		log.Printf("MODEL conv=%s query=%q resolved=%q exact=false", conv, arg, cands[0].ID)
+	default:
+		log.Printf("MODEL conv=%s query=%q resolved=\"\" candidates=%d", conv, arg, len(cands))
+	}
 }
