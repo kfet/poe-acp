@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Bump acp-kit to v0.30.0: no panics in production code, updater survives Homebrew deleting the agent dir, convo nil-outcome crash fixed.
+
 ## [0.76.0] - 2026-09-30
 
 ### Added
