@@ -8,7 +8,7 @@ package httpsrv
 // the worker that holds it while a NEW generation starts taking every
 // request, so a redrive of an absorbed turn lands on a worker whose map
 // is empty and the whole turn re-runs. Worse, in the production incident
-// (host-c 2026-08-28) the redrive arrived 45s BEFORE the absorbed turn
+// (hostc 2026-08-28) the redrive arrived 45s BEFORE the absorbed turn
 // finished — so there was no answer to hand over at any point, in any
 // worker. Two things are therefore needed, not one:
 //

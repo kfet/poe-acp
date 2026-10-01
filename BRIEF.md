@@ -1,6 +1,6 @@
 # Brief: make the absorbed-turn path diagnosable, then converge the fleet
 
-Repo: `~/src/poe-acp` on hostb (this box). Work on a worktree per convention:
+Repo: `~/src/poe-acp` on host-b (this box). Work on a worktree per convention:
 `~/src/poe-acp-wt-absorb-logging`, branch `work/absorb-logging`.
 
 ## Background — why this exists
@@ -13,7 +13,7 @@ for the original design and `7c20551` for the on-disk store added in 0.62.1.
 
 **The problem: this entire path is invisible in production.**
 
-An incident on host-d/bot-c on 2026-08-28 took four rounds of investigation and
+An incident on host-d/bot-d on 2026-08-28 took four rounds of investigation and
 STILL could not be settled from logs. A turn received at 06:55:42 ran 54m59s to
 completion (FRAMESTATS 07:50:41) after the user's phone dropped. It is impossible
 to tell from the logs whether that turn was absorbed and buffered, or whether Poe
@@ -86,12 +86,12 @@ find yourself editing a duration, stop and re-read this paragraph.
   level is the point, not an afterthought.
 - Reviewed and merged to main via the `ship-it` skill (review-and-fix loop,
   ff-merge, cut a release). This will be 0.63.0 or 0.62.2 — your judgement.
-- Fleet converged to the new version. **host-d/bot-c is the priority** — it is
+- Fleet converged to the new version. **host-d/bot-d is the priority** — it is
   currently on 0.62.0, which has the MEMORY-ONLY answer buffer. That buffer is void
   across every SIGHUP worker swap, and a worker swap is itself a bot-side failure —
   i.e. the feature is dead in exactly its primary use case. 0.62.1's on-disk store
   fixes that and has never been deployed anywhere. Converging the whole fleet is
-  in scope; bot-c is the one that must work.
+  in scope; bot-d is the one that must work.
 
 ## Gotchas (learned the hard way, do not rediscover)
 
@@ -101,8 +101,8 @@ find yourself editing a duration, stop and re-read this paragraph.
   version, so a bot sharing a binary with an already-converged bot can silently
   keep running the old worker. Verify the running worker's version, not just the
   on-disk file.
-- host-d refuses hosta's ssh key. Drive it from hostb.
-- All source and git work happens on hostb. Fleet hosts carry the static binary
+- host-d refuses host-a's ssh key. Drive it from host-b.
+- All source and git work happens on host-b. Fleet hosts carry the static binary
   only — never build or push from one.
 
 ## Report back

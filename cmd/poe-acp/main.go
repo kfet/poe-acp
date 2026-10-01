@@ -840,7 +840,7 @@ func runSupervisor(addr, version string, drainDeadline, swapDrainDeadline, maxRe
 			// Any HUP that arrived WHILE spawnReady was running is
 			// already satisfied by the worker it just brought up:
 			// serving it would retire a brand-new generation for
-			// nothing. Drain them. (Hygiene only — in the host-c
+			// nothing. Drain them. (Hygiene only — in the hostc
 			// 2026-08-28 incident the two reloads were 3s apart and the
 			// first swap had already completed, so this would not have
 			// prevented it.)

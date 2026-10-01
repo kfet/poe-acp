@@ -7,7 +7,7 @@
   "unit": "poe-acp-bot-h",
   "binary": "~/.local/bin/poe-acp",
   "agent": {
-    "cmd": "ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 hostb .local/bin/fir --mode acp",
+    "cmd": "ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 host-b .local/bin/fir --mode acp",
     "kind": "remote-fir"
   },
   "server": {
@@ -29,7 +29,7 @@
       "model": "anthropic/claude-opus-5",
       "thinking": "medium"
     },
-    "agent_ssh_host": "hostb"
+    "agent_ssh_host": "host-b"
   },
   "credentials": {
     "env_file": "~/.config/poe-acp/bot-h/env"

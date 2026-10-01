@@ -179,7 +179,7 @@ runs on" actually requires: `fir --mode acp` cannot relocate a running
 process, so the process IS the placement.
 
 - `hosts[i].agent_cmd` is the command that reaches that host (e.g.
-  `ssh -T hostb .local/bin/fir --mode acp`); `hosts[i].ssh_host` (default
+  `ssh -T host-b .local/bin/fir --mode acp`); `hosts[i].ssh_host` (default
   `value`, or `"local"` for this machine) is the filesystem that agent
   sees, used for the per-conv cwd and attachment staging/fetch-back.
   `agent_cmd` on the reserved `"local"` entry is a config error — that

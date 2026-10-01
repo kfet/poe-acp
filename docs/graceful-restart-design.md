@@ -295,7 +295,7 @@ group). So there is now an **outer** net as well:
   (`Retiring()`), and `KillRetiring()` on shutdown ensures no worker
   outlives its supervisor.
 
-**Update (after the 2026-08-02 bot-d reload incident): there are
+**Update (after the 2026-08-02 bot-c reload incident): there are
 TWO chains, not one.** A worker is retired
 in two situations with opposite contracts, and one constant governed
 both — so a `systemctl --user reload` landing on a conversation whose

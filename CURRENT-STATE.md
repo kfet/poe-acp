@@ -12,40 +12,10 @@ fir-exts rev is identical on host-d / host-e / host-g:
 
 ---
 
-## 1. host-d — bot `bot-c` — linux/arm64 — systemd --user
-
-unit: `~/.config/systemd/user/poe-acp-bot-c.service`
-poe-acp 0.51.0 · **fir 0.93.0** · binary `~/.local/bin/poe-acp`
-
-config `~/.config/poe-acp/bot-bot-c/config.json`:
-```json
-{
-  "bot_name": "bot-c",
-  "defaults": {
-    "model": "anthropic/claude-opus-5",
-    "thinking": "medium",
-    "hide_thinking": false,
-    "coalesce_ms": 3000,
-    "coalesce_grid": true,
-    "spinner_animate": false
-  }
-}
-```
-
-unit:
-```
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-EnvironmentFile=%h/.config/poe-acp/bot-bot-c/env
-ExecStart=%h/.local/bin/poe-acp --http-addr 127.0.0.1:8347 --poe-path /bot-c --config %h/.config/poe-acp/bot-bot-c/config.json --agent-cmd "fir --mode acp" --heartbeat-interval 3s --session-ttl 10m --enable-mcp-attach --introduction "bot-c — fir over ACP on host-d (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-5."
-```
-env file: `POEACP_ACCESS_KEY` only.
-
----
-
-## 2. host-c (host-c) — bot `bot-d` — linux/arm64 — systemd --user
+## 1. host-d — bot `bot-d` — linux/arm64 — systemd --user
 
 unit: `~/.config/systemd/user/poe-acp-bot-d.service`
-poe-acp 0.51.0 · **fir 0.94.0** · binary `~/.local/bin/poe-acp`
+poe-acp 0.51.0 · **fir 0.93.0** · binary `~/.local/bin/poe-acp`
 
 config `~/.config/poe-acp/bot-bot-d/config.json`:
 ```json
@@ -66,7 +36,37 @@ unit:
 ```
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/poe-acp/bot-bot-d/env
-ExecStart=%h/.local/bin/poe-acp   --http-addr 127.0.0.1:8347   --poe-path /bot-d   --config %h/.config/poe-acp/bot-bot-d/config.json   --agent-cmd "fir --mode acp"   --heartbeat-interval 3s --session-ttl 10m   --enable-mcp-attach   --introduction "bot-d — fir over ACP on host-c (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-4-8."
+ExecStart=%h/.local/bin/poe-acp --http-addr 127.0.0.1:8347 --poe-path /bot-d --config %h/.config/poe-acp/bot-bot-d/config.json --agent-cmd "fir --mode acp" --heartbeat-interval 3s --session-ttl 10m --enable-mcp-attach --introduction "bot-d — fir over ACP on host-d (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-5."
+```
+env file: `POEACP_ACCESS_KEY` only.
+
+---
+
+## 2. host-c (host-c) — bot `bot-c` — linux/arm64 — systemd --user
+
+unit: `~/.config/systemd/user/poe-acp-bot-c.service`
+poe-acp 0.51.0 · **fir 0.94.0** · binary `~/.local/bin/poe-acp`
+
+config `~/.config/poe-acp/bot-bot-c/config.json`:
+```json
+{
+  "bot_name": "bot-c",
+  "defaults": {
+    "model": "anthropic/claude-opus-5",
+    "thinking": "medium",
+    "hide_thinking": false,
+    "coalesce_ms": 3000,
+    "coalesce_grid": true,
+    "spinner_animate": false
+  }
+}
+```
+
+unit:
+```
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/poe-acp/bot-bot-c/env
+ExecStart=%h/.local/bin/poe-acp   --http-addr 127.0.0.1:8347   --poe-path /bot-c   --config %h/.config/poe-acp/bot-bot-c/config.json   --agent-cmd "fir --mode acp"   --heartbeat-interval 3s --session-ttl 10m   --enable-mcp-attach   --introduction "bot-c — fir over ACP on host-c (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-4-8."
 ```
 env file: `POEACP_ACCESS_KEY` only.
 
@@ -117,7 +117,7 @@ says opus-4-8/low.
 
 ---
 
-## 4. host-g (kfethost-g) — bot `bot-f` — darwin/arm64 — launchd + homebrew
+## 4. host-g (host-g) — bot `bot-f` — darwin/arm64 — launchd + homebrew
 
 plist: `~/Library/LaunchAgents/dev.kfet.poe-acp.plist`
 poe-acp 0.51.0 · **fir 0.90.1 (oldest)** · binary `/opt/homebrew/bin/poe-acp`

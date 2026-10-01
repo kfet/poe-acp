@@ -323,16 +323,16 @@ keep working.
   },
   "hosts": [
     { "value": "local", "name": "this box (local)" },
-    { "value": "host-a", "name": "hosta (server)" },
+    { "value": "host-a", "name": "host-a (server)" },
     { "value": "boxy" },
     {
-      "value": "hostb",
-      "name": "hostb (own agent)",
-      "agent_cmd": "ssh -T hostb .local/bin/fir --mode acp",
-      "ssh_host": "hostb"
+      "value": "host-b",
+      "name": "host-b (own agent)",
+      "agent_cmd": "ssh -T host-b .local/bin/fir --mode acp",
+      "ssh_host": "host-b"
     }
   ],
-  "agent_ssh_host": "hostb",
+  "agent_ssh_host": "host-b",
   "agent": {
     "profile": "fir"
   }
@@ -430,7 +430,7 @@ keep working.
   that understands the create-time `_meta.host` hint (acp-tmux).
   The value **`"local"`** (exact, case-sensitive) is RESERVED and means
   "wherever the agent itself runs" — list it to offer the agent's own
-  host as a dropdown option (`{"value": "local", "name": "hosta
+  host as a dropdown option (`{"value": "local", "name": "host-a
   (local)"}`). It is a relay-side sentinel: when it is the resolved
   host, no `_meta.host` is sent at all, exactly as if no list were
   configured. The literal string never reaches the agent. If you have a
@@ -439,7 +439,7 @@ keep working.
 - **`hosts[i].agent_cmd`** — run a DEDICATED agent process for this
   host instead of hinting placement to the single default agent. The
   value is the command that reaches the host, e.g.
-  `"ssh -T hostb .local/bin/fir --mode acp"`. This is what makes the
+  `"ssh -T host-b .local/bin/fir --mode acp"`. This is what makes the
   `Host` dropdown actually move the agent: `fir --mode acp` cannot
   relocate itself, so a per-conversation host choice needs one process
   per host. The process is started lazily on the first conversation
@@ -475,7 +475,7 @@ keep working.
   mid-session.)
 - **`agent_ssh_host`** — the machine the ACP AGENT PROCESS runs on,
   when that is not this one — i.e. when `--agent-cmd` is something like
-  `ssh -T hostb .local/bin/fir --mode acp`. An ssh destination this relay
+  `ssh -T host-b .local/bin/fir --mode acp`. An ssh destination this relay
   can reach (`~/.ssh/config` alias, `user@host`, IP).
   The relay hands the agent absolute paths: the per-conversation cwd on
   `session/new`, and the attachment files it stages for a prompt. Those

@@ -5,9 +5,9 @@ import "testing"
 // "--host" is reserved only for bots that declare the Host dropdown, so
 // the default escaper must leave it byte-identical.
 func TestEscapeReservedFlags_HostUntouchedByDefault(t *testing.T) {
-	in := "run `ssh --host host-a` and --model x"
+	in := "run `ssh --host hosta` and --model x"
 	got := EscapeReservedFlags(in)
-	if want := "run `ssh --host host-a` and --" + zeroWidthSpace + "model x"; got != want {
+	if want := "run `ssh --host hosta` and --" + zeroWidthSpace + "model x"; got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }

@@ -16,7 +16,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CONVERGE="$ROOT/scripts/converge.sh"
 GOLDEN="$ROOT/test/golden"
-BOTS=(bot-c bot-d bot-e bot-f bot-i bot-h)
+BOTS=(bot-d bot-c bot-e bot-f bot-i bot-h)
 # The live registry is ~/sync/shared/fleet/bots (shared by every relay);
 # tests render a frozen copy so they are hermetic.
 export FLEET_BOTS_DIR="$ROOT/test/fixtures/bots"
@@ -42,7 +42,7 @@ for bot in "${BOTS[@]}"; do
     check_golden "$bot.$art" "$GOLDEN/$bot.$art" "$t"; rm -f "$t"
   done
 done
-for bot in bot-c bot-d bot-e bot-i bot-h; do
+for bot in bot-d bot-c bot-e bot-i bot-h; do
   t=$(mktemp); "$CONVERGE" render "$bot" unit >"$t"
   check_golden "$bot.unit" "$GOLDEN/$bot.unit" "$t"; rm -f "$t"
 done
@@ -111,7 +111,7 @@ WANT_POE_ACP=$(tr -d "[:space:]" <"$ROOT/VERSION")
 printf '#!/bin/sh\necho %s\n' "$WANT_POE_ACP" >"$fake/.local/bin/poe-acp"
 chmod +x "$fake/.local/bin/poe-acp"
 
-out=$("$CONVERGE" bot-c --target-root "$fake")
+out=$("$CONVERGE" bot-d --target-root "$fake")
 case "$out" in
   *"DRY RUN"*) ok "dry run is the default" ;;
   *) bad "expected DRY RUN banner"; echo "$out" ;;
@@ -120,18 +120,18 @@ case "$out" in
   *"poe-acp $WANT_POE_ACP ✓"*) ok "stub binary version matches VERSION" ;;
   *) bad "expected poe-acp version ✓"; echo "$out" ;;
 esac
-[ ! -f "$fake/.config/poe-acp/bot-bot-c/config.json" ] \
+[ ! -f "$fake/.config/poe-acp/bot-bot-d/config.json" ] \
   && ok "dry run wrote nothing" || bad "dry run must not write config"
 
-out=$("$CONVERGE" bot-c --target-root "$fake" --apply)
-[ -f "$fake/.config/poe-acp/bot-bot-c/config.json" ] \
+out=$("$CONVERGE" bot-d --target-root "$fake" --apply)
+[ -f "$fake/.config/poe-acp/bot-bot-d/config.json" ] \
   && ok "apply wrote config" || bad "apply must write config"
-[ -f "$fake/.config/systemd/user/poe-acp-bot-c.service" ] \
+[ -f "$fake/.config/systemd/user/poe-acp-bot-d.service" ] \
   && ok "apply wrote unit" || bad "apply must write unit"
-diff <("$CONVERGE" render bot-c config) "$fake/.config/poe-acp/bot-bot-c/config.json" >/dev/null \
+diff <("$CONVERGE" render bot-d config) "$fake/.config/poe-acp/bot-bot-d/config.json" >/dev/null \
   && ok "written config matches render" || bad "config on fake host differs from render"
 
-out=$("$CONVERGE" bot-c --target-root "$fake" --apply)
+out=$("$CONVERGE" bot-d --target-root "$fake" --apply)
 case "$out" in
   *"config"*"✓"*) ok "second apply: config already converged" ;;
   *) bad "second apply should show config ✓"; echo "$out" ;;
@@ -145,8 +145,8 @@ nbaks=$(find "$fake" -name "*.bak-*" | wc -l)
 [ "$nbaks" -eq 0 ] && ok "no spurious backups" || bad "expected 0 backups, got $nbaks"
 
 # backup on overwrite: mutate config, re-apply, expect .bak
-echo '{"x":1}' >"$fake/.config/poe-acp/bot-bot-c/config.json"
-"$CONVERGE" bot-c --target-root "$fake" --apply >/dev/null
+echo '{"x":1}' >"$fake/.config/poe-acp/bot-bot-d/config.json"
+"$CONVERGE" bot-d --target-root "$fake" --apply >/dev/null
 nbaks=$(find "$fake" -name "*.bak-*" | wc -l)
 [ "$nbaks" -eq 1 ] && ok "backup created on overwrite" || bad "expected 1 backup, got $nbaks"
 
@@ -265,14 +265,14 @@ STUB
 chmod +x "$fake3/.local/bin/poe-acp" "$fake3/.local/bin/systemctl" \
          "$fake3/.local/bin/ps" "$fake3/.local/bin/pgrep"
 
-out=$("$CONVERGE" bot-c --target-root "$fake3")
+out=$("$CONVERGE" bot-d --target-root "$fake3")
 case "$out" in
   *"would hard restart"*) ok "dry run previews the recycle mechanism (unit missing => hard)" ;;
   *) bad "dry run must preview the mechanism"; echo "$out" ;;
 esac
 
 # First apply writes config+unit => unit changed => hard restart is mandatory.
-out=$("$CONVERGE" bot-c --target-root "$fake3" --apply)
+out=$("$CONVERGE" bot-d --target-root "$fake3" --apply)
 case "$out" in
   *"hard restart (daemon-reload + restart) ✓"*) ok "unit change forces a hard restart" ;;
   *) bad "expected hard restart on unit change"; echo "$out" ;;
@@ -287,16 +287,16 @@ case "$out" in
 esac
 
 # Binary-only change (config edited, unit untouched) => graceful worker swap.
-echo '{"x":0}' >"$fake3/.config/poe-acp/bot-bot-c/config.json"
-out=$("$CONVERGE" bot-c --target-root "$fake3")
+echo '{"x":0}' >"$fake3/.config/poe-acp/bot-bot-d/config.json"
+out=$("$CONVERGE" bot-d --target-root "$fake3")
 case "$out" in
   *"would graceful worker swap (SIGHUP)"*) ok "dry run previews a graceful swap for a config-only change" ;;
   *) bad "dry run must preview the graceful swap"; echo "$out" ;;
 esac
 : >"$fake3/.stub/log"
 wbefore=$(cat "$fake3/.stub/worker")
-echo '{"x":1}' >"$fake3/.config/poe-acp/bot-bot-c/config.json"
-out=$("$CONVERGE" bot-c --target-root "$fake3" --apply)
+echo '{"x":1}' >"$fake3/.config/poe-acp/bot-bot-d/config.json"
+out=$("$CONVERGE" bot-d --target-root "$fake3" --apply)
 case "$out" in
   *"graceful worker swap (SIGHUP) ✓"*) ok "config-only change does a graceful swap" ;;
   *) bad "expected graceful swap"; echo "$out" ;;
@@ -315,8 +315,8 @@ esac
 # A pre-0.36.0 host: the tracked process is a single relay whose children are
 # ACP AGENTS, not workers. Those must not be read as a swap capability.
 printf '%s\n' fir >"$fake3/.stub/comm"
-echo '{"x":9}' >"$fake3/.config/poe-acp/bot-bot-c/config.json"
-out=$("$CONVERGE" bot-c --target-root "$fake3")
+echo '{"x":9}' >"$fake3/.config/poe-acp/bot-bot-d/config.json"
+out=$("$CONVERGE" bot-d --target-root "$fake3")
 case "$out" in
   *"would hard restart"*) ok "agent children are not workers (pre-0.36 => hard)" ;;
   *) bad "non-poe-acp children must not select the graceful path"; echo "$out" ;;
@@ -338,8 +338,8 @@ case "$*" in
 esac
 STUB
 chmod +x "$fake3/.local/bin/systemctl"
-echo '{"x":10}' >"$fake3/.config/poe-acp/bot-bot-c/config.json"
-if "$CONVERGE" bot-c --target-root "$fake3" --apply >/dev/null 2>&1; then
+echo '{"x":10}' >"$fake3/.config/poe-acp/bot-bot-d/config.json"
+if "$CONVERGE" bot-d --target-root "$fake3" --apply >/dev/null 2>&1; then
   bad "a new non-worker child must not pass as a completed swap"
 else
   ok "new child that is not the poe-acp image fails the swap verification"
@@ -356,8 +356,8 @@ case "$*" in
 esac
 STUB
 chmod +x "$fake3/.local/bin/systemctl"
-echo '{"x":2}' >"$fake3/.config/poe-acp/bot-bot-c/config.json"
-if "$CONVERGE" bot-c --target-root "$fake3" --apply >/dev/null 2>&1; then
+echo '{"x":2}' >"$fake3/.config/poe-acp/bot-bot-d/config.json"
+if "$CONVERGE" bot-d --target-root "$fake3" --apply >/dev/null 2>&1; then
   bad "a swap that never forks a new worker must fail"
 else
   ok "no new worker after SIGHUP fails loudly"
@@ -365,8 +365,8 @@ fi
 
 # Same for the hard path: a restart that leaves the supervisor pid frozen
 # means the service never actually came back on the new binary.
-rm -f "$fake3/.config/systemd/user/poe-acp-bot-c.service"
-if "$CONVERGE" bot-c --target-root "$fake3" --apply >/dev/null 2>&1; then
+rm -f "$fake3/.config/systemd/user/poe-acp-bot-d.service"
+if "$CONVERGE" bot-d --target-root "$fake3" --apply >/dev/null 2>&1; then
   bad "a restart that does not move the supervisor pid must fail"
 else
   ok "frozen supervisor pid after a hard restart fails loudly"
@@ -438,16 +438,16 @@ chmod +x "$fake4/.local/bin/poe-acp" "$fake4/.local/bin/systemctl" \
          "$fake4/.local/bin/ps" "$fake4/.local/bin/pgrep"
 
 # First apply writes the unit => hard restart, as for any first cutover.
-"$CONVERGE" bot-c --target-root "$fake4" --apply >/dev/null
+"$CONVERGE" bot-d --target-root "$fake4" --apply >/dev/null
 # Now a config-only change: the moved-aside image must read as a live worker.
-echo '{"x":1}' >"$fake4/.config/poe-acp/bot-bot-c/config.json"
-out=$("$CONVERGE" bot-c --target-root "$fake4")
+echo '{"x":1}' >"$fake4/.config/poe-acp/bot-bot-d/config.json"
+out=$("$CONVERGE" bot-d --target-root "$fake4")
 case "$out" in
   *"would graceful worker swap (SIGHUP)"*) ok "moved-aside image previews a graceful swap" ;;
   *) bad "moved-aside image must not force a hard restart"; echo "$out" ;;
 esac
 : >"$fake4/.stub/log"
-out=$("$CONVERGE" bot-c --target-root "$fake4" --apply)
+out=$("$CONVERGE" bot-d --target-root "$fake4" --apply)
 case "$out" in
   *"graceful worker swap (SIGHUP) ✓"*) ok "moved-aside image swaps gracefully" ;;
   *) bad "expected a graceful swap on the moved-aside image"; echo "$out" ;;

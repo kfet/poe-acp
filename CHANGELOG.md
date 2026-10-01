@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Docs, tests, goldens and fixtures use synthetic bot and host names (bot-a, host-a, example.invalid) instead of real fleet names.
+
 ## [0.76.2] - 2026-10-01
 
 ### Changed
@@ -465,7 +468,7 @@
 
 - **`converge.sh` survives a swap that a second SIGHUP supersedes.** A unit
   with a duplicated `ExecReload` (a stale `graceful.conf` drop-in repeating
-  what the canonical unit already says — found on bot-d, bot-c and
+  what the canonical unit already says — found on bot-c, bot-d and
   bot-e) fires two SIGHUPs per `systemctl reload`, so the worker converge
   watched appear was retired seconds later and the run aborted with "new
   worker did not survive the swap" even though the swap had succeeded. A
@@ -511,7 +514,7 @@
   unreachable: every new conversation was forced onto a remote box. The
   exact, case-sensitive value `"local"` is now reserved and means
   "wherever the agent itself runs" — list it like any other entry
-  (`{"value": "local", "name": "hosta (local)"}`), optionally as
+  (`{"value": "local", "name": "host-a (local)"}`), optionally as
   `defaults.host`. It is a relay-side sentinel: when it is the resolved
   host, `session/new` carries no `_meta.host` at all, byte-identical to
   an unconfigured bot, because the agent's own contract for "run here" is

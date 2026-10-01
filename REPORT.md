@@ -4,7 +4,7 @@ Branch: `work/dist-spec`. All work committed; nothing pushed/merged/tagged.
 
 ## What shipped
 
-1. **`bots/*.json`** — four declarative specs (`bot-c`, `bot-d`,
+1. **`bots/*.json`** — four declarative specs (`bot-d`, `bot-c`,
    `bot-e`, `bot-f`) transcribed faithfully from `CURRENT-STATE.md`,
    quirks preserved (see below).
 2. **`dist.lock`** — fleet-wide target: poe-acp `0.51.0`, fir `0.95.0`
@@ -43,11 +43,11 @@ stanza; supervisor-specifics in `systemd` / `launchd` stanzas.
 
 ```jsonc
 {
-  "name": "bot-c",
+  "name": "bot-d",
   "host": "host-d",                 // ssh alias
   "platform": "linux/arm64",         // selects the release asset
   "supervisor": "systemd-user",      // or "launchd"
-  "unit": "poe-acp-bot-c",         // unit name / launchd label
+  "unit": "poe-acp-bot-d",         // unit name / launchd label
   "binary": "~/.local/bin/poe-acp",
   "agent": { "cmd": "fir --mode acp", "kind": "fir" },
   "fir": { "exts": ["github.com/kfet/fir-exts"] },   // pinned via dist.lock
@@ -61,7 +61,7 @@ stanza; supervisor-specifics in `systemd` / `launchd` stanzas.
   "systemd": { "env_path": "...", "restart": "...", "restart_sec": "..." },  // optional
   "launchd": { "plist": "...", "path_env": "...", "log_out": "...", "log_err": "..." },
   "config": { /* config.json contents, verbatim */ },
-  "credentials": { "env_file": "~/.config/poe-acp/bot-bot-c/env" }  // reference only
+  "credentials": { "env_file": "~/.config/poe-acp/bot-bot-d/env" }  // reference only
 }
 ```
 
@@ -82,11 +82,11 @@ Conventions:
 ## How to run
 
 ```bash
-scripts/converge.sh bot-c                 # dry run — review the diffs
-scripts/converge.sh bot-c --apply         # converge host-d
+scripts/converge.sh bot-d                 # dry run — review the diffs
+scripts/converge.sh bot-d --apply         # converge host-d
 scripts/converge.sh --tot                   # advance dist.lock; review, commit, then converge all
 scripts/converge.sh render bot-f plist    # inspect any rendered artefact
-scripts/converge.sh bot-c --target-root /tmp/fake --apply   # local fake host (tests)
+scripts/converge.sh bot-d --target-root /tmp/fake --apply   # local fake host (tests)
 test/converge_render.sh                     # offline test suite
 ```
 
@@ -108,13 +108,13 @@ when only config/binary moved.
 
 ## Quirks flagged for later normalisation (transcribed as-is, NOT fixed)
 
-1. **bot-d**: introduction says "default opus-4-8" but config default is
+1. **bot-c**: introduction says "default opus-4-8" but config default is
    `anthropic/claude-opus-5`. Stale prose.
 2. **bot-e**: same stale intro ("opus-4-8/low"); has `"poe_mcp": true` in
    config while the unit lacks `--enable-mcp-attach`. Functionally
    equivalent — the flag is a **deprecated alias** for the config knob
    (per `cmd/poe-acp/main.go`), so bot-e is actually the *modern* form;
-   candidates bot-c/bot-d could migrate flag→config later.
+   candidates bot-d/bot-c could migrate flag→config later.
 3. **bot-f**: poe_path `/poe-acp` (not `/bot-f`); no `--config` (default
    path); no `--session-ttl`; no mcp-attach; extra `agent.profile: "fir"`
    config key; extra package `github.com/anthropics/claude-plugins-official`

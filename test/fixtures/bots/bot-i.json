@@ -27,10 +27,10 @@
     "hosts": [
       {
         "value": "local",
-        "name": "hosta (local)"
+        "name": "host-a (local)"
       },
       {
-        "value": "hostb"
+        "value": "host-b"
       },
       {
         "value": "host-c"

@@ -1,6 +1,6 @@
 {
   "name": "bot-c",
-  "host": "host-d",
+  "host": "host-c",
   "platform": "linux/arm64",
   "supervisor": "systemd-user",
   "unit": "poe-acp-bot-c",
@@ -21,7 +21,7 @@
     "heartbeat_interval": "3s",
     "session_ttl": "10m",
     "enable_mcp_attach": true,
-    "introduction": "bot-c — fir over ACP on host-d (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-5."
+    "introduction": "bot-c — fir over ACP on host-c (arm64). Send !help (!login, !model, !status, !new). Any provider; default opus-4-8."
   },
   "systemd": {
     "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",

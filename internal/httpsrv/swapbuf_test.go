@@ -2,7 +2,7 @@ package httpsrv
 
 // Cross-worker-generation absorbed-answer survival.
 //
-// Reproduces the host-c 2026-08-28 incident shape: a SIGHUP swap retires
+// Reproduces the hostc 2026-08-28 incident shape: a SIGHUP swap retires
 // the worker holding an absorbed turn, and the redrive lands on a
 // different worker generation. Each `*Handler` here IS a worker
 // generation — separate process memory, same on-disk state dir.

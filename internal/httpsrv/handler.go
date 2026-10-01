@@ -475,7 +475,7 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 		}
 		// Mid-flight redrive. The absorbed turn that owns this key may
 		// still be RUNNING — commonly in a retiring worker generation
-		// after a SIGHUP swap, which is exactly how the host-c
+		// after a SIGHUP swap, which is exactly how the hostc
 		// 2026-08-28 incident lost a 91s turn: the redrive arrived 45s
 		// before the original finished, so no completed answer existed
 		// anywhere to hand over. Wait for it (the spinner keeps the SSE

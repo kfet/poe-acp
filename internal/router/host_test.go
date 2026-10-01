@@ -65,7 +65,7 @@ func TestHost_UnconfiguredSendsNoMeta(t *testing.T) {
 
 // A configured, selected host lands in _meta.host at session create.
 func TestHost_SelectedHostSentAtCreate(t *testing.T) {
-	r, agent := hostRouter(t, []string{"host-a", "boxy"}, "host-a")
+	r, agent := hostRouter(t, []string{"hosta", "boxy"}, "hosta")
 	opts := ParseOptions(map[string]any{"host": "boxy"}, r.Defaults(), nil)
 	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, opts, &captureSink{}); err != nil {
 		t.Fatalf("Prompt: %v", err)
@@ -77,13 +77,13 @@ func TestHost_SelectedHostSentAtCreate(t *testing.T) {
 
 // No `host` parameter: the configured default is used.
 func TestHost_DefaultUsedWhenParameterAbsent(t *testing.T) {
-	r, agent := hostRouter(t, []string{"host-a", "boxy"}, "host-a")
+	r, agent := hostRouter(t, []string{"hosta", "boxy"}, "hosta")
 	opts := ParseOptions(map[string]any{}, r.Defaults(), nil)
 	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, opts, &captureSink{}); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	if h, _ := agent.metaHost(); h != "host-a" {
-		t.Fatalf("_meta.host = %q, want host-a", h)
+	if h, _ := agent.metaHost(); h != "hosta" {
+		t.Fatalf("_meta.host = %q, want hosta", h)
 	}
 }
 
@@ -91,25 +91,25 @@ func TestHost_DefaultUsedWhenParameterAbsent(t *testing.T) {
 // configured default wins — the relay never hands an arbitrary ssh
 // destination to the agent.
 func TestHost_UnlistedHostRejected(t *testing.T) {
-	r, agent := hostRouter(t, []string{"host-a"}, "host-a")
+	r, agent := hostRouter(t, []string{"hosta"}, "hosta")
 	opts := ParseOptions(map[string]any{"host": "attacker@evil"}, r.Defaults(), nil)
 	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, opts, &captureSink{}); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	if h, _ := agent.metaHost(); h != "host-a" {
-		t.Fatalf("_meta.host = %q, want host-a", h)
+	if h, _ := agent.metaHost(); h != "hosta" {
+		t.Fatalf("_meta.host = %q, want hosta", h)
 	}
 }
 
 // defaults.host without any curated list pins every conversation to one
 // host and still sends _meta.host.
 func TestHost_DefaultWithoutListStillSent(t *testing.T) {
-	r, agent := hostRouter(t, nil, "host-a")
+	r, agent := hostRouter(t, nil, "hosta")
 	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "hi"}}, r.Defaults(), &captureSink{}); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	if h, _ := agent.metaHost(); h != "host-a" {
-		t.Fatalf("_meta.host = %q, want host-a", h)
+	if h, _ := agent.metaHost(); h != "hosta" {
+		t.Fatalf("_meta.host = %q, want hosta", h)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestHost_DefaultWithoutListStillSent(t *testing.T) {
 // must keep the session (no new session, no torn-down pane) and say so
 // exactly once, not on every subsequent turn.
 func TestHost_LiveChangeKeepsSessionAndNotifiesOnce(t *testing.T) {
-	r, agent := hostRouter(t, []string{"host-a", "boxy"}, "host-a")
+	r, agent := hostRouter(t, []string{"hosta", "boxy"}, "hosta")
 
 	first := &captureSink{}
 	if err := r.Prompt(context.Background(), "c1", "u", []Turn{{Role: "user", Content: "one"}}, r.Defaults(), first); err != nil {
@@ -142,12 +142,12 @@ func TestHost_LiveChangeKeepsSessionAndNotifiesOnce(t *testing.T) {
 	if sid := sessionIDOf(t, r, "c1"); sid != sidBefore {
 		t.Fatalf("session id changed on host twiddle: %q -> %q", sidBefore, sid)
 	}
-	if h, _ := agent.metaHost(); h != "host-a" {
+	if h, _ := agent.metaHost(); h != "hosta" {
 		t.Fatalf("_meta.host must not be re-sent/changed, got %q", h)
 	}
 	txt := second.text.String()
 	if !strings.Contains(txt, "host takes effect on the next conversation") ||
-		!strings.Contains(txt, "host-a") {
+		!strings.Contains(txt, "hosta") {
 		t.Fatalf("missing host notice, got %q", txt)
 	}
 	if !strings.Contains(txt, "ok") {
@@ -165,7 +165,7 @@ func TestHost_LiveChangeKeepsSessionAndNotifiesOnce(t *testing.T) {
 	}
 
 	// Flipping BACK to the session's real host is silent too.
-	back := ParseOptions(map[string]any{"host": "host-a"}, r.Defaults(), nil)
+	back := ParseOptions(map[string]any{"host": "hosta"}, r.Defaults(), nil)
 	fourth := &captureSink{}
 	if err := r.Prompt(context.Background(), "c1", "u",
 		[]Turn{{Role: "user", Content: "one", MessageID: "m1"}, {Role: "user", Content: "two", MessageID: "m2"}, {Role: "user", Content: "three", MessageID: "m3"}, {Role: "user", Content: "four", MessageID: "m4"}}, back, fourth); err != nil {
@@ -197,14 +197,14 @@ func TestHost_NoticeLabelsHostlessSession(t *testing.T) {
 // ParseOptions treats `host` as untrusted: wrong type and empty string
 // leave the resolved default in place.
 func TestHost_ParseOptionsJunk(t *testing.T) {
-	defs := Options{Host: "host-a"}
+	defs := Options{Host: "hosta"}
 	for name, params := range map[string]map[string]any{
 		"wrong type":   {"host": 42},
 		"empty string": {"host": ""},
 		"absent":       {},
 	} {
-		if got := ParseOptions(params, defs, nil).Host; got != "host-a" {
-			t.Fatalf("%s: host = %q, want host-a", name, got)
+		if got := ParseOptions(params, defs, nil).Host; got != "hosta" {
+			t.Fatalf("%s: host = %q, want hosta", name, got)
 		}
 	}
 }
@@ -212,12 +212,12 @@ func TestHost_ParseOptionsJunk(t *testing.T) {
 // A reaction never carries parameters; it must still resolve to the
 // configured default host when it has to create the session.
 func TestHost_ReactionCreatesSessionOnDefaultHost(t *testing.T) {
-	r, agent := hostRouter(t, []string{"host-a"}, "host-a")
+	r, agent := hostRouter(t, []string{"hosta"}, "hosta")
 	if err := r.ReportReaction(context.Background(), "c1", "u", "m1", "like", "add"); err != nil {
 		t.Fatalf("ReportReaction: %v", err)
 	}
-	if h, _ := agent.metaHost(); h != "host-a" {
-		t.Fatalf("_meta.host = %q, want host-a", h)
+	if h, _ := agent.metaHost(); h != "hosta" {
+		t.Fatalf("_meta.host = %q, want hosta", h)
 	}
 }
 
@@ -269,8 +269,8 @@ func TestHost_ResumeSendsNoMeta(t *testing.T) {
 
 	r, err := New(Config{
 		Agent: agent, StateDir: t.TempDir(), SessionTTL: time.Hour,
-		Hosts:    []string{"host-a", "boxy"},
-		Defaults: Options{Host: "host-a"},
+		Hosts:    []string{"hosta", "boxy"},
+		Defaults: Options{Host: "hosta"},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -294,13 +294,13 @@ func TestHost_ResumeSendsNoMeta(t *testing.T) {
 // the session from scratch, so the rebuilt one legitimately lands on the
 // currently-selected host — and, being brand new, says nothing about it.
 func TestHost_DivergenceRebuildAdoptsSelectedHost(t *testing.T) {
-	r, agent := hostRouter(t, []string{"host-a", "boxy"}, "host-a")
+	r, agent := hostRouter(t, []string{"hosta", "boxy"}, "hosta")
 
 	if err := r.Prompt(context.Background(), "c1", "u",
 		[]Turn{{Role: "user", Content: "one", MessageID: "m1"}}, r.Defaults(), &captureSink{}); err != nil {
 		t.Fatalf("Prompt 1: %v", err)
 	}
-	if h, _ := agent.metaHost(); h != "host-a" {
+	if h, _ := agent.metaHost(); h != "hosta" {
 		t.Fatalf("turn 1 _meta.host = %q", h)
 	}
 

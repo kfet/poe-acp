@@ -636,10 +636,10 @@ func TestToolDetails_LabelDroppedAfterOwnSilentSibling(t *testing.T) {
 // blocks still render.
 func TestToolDetails_ContentDedupe(t *testing.T) {
 	sink := promptWith(t, "c-dedupe", detailOpts, func(a *fakeAgent, sid acp.SessionId) {
-		a.emitUpdate(sid, toolCallWith("t1", "rexec host-e", acp.ToolKindExecute, "$ uname -sr"))
+		a.emitUpdate(sid, toolCallWith("t1", "rexec hoste", acp.ToolKindExecute, "$ uname -sr"))
 		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "$ uname -sr", "Linux 6.8.0"))
 	})
-	want := "> `🔧 rexec host-e`\n> $ uname -sr\n> `✓`\n> Linux 6.8.0"
+	want := "> `🔧 rexec hoste`\n> $ uname -sr\n> `✓`\n> Linux 6.8.0"
 	if got := body(sink); got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
@@ -721,13 +721,13 @@ func TestToolDetails_FailedAlwaysRenders(t *testing.T) {
 // exactly as before this change.
 func TestToolDetails_DisabledUnaffectedByDedupe(t *testing.T) {
 	emit := func(a *fakeAgent, sid acp.SessionId) {
-		a.emitUpdate(sid, toolCallWith("t1", "rexec host-e", acp.ToolKindExecute, "$ uname -sr"))
+		a.emitUpdate(sid, toolCallWith("t1", "rexec hoste", acp.ToolKindExecute, "$ uname -sr"))
 		a.emitUpdate(sid, toolCallWith("t2", "Read a.go", acp.ToolKindRead, "package main"))
 		a.emitUpdate(sid, toolUpdate("t1", acp.ToolCallStatusCompleted, "$ uname -sr", "Linux"))
 		a.emitUpdate(sid, toolUpdate("t2", acp.ToolCallStatusFailed, "boom"))
 		a.emit(sid, "done")
 	}
-	want := "> `🔧 rexec host-e`\n> `📖 Read a.go`\n\ndone"
+	want := "> `🔧 rexec hoste`\n> `📖 Read a.go`\n\ndone"
 	if got := body(promptWith(t, "c-dedupe-off", Options{ShowTools: true}, emit)); got != want {
 		t.Fatalf("show_tool_details=false body = %q, want %q", got, want)
 	}

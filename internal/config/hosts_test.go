@@ -13,7 +13,7 @@ func TestHosts_LoadAndLabels(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	body := `{
 	  "hosts": [
-	    {"value": "host-a", "name": "hosta (server)"},
+	    {"value": "hosta", "name": "hosta (server)"},
 	    {"value": "boxy"}
 	  ],
 	  "defaults": {"host": "boxy"}
@@ -38,7 +38,7 @@ func TestHosts_LoadAndLabels(t *testing.T) {
 		t.Fatalf("defaults.host = %q", cfg.Defaults.Host)
 	}
 	vals := Values(cfg.Hosts)
-	if len(vals) != 2 || vals[0] != "host-a" || vals[1] != "boxy" {
+	if len(vals) != 2 || vals[0] != "hosta" || vals[1] != "boxy" {
 		t.Fatalf("Values = %#v", vals)
 	}
 	if Values(nil) != nil {
@@ -92,7 +92,7 @@ func TestHosts_ValidateErrors(t *testing.T) {
 // defaults.host with no curated list is legal: it pins every
 // conversation to one host without a user-facing dropdown.
 func TestHosts_ValidateDefaultWithoutList(t *testing.T) {
-	if err := (Config{Defaults: Defaults{Host: "host-a"}}).Validate(); err != nil {
+	if err := (Config{Defaults: Defaults{Host: "hosta"}}).Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
 	if err := (Config{Hosts: []Host{{Value: "a"}}, Defaults: Defaults{Host: "a"}}).Validate(); err != nil {

@@ -57,7 +57,7 @@ func contains(s, sub string) bool {
 func TestBuild_HostDropDown(t *testing.T) {
 	t.Parallel()
 	hosts := []config.Host{
-		{Value: "host-a", Name: "hosta (server)"},
+		{Value: "hosta", Name: "hosta (server)"},
 		{Value: "boxy"},
 	}
 	pc := Build(nil, hosts, router.Options{Thinking: "medium", Host: "boxy"})
@@ -69,7 +69,7 @@ func TestBuild_HostDropDown(t *testing.T) {
 		t.Fatalf("control = %q", c.Control)
 	}
 	if len(c.Options) != 2 ||
-		c.Options[0].Value != "host-a" || c.Options[0].Name != "hosta (server)" ||
+		c.Options[0].Value != "hosta" || c.Options[0].Name != "hosta (server)" ||
 		c.Options[1].Value != "boxy" || c.Options[1].Name != "boxy" {
 		t.Fatalf("options = %#v", c.Options)
 	}
@@ -83,15 +83,15 @@ func TestBuild_HostDropDown(t *testing.T) {
 // default so the UI never shows an empty selection.
 func TestBuild_HostDefaultFallsBackToFirst(t *testing.T) {
 	t.Parallel()
-	hosts := []config.Host{{Value: "host-a"}, {Value: "boxy"}}
+	hosts := []config.Host{{Value: "hosta"}, {Value: "boxy"}}
 	for name, want := range map[string]string{"unset": "", "unlisted": "ghost"} {
 		pc := Build(nil, hosts, router.Options{Host: want})
 		c, ok := hostControl(pc)
 		if !ok {
 			t.Fatalf("%s: Host control missing", name)
 		}
-		if c.DefaultValue != "host-a" {
-			t.Fatalf("%s: default_value = %#v, want host-a", name, c.DefaultValue)
+		if c.DefaultValue != "hosta" {
+			t.Fatalf("%s: default_value = %#v, want hosta", name, c.DefaultValue)
 		}
 	}
 }

@@ -5,8 +5,8 @@ Repo: ~/src/poe-acp (main @ 0e1750b). Work on a NEW git worktree + branch
 
 ## Why
 
-The `bot-h` bot runs `--agent-cmd "ssh -T hostb .local/bin/fir --mode acp"`
-with `agent_ssh_host: hostb`. That transport works well. The owner now wants the
+The `bot-h` bot runs `--agent-cmd "ssh -T host-b .local/bin/fir --mode acp"`
+with `agent_ssh_host: host-b`. That transport works well. The owner now wants the
 user to CHOOSE which host the fir agent runs on, from the Poe Options panel,
 per conversation.
 

@@ -397,7 +397,7 @@ EOS
 # requests to the newest worker while the previous one keeps running — for
 # up to the 30m drain deadline — to finish its in-flight streams. Demanding
 # that every worker match would call a healthy host stale for half an hour
-# after each converge (observed on bot-c, 2026-08-30). The supervisor is
+# after each converge (observed on bot-d, 2026-08-30). The supervisor is
 # consulted only when there are no workers at all (pre-0.36 single-process
 # model): a supervisor left on the old image is the normal, intended
 # outcome of a graceful SIGHUP swap and is NOT stale.
@@ -908,7 +908,7 @@ converge() {
     if ! worker_still_child "$wpid_after"; then
       # A second reload trigger — e.g. a stale drop-in that repeats
       # ExecReload, so one `systemctl reload` fires TWO SIGHUPs (found on
-      # bot-d/bot-c/bot-e, 2026-08-30) — retires the worker we
+      # bot-c/bot-d/bot-e, 2026-08-30) — retires the worker we
       # watched appear. That is a completed swap, not a failed one, as
       # long as the supervisor held and a live worker runs the wanted
       # version. Only "no live replacement" is a real failure.

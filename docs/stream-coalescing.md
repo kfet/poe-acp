@@ -304,7 +304,7 @@ bot:
   alive, and it is what blocks the dedupe. During long tool calls this
   is the whole second-order win.
 
-Suggested rollout: enable on **one** bot (bot-d), leave the others at
+Suggested rollout: enable on **one** bot (bot-c), leave the others at
 defaults, and diff the `FRAMESTATS` lines — the instrumentation makes
 that a grep, and the A/B is free because the knobs are per-bot.
 

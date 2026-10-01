@@ -1,6 +1,6 @@
 {
   "name": "bot-a",
-  "host": "hosta",
+  "host": "host-a",
   "platform": "linux/amd64",
   "supervisor": "systemd-user",
   "unit": "zulip-acp",
@@ -32,7 +32,7 @@
     "site_aliases": [
       "chat-b.example.invalid"
     ],
-    "bot_email": "bot-a-bot@chat-a.example.invalid",
+    "bot_email": "bot-a@example.invalid",
     "channels": [
       "*"
     ],

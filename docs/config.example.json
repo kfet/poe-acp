@@ -14,7 +14,7 @@
   },
   "hosts": [
     { "value": "local", "name": "this box (local)" },
-    { "value": "host-a", "name": "hosta (server)" },
+    { "value": "host-a", "name": "host-a (server)" },
     { "value": "boxy" }
   ],
   "agent_ssh_host": "",
