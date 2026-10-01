@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.76.3] - 2026-10-02
+
 ### Changed
 - Docs, tests, goldens and fixtures use synthetic bot and host names (bot-a, host-a, example.invalid) instead of real fleet names.
 
