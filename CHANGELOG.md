@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- `scripts/converge.sh` reads the shared fleet bot registry `~/sync/shared/fleet/bots/` (override `FLEET_BOTS_DIR`) and acts only on `"relay": "poe-acp"` entries; the in-repo `bots/` is gone. Tests use `test/fixtures/bots/`.
+
 ## [0.76.1] - 2026-10-01
 
 ### Changed

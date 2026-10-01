@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# converge.sh — the only sanctioned way to change a poe-acp bot host, and the
-# fleet-wide registry of every relay instance (poe-acp, slack-acp, zulip-acp).
+# converge.sh — the only sanctioned way to change a poe-acp bot host. The bot
+# registry itself is shared: ~/sync/shared/fleet/bots (all relays, fleet.sh).
 #
-# Reads bots/<instance>.json + VERSION + dist.lock and makes the target host match.
+# Reads $BOTS_DIR/<instance>.json (relay=poe-acp) + VERSION + dist.lock and
+# makes the target host match.
 #
 # poe-acp's OWN wanted version is this repo's VERSION file — NOT the lock.
 # VERSION is bumped by the release commit that also cuts the tag, so
@@ -43,7 +44,10 @@
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-BOTS_DIR="$REPO_ROOT/bots"
+# The bot registry is shared by every relay repo and fleet.sh; this script
+# only acts on entries whose .relay is poe-acp.
+BOTS_DIR="${FLEET_BOTS_DIR:-$HOME/sync/shared/fleet/bots}"
+RELAY=poe-acp
 LOCK="$REPO_ROOT/dist.lock"
 VERSION_FILE="$REPO_ROOT/VERSION"
 STAMP=$(date +%Y%m%d-%H%M%S)
@@ -550,12 +554,27 @@ mech_label() { # <supervisor> <mech>
 }
 
 # ---------------------------------------------------------------------------
-# bots/*.json is one entry per poe-acp instance: its DEPLOY PAYLOAD.
-#
-#   bots/ describes ONLY poe-acp instances and only their deploy payload.
-#   Fleet-wide identity (every relay, every host) lives in the inventory at
-#   ~/sync/shared/fleet/inventory/, and `fleet.sh status` is the sweep.
-spec_relay()   { jq -r '.relay // "poe-acp"' "$1"; }
+# $BOTS_DIR/*.json (~/sync/shared/fleet/bots) is ONE registry for the whole
+# relay fleet: identity (relay, host, state, source, notes, pin) plus each
+# relay's deploy payload. converge.sh only touches entries with .relay ==
+# poe-acp; `fleet.sh status` is the cross-relay sweep.
+spec_relay()   { jq -r '.relay // empty' "$1"; }
+# bot_specs: our relay's spec files, one per line.
+bot_specs() {
+  local f
+  for f in "$BOTS_DIR"/*.json; do
+    [ -f "$f" ] && [ "$(spec_relay "$f")" = "$RELAY" ] && echo "$f"
+  done
+  return 0
+}
+# bot_spec <name>: path of that bot's spec; dies unless it is ours.
+bot_spec() {
+  local spec="$BOTS_DIR/$1.json"
+  [ -f "$spec" ] || die "no such bot spec: $spec"
+  [ "$(spec_relay "$spec")" = "$RELAY" ] \
+    || die "$1 is a $(spec_relay "$spec") bot, not $RELAY: $spec"
+  echo "$spec"
+}
 spec_state()   { jq -r '.state // "active"' "$1"; }
 
 # The fleet sweep ("what runs where, and is it stale?") is NOT here: it spans
@@ -589,7 +608,7 @@ converge() {
   [ -f "$LOCK" ] || die "missing $LOCK"
 
   [ "$(spec_state "$SPEC")" = retire ] \
-    && die "$bot is proposed for RETIREMENT, not convergence — see bots/$bot.json notes"
+    && die "$bot is proposed for RETIREMENT, not convergence — see $SPEC notes"
 
   want_pa=$(own_version)
   want_fir=$(jq -r '.fir' "$LOCK")
@@ -988,7 +1007,7 @@ tot() {
     >"$LOCK"
   echo "== tot: dist.lock rewritten. Review the diff, commit it, then converge each bot:"
   echo "   git diff dist.lock"
-  for f in "$BOTS_DIR"/*.json; do
+  for f in $(bot_specs); do
     [ "$(spec_state "$f")" = active ] \
       && echo "   scripts/converge.sh $(basename "$f" .json) --apply"
   done
@@ -1033,7 +1052,7 @@ case "$1" in
     tot ;;
   render)
     [ $# -eq 3 ] || usage
-    SPEC=$(spec="$BOTS_DIR/$2.json"; [ -f "$spec" ] || die "no such bot spec: $spec"; echo "$spec")
+    SPEC=$(bot_spec "$2")
     case "$3" in
       config)    render_config ;;
       execstart) render_execstart systemd ;;
@@ -1064,8 +1083,7 @@ case "$1" in
   -*) usage ;;
   *)
     BOT=$1; shift
-    SPEC="$BOTS_DIR/$BOT.json"
-    [ -f "$SPEC" ] || die "no such bot spec: $SPEC"
+    SPEC=$(bot_spec "$BOT")
     APPLY=0
     while [ $# -gt 0 ]; do
       case "$1" in

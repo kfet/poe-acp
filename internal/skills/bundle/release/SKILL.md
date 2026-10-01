@@ -88,7 +88,7 @@ brew info kfet/ai/poe-acp | head -5
 
 The sweep is NOT in this repo. It spans all three relays (poe-acp,
 slack-acp, zulip-acp), so it lives in `~/sync/shared/fleet/` alongside the
-inventory, and runs from any host — primary host-l, fallback host-e. There is
+shared bot registry (`bots/`), and runs from any host — primary host-l, fallback host-e. There is
 no fleet lock: a relay's wanted version is its `.pin`, else its repo's
 latest tag, so tagging IS the declaration and there is nothing to bump.
 

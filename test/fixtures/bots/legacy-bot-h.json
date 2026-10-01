@@ -31,5 +31,12 @@
     },
     "agent_ssh_host": "hostb"
   },
-  "credentials": { "env_file": "~/.config/poe-acp/bot-h/env" }
+  "credentials": {
+    "env_file": "~/.config/poe-acp/bot-h/env"
+  },
+  "state": "active",
+  "source": {
+    "deploy_skill": "poe-acp: scripts/converge.sh",
+    "repo": "github.com/kfet/poe-acp"
+  }
 }

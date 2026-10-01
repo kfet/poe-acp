@@ -1,7 +1,7 @@
 # CURRENT-STATE.md — live fleet audit, 2026-08-06
 
 Captured by the operator directly from the four hosts. This is ground truth for
-transcribing `bots/*.json`. Reproduce it faithfully.
+transcribing the bot specs (now `~/sync/shared/fleet/bots/*.json`). Reproduce it faithfully.
 
 poe-acp is **0.51.0 on all four**. fir differs on all four. fir is released from
 `github.com/kfet/fir-dist` (tags `v0.9x.y`); latest is **0.95.0**.

@@ -7,7 +7,7 @@ description: Update poe-acp on a single host, or restart / reload a running bot.
 # Update Skill
 
 > **Fleet hosts: converge is the only sanctioned way to touch a host.** For a
-> bot with a spec in `bots/<name>.json`, run `scripts/converge.sh <bot> --apply`
+> bot with a spec in `~/sync/shared/fleet/bots/<name>.json`, run `scripts/converge.sh <bot> --apply`
 > per host. A poe-acp version move needs no lock edit — the release commit
 > bumped `VERSION` and that IS the declaration. For fir / fir-exts moves run
 > `scripts/converge.sh --tot` first (rewrites `dist.lock`; review + commit).
@@ -157,7 +157,7 @@ One-line summary: `<host>: <old> → <new>, supervisor active`. If anything fail
 
 The sweep is NOT in this repo. It spans all three relays (poe-acp,
 slack-acp, zulip-acp), so it lives in `~/sync/shared/fleet/` alongside the
-inventory, and runs from any host — primary host-l, fallback host-e. There is
+shared bot registry (`bots/`), and runs from any host — primary host-l, fallback host-e. There is
 no fleet lock: a relay's wanted version is its `.pin`, else its repo's
 latest tag, so tagging IS the declaration and there is nothing to bump.
 

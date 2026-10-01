@@ -7,12 +7,12 @@ description: Deploy poe-acp to a remote host behind Tailscale Funnel, start it a
 # Deploy Skill
 
 > **Fleet hosts: converge is the only sanctioned way to touch a host.** If the
-> target bot has a spec in `bots/<name>.json`, do NOT hand-deploy: run
+> target bot has a spec in `~/sync/shared/fleet/bots/<name>.json`, do NOT hand-deploy: run
 > `scripts/converge.sh <bot>` (dry-run), review the diff, then `--apply`.
 > The poe-acp version converge installs is this repo's `VERSION`; external
 > deps (fir, fir-exts) come from `dist.lock` (use `scripts/converge.sh --tot`
 > to advance it). The manual steps below are for bootstrapping a NEW bot — after which
-> you write its `bots/<name>.json` spec so converge owns it from then on.
+> you write its `~/sync/shared/fleet/bots/<name>.json` spec so converge owns it from then on.
 
 Deploy `poe-acp` to a remote host fronted by `tailscale funnel`. The relay listens on loopback; funnel terminates TLS and forwards.
 
@@ -307,7 +307,7 @@ See the `update` skill (`.fir/skills/update/SKILL.md`) for the per-host upgrade 
 
 The sweep is NOT in this repo. It spans all three relays (poe-acp,
 slack-acp, zulip-acp), so it lives in `~/sync/shared/fleet/` alongside the
-inventory, and runs from any host — primary host-l, fallback host-e. There is
+shared bot registry (`bots/`), and runs from any host — primary host-l, fallback host-e. There is
 no fleet lock: a relay's wanted version is its `.pin`, else its repo's
 latest tag, so tagging IS the declaration and there is nothing to bump.
 
@@ -377,7 +377,7 @@ Paste its output into your reply. Canonical note:
 - [ ] `~/.config/poe-acp/env` is mode `0600`.
 - [ ] `~/.config/poe-acp/config.json` exists with `bot_name` matching the Poe slug (or intentionally omitted; auto-refetch will be skipped).
 - [ ] `-introduction` flag set to the intended greeting (or intentionally omitted).
-- [ ] New bot has a `bots/<name>.json` spec, so converge owns it from now on.
+- [ ] New bot has a `~/sync/shared/fleet/bots/<name>.json` spec, so converge owns it from now on.
 - [ ] **`fleet.sh status` run, and the FLEET shows no DRIFT and no UNREGISTERED row.**
 
 ## Multi-bot on one host

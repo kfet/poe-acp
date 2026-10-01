@@ -1,0 +1,16 @@
+{
+  "name": "bot-j",
+  "relay": "poe-acp",
+  "managed": false,
+  "state": "retire",
+  "host": "host-e",
+  "platform": "linux/amd64",
+  "supervisor": "systemd-user",
+  "unit": "poe-acp-bot-j",
+  "binary": "~/.local/bin/poe-acp",
+  "notes": "PROPOSED FOR RETIREMENT, not adoption. The fir-extraction test harness on :8349 (/acp-tmux-test), paired with acp-tmux-test on host-a. Last served a turn 2026-08-28, last (re)started 2026-08-25, still pinned to poe-acp 0.60.0 — it has been idle through three releases. Registered here so the sweep names it instead of reporting it as an unknown process. Retire with: systemctl --user disable --now poe-acp-bot-j && rm ~/.config/systemd/user/poe-acp-bot-j.service, then delete this spec.",
+  "source": {
+    "deploy_skill": "poe-acp: scripts/converge.sh",
+    "repo": "github.com/kfet/poe-acp"
+  }
+}

@@ -61,11 +61,13 @@ Point your Poe bot at `https://<host>/poe` (with any reverse proxy or
 
 ### Fleet: relay registry + converge (the sanctioned path)
 
-`bots/` is the **fleet-wide relay registry** — one JSON file per relay
-*instance*, covering every ACP relay on every host, not just poe-acp.
+The bot registry lives OUTSIDE this repo, at `~/sync/shared/fleet/bots/`
+(override with `FLEET_BOTS_DIR`) — one JSON file per relay *instance*,
+shared by poe-acp, zulip-acp, slack-acp and `fleet.sh`. converge.sh acts
+only on entries with `"relay": "poe-acp"` and refuses any other.
 
 For the personal bot fleet, **a bot IS a dist spec**: one declarative JSON
-file under `bots/<name>.json` fully describes a bot — host, supervisor,
+file `bots/<name>.json` in that registry fully describes a bot — host, supervisor,
 server flags, relay config, agent, fir extensions, credential *references*
 (never contents). poe-acp's own wanted version is the repo's `VERSION`
 file — the release commit bumps it and cuts `vVERSION` in one step, so
@@ -77,8 +79,8 @@ Two tiers:
 
 | tier | which | converge.sh |
 |---|---|---|
-| **managed** (default) | poe-acp instances | full: renders config + unit, fetches the binary, recycles, verifies |
-| **tracked** (`"managed": false`) | `slack-acp`, `zulip-acp` | reports drift in `status`; **refuses** `--apply` — they have their own repos, release flows and unit shapes |
+| **managed** (default) | `"relay": "poe-acp"` instances | full: renders config + unit, fetches the binary, recycles, verifies |
+| other relays | `slack-acp`, `zulip-acp` entries | ignored — their own repos converge them; `fleet.sh status` sweeps all |
 
 `"state": "retire"` marks an instance that is running but proposed for
 removal: registered so the sweep names it instead of reporting an unknown
@@ -87,7 +89,6 @@ process, never converged, never counted as drift.
 **`scripts/converge.sh` is the only sanctioned way to touch a host.**
 
 ```bash
-scripts/converge.sh status           # READ-ONLY fleet sweep — what runs where, and is it stale?
 scripts/converge.sh <bot>            # dry run (default): diff of what would change
 scripts/converge.sh <bot> --apply    # make the host match bots/<bot>.json + VERSION + dist.lock
 scripts/converge.sh --tot            # resolve latest fir + fir-exts ONCE into dist.lock
@@ -191,7 +192,7 @@ curl -sS -H "Authorization: Bearer $POEACP_ACCESS_KEY" \
 
 ### Auto-restart on the host
 
-Supervision is declared in `bots/<bot>.json` and rendered by
+Supervision is declared in `~/sync/shared/fleet/bots/<bot>.json` and rendered by
 `scripts/converge.sh` — a systemd `--user` unit on Linux, a launchd plist
 on macOS — so a host reboot brings the bot back by itself. Do not start a
 production bot under `nohup` or a tmux window; converge owns the unit, the
@@ -631,8 +632,6 @@ context and is fine.
 
 ```
 poe-acp/
-  bots/                    the fleet relay registry: one spec per relay instance
-                           (poe-acp managed; slack-acp/zulip-acp tracked)
   VERSION                  poe-acp's own version = what converge installs
   dist.lock                pinned EXTERNAL deps (fir, fir-exts revs)
   scripts/converge.sh      the only sanctioned way to touch a bot host

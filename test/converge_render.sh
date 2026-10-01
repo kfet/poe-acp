@@ -17,6 +17,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CONVERGE="$ROOT/scripts/converge.sh"
 GOLDEN="$ROOT/test/golden"
 BOTS=(bot-c bot-d bot-e bot-f bot-i bot-h)
+# The live registry is ~/sync/shared/fleet/bots (shared by every relay);
+# tests render a frozen copy so they are hermetic.
+export FLEET_BOTS_DIR="$ROOT/test/fixtures/bots"
 
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok   $1"; }
@@ -49,13 +52,13 @@ check_golden "bot-f.plist" "$GOLDEN/bot-f.plist" "$t"; rm -f "$t"
 echo "== boolean flag edge cases (false and absent must render identically)"
 tmpd=$(mktemp -d)
 trap 'rm -rf "$tmpd"' EXIT
-mkdir -p "$tmpd/repo/bots" "$tmpd/repo/scripts"
+mkdir -p "$tmpd/bots" "$tmpd/repo/scripts"
 cp "$CONVERGE" "$tmpd/repo/scripts/"
 cp "$ROOT/dist.lock" "$tmpd/repo/"
 mkspec() { # <name> <server-json-extra>
-  cat >"$tmpd/repo/bots/$1.json" <<EOF
+  cat >"$tmpd/bots/$1.json" <<EOF
 {
-  "name": "$1", "host": "nowhere", "platform": "linux/amd64",
+  "name": "$1", "relay": "poe-acp", "host": "nowhere", "platform": "linux/amd64",
   "supervisor": "systemd-user", "unit": "poe-acp-$1",
   "binary": "~/.local/bin/poe-acp",
   "agent": {"cmd": "fir --mode acp", "kind": "fir"},
@@ -69,6 +72,7 @@ EOF
 mkspec eabsent ""
 mkspec efalse  ', "enable_mcp_attach": false'
 mkspec etrue   ', "enable_mcp_attach": true'
+export FLEET_BOTS_DIR="$tmpd/bots"
 a=$("$tmpd/repo/scripts/converge.sh" render eabsent execstart)
 f=$("$tmpd/repo/scripts/converge.sh" render efalse execstart)
 tr_=$("$tmpd/repo/scripts/converge.sh" render etrue execstart)
@@ -78,6 +82,12 @@ case "$a" in *--enable-mcp-attach*) bad "absent must not emit flag" ;; *) ok "ab
 case "$a" in *--session-ttl*) bad "absent session_ttl must not emit flag" ;; *) ok "absent session_ttl emits no flag" ;; esac
 
 echo "== misc guards"
+export FLEET_BOTS_DIR="$ROOT/test/fixtures/bots"
+if "$CONVERGE" render bot-a config >/dev/null 2>&1; then
+  bad "a non-poe-acp registry entry must be refused"
+else
+  ok "non-poe-acp registry entry (bot-a) refused"
+fi
 if "$CONVERGE" --tot --apply >/dev/null 2>&1; then
   bad "--tot must refuse extra arguments"
 else
@@ -85,7 +95,7 @@ else
 fi
 # introduction guard: a double quote in the intro must die at render time
 mkspec eguard ', "introduction": "bad \" quote"'
-if "$tmpd/repo/scripts/converge.sh" render eguard execstart >/dev/null 2>&1; then
+if FLEET_BOTS_DIR="$tmpd/bots" "$tmpd/repo/scripts/converge.sh" render eguard execstart >/dev/null 2>&1; then
   bad "introduction with a double quote must be rejected"
 else
   ok "introduction guard rejects double quote"

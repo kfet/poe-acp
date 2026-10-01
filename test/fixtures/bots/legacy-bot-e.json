@@ -5,8 +5,15 @@
   "supervisor": "systemd-user",
   "unit": "poe-acp-bot-e",
   "binary": "~/.local/bin/poe-acp",
-  "agent": { "cmd": "fir --mode acp", "kind": "fir" },
-  "fir": { "exts": ["github.com/kfet/fir-exts"] },
+  "agent": {
+    "cmd": "fir --mode acp",
+    "kind": "fir"
+  },
+  "fir": {
+    "exts": [
+      "github.com/kfet/fir-exts"
+    ]
+  },
   "server": {
     "http_addr": "127.0.0.1:8347",
     "poe_path": "/bot-e",
@@ -28,5 +35,13 @@
     },
     "poe_mcp": true
   },
-  "credentials": { "env_file": "~/.config/poe-acp/bot-bot-e/env" }
+  "credentials": {
+    "env_file": "~/.config/poe-acp/bot-bot-e/env"
+  },
+  "relay": "poe-acp",
+  "state": "active",
+  "source": {
+    "deploy_skill": "poe-acp: scripts/converge.sh",
+    "repo": "github.com/kfet/poe-acp"
+  }
 }
