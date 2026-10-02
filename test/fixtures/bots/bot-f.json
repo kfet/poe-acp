@@ -21,7 +21,8 @@
     "http_addr": "127.0.0.1:8347",
     "poe_path": "/poe-acp",
     "heartbeat_interval": "3s",
-    "introduction": "fir over ACP — one Poe conv = one ACP session. Send !help for commands (!login, !model, !status, !new)."
+    "introduction": "fir over ACP — one Poe conv = one ACP session. Send !help for commands (!login, !model, !status, !new).",
+    "session_ttl": null
   },
   "launchd": {
     "plist": "~/Library/LaunchAgents/dev.kfet.poe-acp.plist",

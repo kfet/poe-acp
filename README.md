@@ -66,10 +66,20 @@ The bot registry lives OUTSIDE this repo, at `~/sync/shared/fleet/bots/`
 shared by poe-acp, zulip-acp, slack-acp and `fleet.sh`. converge.sh acts
 only on entries with `"relay": "poe-acp"` and refuses any other.
 
-For the personal bot fleet, **a bot IS a dist spec**: one declarative JSON
-file `bots/<name>.json` in that registry fully describes a bot — host, supervisor,
-server flags, relay config, agent, fir extensions, credential *references*
-(never contents). poe-acp's own wanted version is the repo's `VERSION`
+For the personal bot fleet, **a bot IS a dist spec**: `distro.json` at the
+repo root holds the defaults shared by every poe-acp bot (agent, fir
+extensions, binary path, systemd settings, server and config defaults), and
+`bots/<name>.json` in the registry holds only what differs for that bot —
+host, supervisor, server flags, relay config, credential *references*
+(never contents). converge.sh deep-merges `distro.json` <- bot file before
+validating or rendering: the bot wins, objects merge recursively, arrays and
+scalars are replaced, a bot `null` unsets a default, and merged objects keep
+the bot's key order with default-only keys appended (restate a key in the bot
+file when the rendered `config.json` order matters). `"managed": false`
+entries are not merged. This repo is public: `distro.json` never names a bot,
+host, site, channel, e-mail or user, and `make all` runs
+`scripts/check-no-leak.sh`, which fails if any identifier from the registry
+appears in the tracked tree (skipped when the registry is absent, as in CI). poe-acp's own wanted version is the repo's `VERSION`
 file — the release commit bumps it and cuts `vVERSION` in one step, so
 wanted ≡ latest release by construction and there is nothing to bump
 afterwards. `dist.lock` at the repo root pins only the EXTERNAL deps:

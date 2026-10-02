@@ -1,0 +1,32 @@
+{
+  "supervisor": "systemd-user",
+  "binary": "~/.local/bin/poe-acp",
+  "agent": {
+    "cmd": "fir --mode acp",
+    "kind": "fir"
+  },
+  "fir": {
+    "exts": [
+      "github.com/kfet/fir-exts"
+    ]
+  },
+  "server": {
+    "http_addr": "127.0.0.1:8347",
+    "heartbeat_interval": "3s",
+    "session_ttl": "10m"
+  },
+  "systemd": {
+    "env_path": "%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+    "restart": "on-failure",
+    "restart_sec": "2s"
+  },
+  "config": {
+    "defaults": {
+      "model": "anthropic/claude-opus-5",
+      "thinking": "medium"
+    }
+  },
+  "credentials": {
+    "env_file": "~/.config/poe-acp/env"
+  }
+}

@@ -129,3 +129,11 @@ Yes: "Bug in auth middleware. Token expiry check use `<` not `<=`. Fix:"
 - Git commits: normal
 - PR descriptions: normal
 - User say "stop caveman" or "normal mode": revert immediately
+
+## Public repo: distro, not instances
+
+This repo holds ONE distro spec (`distro.json`: defaults shared by every
+poe-acp bot), never bot instances. Bot files live in the private fleet
+registry and hold only overrides. No bot, host, site, channel, e-mail or
+user id from that registry may appear in any tracked file; `make all`
+enforces it via `scripts/check-no-leak.sh`.

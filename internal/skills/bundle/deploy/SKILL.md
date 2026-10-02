@@ -13,6 +13,8 @@ description: Deploy poe-acp to a remote host behind Tailscale Funnel, start it a
 > deps (fir, fir-exts) come from `dist.lock` (use `scripts/converge.sh --tot`
 > to advance it). The manual steps below are for bootstrapping a NEW bot — after which
 > you write its `~/sync/shared/fleet/bots/<name>.json` spec so converge owns it from then on.
+> The spec holds only what differs from `distro.json` (the shared defaults); check
+> with `scripts/converge.sh render <bot> <artefact>`, which renders the merged spec.
 
 Deploy `poe-acp` to a remote host fronted by `tailscale funnel`. The relay listens on loopback; funnel terminates TLS and forwards.
 

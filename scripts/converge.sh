@@ -2,8 +2,8 @@
 # converge.sh — the only sanctioned way to change a poe-acp bot host. The bot
 # registry itself is shared: ~/sync/shared/fleet/bots (all relays, fleet.sh).
 #
-# Reads $BOTS_DIR/<instance>.json (relay=poe-acp) + VERSION + dist.lock and
-# makes the target host match.
+# Reads distro.json <- $BOTS_DIR/<instance>.json (relay=poe-acp, deep-merged)
+# + VERSION + dist.lock and makes the target host match.
 #
 # poe-acp's OWN wanted version is this repo's VERSION file — NOT the lock.
 # VERSION is bumped by the release commit that also cuts the tag, so
@@ -567,13 +567,40 @@ bot_specs() {
   done
   return 0
 }
-# bot_spec <name>: path of that bot's spec; dies unless it is ours.
+# distro.json (next to dist.lock) holds the defaults shared by every bot of
+# this relay; a bot file holds only what differs. merged_spec deep-merges
+# distro <- bot: the bot wins, objects merge recursively, any other value
+# (arrays included) is replaced wholesale, and a bot null unsets a default.
+# Merged objects keep the BOT's key order with default-only keys appended,
+# so a bot that needs a rendered key order (config.json) can restate keys.
+# Bots with "managed": false are tracked, not distro instances: no merge.
+DISTRO="${FLEET_DISTRO:-$REPO_ROOT/distro.json}"
+MERGE_JQ='def dmerge($d; $b):
+  if ($d|type) == "object" and ($b|type) == "object" then
+    (reduce ($b|keys_unsorted[]) as $k ({};
+       .[$k] = (if ($d|has($k)) then dmerge($d[$k]; $b[$k]) else $b[$k] end))) as $r
+    | reduce ($d|keys_unsorted[]) as $k ($r; if has($k) then . else .[$k] = $d[$k] end)
+  else $b end;
+if $bot[0].managed == false then $bot[0] else dmerge($distro[0]; $bot[0]) end'
+# merged_spec <bot-file> — print the path of the bot's merged spec.
+merged_spec() {
+  local out
+  out=$(mktemp "$TMPD/spec.XXXXXX")
+  if [ -f "$DISTRO" ]; then
+    jq -n --slurpfile distro "$DISTRO" --slurpfile bot "$1" "$MERGE_JQ" >"$out" \
+      || die "cannot merge $DISTRO <- $1"
+  else
+    cp "$1" "$out"
+  fi
+  echo "$out"
+}
+# bot_spec <name>: path of that bot's MERGED spec; dies unless it is ours.
 bot_spec() {
   local spec="$BOTS_DIR/$1.json"
   [ -f "$spec" ] || die "no such bot spec: $spec"
   [ "$(spec_relay "$spec")" = "$RELAY" ] \
     || die "$1 is a $(spec_relay "$spec") bot, not $RELAY: $spec"
-  echo "$spec"
+  merged_spec "$spec"
 }
 spec_state()   { jq -r '.state // "active"' "$1"; }
 

@@ -9,7 +9,7 @@ description: Create or update custom Poe server bots with separate poe-acp confi
 > **Fleet bots: converge is the only sanctioned way to touch a host.** When
 > creating a bot that should be part of the managed fleet, write its
 > declarative spec `~/sync/shared/fleet/bots/<name>.json` (the shared fleet bot registry, `"relay": "poe-acp"`) (see existing specs
-> for the schema) and let `scripts/converge.sh <bot> --apply` render the
+> for the schema; it holds only what differs from the repo's `distro.json` defaults) and let `scripts/converge.sh <bot> --apply` render the
 > config and unit/plist from it. Hand-editing config/unit files on a
 > spec-managed host causes drift that the next converge will revert. The
 > manual layout below is the reference for what converge renders, and for

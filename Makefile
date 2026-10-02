@@ -41,7 +41,7 @@ else
   endef
 endif
 
-.PHONY: all _parallel build build-all install fmt tidy vet check-installsh \
+.PHONY: all _parallel check-no-leak build build-all install fmt tidy vet check-installsh \
         test test-race-cover test-cover test-scripts open-coverage \
         clean notices check-licenses publish deploy FORCE
 
@@ -58,7 +58,7 @@ FORCE:
 all: fmt tidy
 	@$(MAKE) -j --no-print-directory _parallel
 
-_parallel: vet test-race-cover test-scripts build build-all check-licenses check-installsh
+_parallel: check-no-leak vet test-race-cover test-scripts build build-all check-licenses check-installsh
 
 fmt:
 	@gofmt -s -w .
@@ -110,6 +110,11 @@ test-race-cover: | $(BINDIR)
 
 # Shell tooling under scripts/ (converge.sh) — black-box assertions against
 # fake target roots and stubbed supervisors. No network, no real host.
+# Public repo: no bot-instance identifier from the private fleet registry
+# may appear in the tracked tree (skipped when the registry is absent).
+check-no-leak:
+	$(call RUN,check (no-leak),./scripts/check-no-leak.sh)
+
 test-scripts:
 	$(call RUN,test (scripts),./test/converge_render.sh)
 
