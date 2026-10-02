@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-10-02
+
 ### Added
 - `distro.json`: the defaults shared by every poe-acp bot. `scripts/converge.sh` deep-merges `distro.json` <- the bot's registry file (bot wins; objects merge, arrays replace, `null` unsets; `"managed": false` entries are not merged) before rendering, so a bot file holds only what differs.
 - `scripts/check-no-leak.sh`, run by `make all`: fails if any bot-instance identifier from the fleet registry appears in the tracked tree; skipped when the registry is absent.
