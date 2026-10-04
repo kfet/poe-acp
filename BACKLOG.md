@@ -74,3 +74,11 @@ default (`cmd/poe-acp/main.go`), and update `docs/config.example.json`, README
 and CHANGELOG. Evidence: `FRAMESTATS` lines in each bot's log. If 3000ms reads
 as laggy, try 1500 (still ~20x fewer frames) before abandoning. See
 `docs/stream-coalescing.md`.
+
+## Wire acp-kit `autoupdate` (relay auto-update)
+
+acp-kit v0.31.0 ships `autoupdate`. It polls for releases, stages and verifies them, asks the owners to approve, applies at idle through the graceful reload, and rolls back to `.prev` if the new image fails its health gate. zulip-acp v0.47.0 is the reference wiring: `cmd/zulip-acp/autoupdate.go`, plus the `UpdateDecide` reaction hook and the `UpdateStatus` call on `!update --check` in its handler.
+
+Not trivially wireable here. A Poe bot only answers inside a user's chat turn: it cannot post unprompted to an owner, edit an earlier message, or read reactions. So the offer needs another channel, for example a pending line that `!update --check` shows and an `!update apply|skip|tomorrow` command that maps to Decide. The multi-worker master/worker supervisor also needs the apply and health gate to run in the master.
+
+The work is: an `auto_update` / `auto_update_quiet_hours` config, an `autoupdate.Surface` (Post returns an id; Edit), a way to map owner actions to `Manager.Decide`, `Idle` from `convo.Active().Len()`, a `HealthProbe` (queue/connection resumed plus one platform API round-trip plus agent initialised), and `go m.Run(intakeCtx)` after `update.Resume`.
