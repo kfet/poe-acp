@@ -154,10 +154,9 @@ func (r *Router) findBranchParent(userID string, prefix []Turn) (branchMatch, bo
 }
 
 // recordTurnLeaf stores the agent's session-tree leaf id at the end of the
-// reply to user turn userMsgID. This is the hook for fir's per-turn leaf
-// ids (session/prompt response _meta, in progress): once the relay reads
-// them, a branch from an earlier turn forks exactly there instead of
-// falling back to a reseed.
+// reply to user turn userMsgID (session/prompt response _meta.leafId, via
+// promptTurn), so a branch from an earlier turn forks exactly there
+// instead of falling back to a reseed.
 func (r *Router) recordTurnLeaf(st *sessionState, userMsgID, leaf string) {
 	if userMsgID == "" || leaf == "" {
 		return
@@ -254,4 +253,16 @@ func (r *Router) releaseQuietly(a Agent, convID string, sid acp.SessionId) {
 	if err := a.ReleaseSession(ctx, sid); err != nil {
 		r.noteReleaseError("branch conv="+convID, sid, err)
 	}
+}
+
+// promptTurn runs one turn and returns its leaf id when the agent reports
+// one (client.TurnPrompter, which *client.AgentProc satisfies). An agent
+// that cannot report it gives an empty leaf.
+func promptTurn(ctx context.Context, a Agent, sid acp.SessionId, blocks []acp.ContentBlock) (acp.StopReason, string, error) {
+	if tp, ok := a.(client.TurnPrompter); ok {
+		tr, err := tp.PromptTurn(ctx, sid, blocks)
+		return tr.Stop, tr.LeafID, err
+	}
+	stop, err := a.Prompt(ctx, sid, blocks)
+	return stop, "", err
 }

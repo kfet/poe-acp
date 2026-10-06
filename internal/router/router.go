@@ -551,6 +551,9 @@ type turnReq struct {
 	// ShowTools) are forwarded to the drain goroutine via beginTurn.
 	opts   Options
 	blocks []acp.ContentBlock // prompt content blocks
+	// userMsgID is the Poe message_id of the latest user turn (user
+	// turns only). The turn's leaf id is recorded under it.
+	userMsgID string
 
 	enqueuedAt time.Time
 	// done is closed by runTurns AFTER endTurn ack AND sink.Done /
@@ -1457,6 +1460,7 @@ func (r *Router) submitTurn(ctx context.Context, convID, userID string, query []
 		sink:       sink,
 		opts:       opts,
 		blocks:     blocks,
+		userMsgID:  latestTurn.MessageID,
 		enqueuedAt: r.cfg.Now(),
 		done:       make(chan struct{}),
 		noRecover:  recovered,
@@ -1841,7 +1845,10 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 		tt.SetTurnToken(live.Token)
 	}
 
-	stop, err := st.agent().Prompt(ctx, st.sessionID, blocks)
+	stop, leaf, err := promptTurn(ctx, st.agent(), st.sessionID, blocks)
+	if err == nil && req.kind == turnUser {
+		r.recordTurnLeaf(st, req.userMsgID, leaf)
+	}
 
 	// endTurn ack: drain processes every chunk emitted before
 	// Agent.Prompt returned, then closes endDone. Only after that do
