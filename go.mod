@@ -4,8 +4,8 @@ go 1.25
 
 require (
 	github.com/coder/acp-go-sdk v0.13.5
-	github.com/kfet/acp-kit v0.30.0
-	github.com/kfet/distkit v0.1.7
+	github.com/kfet/acp-kit v0.32.0
+	github.com/kfet/distkit v0.1.10
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 )
 

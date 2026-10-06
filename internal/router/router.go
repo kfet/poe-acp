@@ -508,6 +508,12 @@ type sessionState struct {
 	// Poe's benign front-truncation + append leaves it intact. Read/written
 	// only under Router.mu (getOrCreate).
 	seenTurns []turnFP
+
+	// turnLeaves maps a user turn's Poe message_id to the agent's
+	// session-tree leaf id at the end of that turn's reply, so a Poe branch
+	// taken from an EARLIER turn can fork at that point instead of the
+	// leaf. Filled by recordTurnLeaf; read/written only under Router.mu.
+	turnLeaves map[string]string
 }
 
 // turnFP is one turn's identity for divergence detection: its Poe message_id
@@ -516,6 +522,7 @@ type sessionState struct {
 type turnFP struct {
 	id   string
 	hash uint64
+	user bool // role == "user"; lets branch detection find the turn a reply answers
 }
 
 // turnKind classifies a queued turnReq.
@@ -2296,7 +2303,7 @@ func turnFingerprints(q []Turn) []turnFP {
 		_, _ = h.Write([]byte(t.Role))
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(t.Content))
-		out = append(out, turnFP{id: t.MessageID, hash: h.Sum64()})
+		out = append(out, turnFP{id: t.MessageID, hash: h.Sum64(), user: t.Role == "user"})
 	}
 	return out
 }
@@ -3203,6 +3210,15 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	// so a flaky first request still WARMS the session in the background.
 	acqCtx, cancelAcq := context.WithTimeout(context.WithoutCancel(ctx), r.cfg.SessionCreateTimeout)
 	defer cancelAcq()
+
+	// Tier 0: a Poe branch ("new chat from here") arrives as a brand-new
+	// conversation whose first query already carries earlier turns. Fork
+	// the session it was branched from so the agent keeps its tool context
+	// and prompt cache instead of being reseeded from chat text.
+	if !forceFresh && r.tryFork(acqCtx, convID, query, st) {
+		winner, _ := r.install(convID, st)
+		return winner, false, nil
+	}
 
 	caps := st.agent().Caps()
 	if !forceFresh && caps.ListSessions && caps.ResumeSession {

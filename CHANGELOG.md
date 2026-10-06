@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- Poe conversation branches fork the source session (acp-kit `ForkSession`) instead of reseeding from chat text, keeping tool context and the prompt cache. Matches by message_id, else content hash; forks at the leaf only when the branch point is the parent's last turn, else reseeds (per-turn leaf hook ready for fir).
+
+### Changed
+- acp-kit bumped to v0.32.0.
+
 ## [0.77.0] - 2026-10-02
 
 ### Added
