@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-10-06
+
 ### Added
 - A branch from an earlier turn forks the source session at that turn's leaf instead of reseeding. Each user turn records the leaf id that the agent reports in the session/prompt response (`_meta.leafId`, fir 1.28.0+).
 
