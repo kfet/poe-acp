@@ -90,8 +90,11 @@ endef
 $(BINARY)-%: FORCE | $(BINDIR)
 	$(call cross_build,$(word 1,$(subst -, ,$*)),$(word 2,$(subst -, ,$*)))
 
+# No `make install`: it used to `go install` into ~/go/bin, which left stale
+# copies beside the real install that `poe-acp update` never touches. Install
+# with install.sh and upgrade with `poe-acp update` (or converge on a fleet host).
 install:
-	go install -ldflags="$(LDFLAGS)" ./cmd/poe-acp/
+	@echo 'make install is disabled: install with install.sh (BIN_DIR=$$HOME/.local/bin), upgrade with `poe-acp update`.' >&2; exit 1
 
 # ---------------------------------------------------------------------------
 # Tests
