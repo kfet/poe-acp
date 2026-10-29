@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.80.0] - 2026-10-29
+
 ### Added
 - Origin `_meta` (`dev.acp-kit.origin/v1`, platform `poe`) on every session/new, load, resume, fork and prompt.
 - `session_scope` config: `thread` (default) or `thread_user` (one agent session per conversation and user).
