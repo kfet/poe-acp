@@ -214,7 +214,7 @@ func (r *Router) tryFork(ctx context.Context, convID string, query []Turn, st *s
 	if !ok {
 		return fallback("agent cannot fork")
 	}
-	sid, err := f.ForkSession(ctx, st.cwd, parentSID, at, st)
+	sid, err := f.ForkSession(ctx, st.agentCwd, parentSID, at, st)
 	if err != nil {
 		if errors.Is(err, client.ErrForkUnsupported) {
 			return fallback("agent does not support session/fork: %v", err)

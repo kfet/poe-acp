@@ -242,6 +242,12 @@ type Config struct {
 	// StateDir is the root for per-conv working dirs. Each conv gets
 	// StateDir/convs/<conv_id>/ as its cwd.
 	StateDir string
+	// AgentCwd, when true (config cwd_mode="agent"), sends the agent an
+	// opaque placeholder cwd (AgentCwdPlaceholder/<conv>) on every session
+	// call instead of the relay-local conv dir, and skips provisioning it
+	// on the agent's host: the agent picks the real cwd (e.g. from the
+	// origin _meta). The local conv dir is still used for staging.
+	AgentCwd bool
 	// SessionTTL: sessions idle longer than this are dropped from the map.
 	SessionTTL time.Duration
 	// SessionCreateTimeout bounds session ACQUISITION (list/resume/new)
@@ -432,6 +438,9 @@ type sessionState struct {
 	userID    string
 	sessionID acp.SessionId
 	cwd       string
+	// agentCwd is the cwd sent on the wire: cwd, or the opaque
+	// placeholder when Config.AgentCwd is set.
+	agentCwd string
 
 	// queue holds pending turnReqs. A single runTurns goroutine
 	// (spawned in getOrCreate) consumes from it and owns all
@@ -3181,7 +3190,10 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	// bug. Detached from the caller's cancellation for the same reason
 	// acquisition is (see acqCtx below); remotefs applies its own
 	// per-operation deadline.
-	if err := target.Prov.Mkdir(context.WithoutCancel(ctx), cwd); err != nil {
+	agentCwd := cwd
+	if r.cfg.AgentCwd {
+		agentCwd = AgentCwdPlaceholder + "/" + convDirName(convID)
+	} else if err := target.Prov.Mkdir(context.WithoutCancel(ctx), cwd); err != nil {
 		log.Printf("ERROR conv=%s: cannot provision %s on the agent's host: %v", convID, cwd, err)
 		return nil, false, bindAgent(target.Agent, provisionError{err})
 	}
@@ -3190,6 +3202,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		convID:       convID,
 		userID:       userID,
 		cwd:          cwd,
+		agentCwd:     agentCwd,
 		systemPrompt: r.systemPromptForSession(),
 		host:         host,
 		target:       target,
@@ -3229,10 +3242,10 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 
 	caps := st.agent().Caps()
 	if !forceFresh && caps.ListSessions && caps.ResumeSession {
-		sessions, lerr := st.agent().ListSessions(acqCtx, cwd)
+		sessions, lerr := st.agent().ListSessions(acqCtx, agentCwd)
 		if lerr == nil && len(sessions) > 0 {
 			sid := acp.SessionId(sessions[0].SessionId)
-			if rerr := st.agent().ResumeSession(acqCtx, cwd, sid, st); rerr == nil {
+			if rerr := st.agent().ResumeSession(acqCtx, agentCwd, sid, st); rerr == nil {
 				st.sessionID = sid
 				// Resume: the previous session may have had the system
 				// prompt installed, but we have no way to confirm. On
@@ -3273,7 +3286,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	if !isLocalHost(host) && !target.Pooled {
 		extraMeta = map[string]any{poeproto.ParamHost: host}
 	}
-	sid, nerr := st.agent().NewSessionWithMeta(acqCtx, cwd, st, sysBlocks, extraMeta)
+	sid, nerr := st.agent().NewSessionWithMeta(acqCtx, agentCwd, st, sysBlocks, extraMeta)
 	if nerr != nil {
 		return nil, false, bindAgent(st.agent(), fmt.Errorf("acp new session: %w", nerr))
 	}
@@ -3294,6 +3307,12 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 		convID, string(sid), won, freshSeed)
 	return winner, freshSeed, nil
 }
+
+// AgentCwdPlaceholder prefixes the opaque cwd sent to the agent in
+// cwd_mode "agent": "/poe-acp-agent-cwd/<conv>". It is not a path on any
+// host; the per-conversation suffix only keeps session/list (filtered by
+// cwd) and session/resume scoped to one conversation.
+const AgentCwdPlaceholder = "/poe-acp-agent-cwd"
 
 // convDirName maps a conversation id onto ONE path component for the
 // conv directory. A conversation id is request input — Poe sends

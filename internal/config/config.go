@@ -58,6 +58,17 @@ type Config struct {
 	// only if you have a reason to want raw, unguided agent output.
 	DisableSystemPrompt bool `json:"disable_system_prompt,omitempty"`
 
+	// SessionScope: "thread" (default) = one agent session per Poe
+	// conversation; "thread_user" = one per (conversation, user), each
+	// user's new message superseding only their own in-flight turn.
+	SessionScope string `json:"session_scope,omitempty"`
+
+	// CwdMode: "local" (default) = each session's cwd is the relay's
+	// per-conversation state dir; "agent" = send an opaque placeholder
+	// cwd and let the agent choose the real one (login commands then go
+	// to the sender's own session).
+	CwdMode string `json:"cwd_mode,omitempty"`
+
 	// PoeMCP enables the self-hosted `poe` MCP server exposed to the
 	// agent — poe-acp's own `attach` tool plus the shared relay
 	// controls from acp-kit/relaytool (status, list_models, set_model,
@@ -523,6 +534,16 @@ func (c Config) Validate() error {
 	if c.Defaults.CoalesceMs != nil && (*c.Defaults.CoalesceMs < 0 || *c.Defaults.CoalesceMs > MaxCoalesceMs) {
 		return fmt.Errorf("defaults.coalesce_ms: invalid %d (want 0..%d, 0 = disabled)",
 			*c.Defaults.CoalesceMs, MaxCoalesceMs)
+	}
+	switch c.SessionScope {
+	case "", "thread", "thread_user":
+	default:
+		return fmt.Errorf("session_scope: invalid %q (want thread|thread_user)", c.SessionScope)
+	}
+	switch c.CwdMode {
+	case "", "local", "agent":
+	default:
+		return fmt.Errorf("cwd_mode: invalid %q (want local|agent)", c.CwdMode)
 	}
 	switch c.Defaults.Thinking {
 	case "", "off", "minimal", "low", "medium", "high", "xhigh", "max":

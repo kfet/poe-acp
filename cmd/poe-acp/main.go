@@ -355,6 +355,7 @@ func main() {
 		Agent:                agent,
 		AgentFor:             agentTargetFunc(pool),
 		StateDir:             stateDir,
+		AgentCwd:             cfg.CwdMode == "agent",
 		SessionTTL:           *ttl,
 		SessionCreateTimeout: *sessCreateTO,
 		Defaults:             defaults,
@@ -417,7 +418,9 @@ func main() {
 	log.Printf("stream shaping: coalesce=%s grid=%v spinner_animate=%v",
 		stream.CoalesceInterval, stream.CoalesceGrid, stream.SpinnerAnimate)
 	h := httpsrv.New(httpsrv.Config{
-		Router: rtr,
+		Router:       rtr,
+		SessionScope: cfg.SessionScope,
+		AgentCwd:     cfg.CwdMode == "agent",
 		Settings: poeproto.SettingsResponse{
 			ResponseVersion:       poeproto.SettingsResponseVersion,
 			AllowAttachments:      *allowAtt,

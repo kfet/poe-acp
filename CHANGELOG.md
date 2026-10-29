@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- Origin `_meta` (`dev.acp-kit.origin/v1`, platform `poe`) on every session/new, load, resume, fork and prompt.
+- `session_scope` config: `thread` (default) or `thread_user` (one agent session per conversation and user).
+- `cwd_mode` config: `local` (default) or `agent` (opaque placeholder cwd; login commands go to the sender's session).
+
+### Changed
+- acp-kit bumped to v0.38.0.
+
 ## [0.79.0] - 2026-10-06
 
 ### Added

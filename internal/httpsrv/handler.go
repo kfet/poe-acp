@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/acp-kit/convo"
 	kitlog "github.com/kfet/acp-kit/log"
+	"github.com/kfet/acp-kit/origin"
 	"github.com/kfet/poe-acp/internal/poeproto"
 	"github.com/kfet/poe-acp/internal/router"
 	"github.com/kfet/poe-acp/internal/statusline"
@@ -53,6 +55,15 @@ type Config struct {
 	// the router. Production passes the router's shared convo Manager.
 	// Optional; nil disables the command surface.
 	Commands Dispatcher
+	// SessionScope is config session_scope: "" or "thread" keys one agent
+	// session per Poe conversation; "thread_user" keys one per
+	// (conversation, user). Poe 1:1 bots carry one user per conversation
+	// and have no @-mentions, so addressing replies is a no-op here.
+	SessionScope string
+	// AgentCwd mirrors config cwd_mode="agent": login/auth commands are
+	// forwarded to the sender's own agent session (as a slash command)
+	// instead of being handled by the relay-wide command broker.
+	AgentCwd bool
 	// TurnTimeout is an OPTIONAL absolute wall-clock ceiling on a prompt
 	// turn run on a context DECOUPLED from the request ctx. Poe tears
 	// down the bot-facing HTTP connection pre-output on a transport drop;
@@ -286,10 +297,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// RECV lines sharing conv+umsg ARE the same user message served
 		// twice. Do not confuse the two fields.
 		log.Printf("RECV conv=%s msg=%s umsg=%s bytes=%d", req.ConversationID, req.MessageID, req.LatestUserMessageID(), cr.n)
-		h.handleQuery(r.Context(), w, req)
+		h.handleQuery(h.scope(r.Context(), req, req.LatestUserMessageID()), w, req)
 
 	case poeproto.TypeReportReaction:
-		h.handleReaction(r.Context(), req)
+		h.handleReaction(h.scope(r.Context(), req, req.MessageID), req)
 		w.WriteHeader(http.StatusOK)
 
 	case poeproto.TypeReportFeedback, poeproto.TypeReportError:
@@ -386,7 +397,9 @@ func (h *Handler) handleQuery(ctx context.Context, w http.ResponseWriter, req *p
 	// normal prompt path so the agent executes them and streams a reply.
 	if h.cfg.Commands != nil {
 		latest := latestUserTurn(turns)
-		if latest != "" {
+		if h.cfg.AgentCwd && command.IsLoginCommand(latest) {
+			turns = rewriteLatestUserTurn(turns, agentLoginCommand(latest))
+		} else if latest != "" {
 			res := h.cfg.Commands.Dispatch(ctx, convo.In{Conv: req.ConversationID, Text: latest, Sink: sseSink{sse}})
 			if res.Handled {
 				h.logModelQuery(req.ConversationID, latest)
@@ -1769,6 +1782,44 @@ func (s sseSink) Reply(_ context.Context, _ *convo.In, text string) error { retu
 
 func (s sseSink) Fail(_ context.Context, _ *convo.In, err error) error {
 	return s.sse.Error(err.Error(), "user_caused_error")
+}
+
+// scope attaches the origin of the triggering Poe message to ctx (acp-kit
+// forwards it in _meta on every session call) and, under
+// session_scope="thread_user", re-keys req.ConversationID to the sender's
+// own session so each user's turns, cancels and commands stay theirs.
+func (h *Handler) scope(ctx context.Context, req *poeproto.Request, msgID string) context.Context {
+	ctx = origin.With(ctx, origin.Origin{
+		Platform:  "poe",
+		UserID:    req.UserID,
+		ThreadID:  req.ConversationID,
+		MessageID: msgID,
+		IsDM:      true,
+	})
+	req.ConversationID = SessionKey(h.cfg.SessionScope, req.ConversationID, req.UserID)
+	return ctx
+}
+
+// SessionScopeThreadUser is the session_scope value for one agent
+// session per (conversation, user).
+const SessionScopeThreadUser = "thread_user"
+
+// SessionKey is the router key for a conversation under scope.
+func SessionKey(scope, convID, userID string) string {
+	if scope == SessionScopeThreadUser && userID != "" {
+		return url.QueryEscape(convID) + "/" + url.QueryEscape(userID)
+	}
+	return convID
+}
+
+// agentLoginCommand is the slash form of a login-family command for the
+// agent; the relay-only cancel-login alias becomes "/login cancel".
+func agentLoginCommand(text string) string {
+	body := strings.TrimLeft(strings.TrimSpace(text), "/!.")
+	if body == "cancel-login" {
+		body = "login cancel"
+	}
+	return "/" + body
 }
 
 // handleReaction queues an out-of-band reaction turn against the

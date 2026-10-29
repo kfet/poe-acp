@@ -5,3 +5,4 @@
 /dist/
 /poe-acp
 STATUS-*.md
+.fir/ctx-state.json

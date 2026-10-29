@@ -504,6 +504,25 @@ keep working.
   same `$HOME`).
   Orthogonal to `hosts`, which is about where an acp-tmux-style agent
   PLACES a session; this key is about where the agent process already is.
+- **`session_scope`** — `"thread"` (default) keeps one agent session
+  per Poe conversation. `"thread_user"` keys one session per
+  (conversation, user): each message goes to its sender's session, and a
+  user's new message supersedes only that user's in-flight turn. Poe
+  server bots are 1:1 and have no @-mentions, so addressing a reply to
+  its user is a no-op on Poe.
+- **`cwd_mode`** — `"local"` (default) sends each session's
+  `--state-dir` conversation dir as its cwd. `"agent"` sends the opaque
+  placeholder `/poe-acp-agent-cwd/<conversation>` instead (not a path on
+  any host; the suffix only keeps `session/list` / resume scoped per
+  conversation) and skips provisioning it; the agent picks the real cwd,
+  typically from the origin `_meta`. In this mode `!login` and friends go
+  to the sender's own agent session as `/login` rather than the
+  relay-wide auth broker.
+- Every `session/new`, `session/load`, `session/resume`, `session/fork`
+  and `session/prompt` carries the triggering message's origin in
+  `_meta["dev.acp-kit.origin/v1"]` (`platform: "poe"`, `user_id`,
+  `thread_id` = conversation id, `message_id`). Identity is never put in
+  prompt text.
 - **`agent.profile`** — reserved (today the relay only knows fir's
   `set_config_option` schema; multi-agent profile selection lands in a
   follow-up).

@@ -64,6 +64,7 @@ type fakeAgent struct {
 	lastSetModel     string
 	lastPromptBlocks []acp.ContentBlock
 	lastSysBlocks    []acp.ContentBlock
+	cwds             []string // cwd of every list/resume/new call, in order
 
 	// Process liveness, mirroring client.AgentProc.Done/Err.
 	agentDone chan struct{}
@@ -78,11 +79,18 @@ func newFakeAgent(onPrompt func(ctx context.Context, a *fakeAgent, sid acp.Sessi
 }
 
 func (f *fakeAgent) Caps() client.Caps { return f.caps }
-func (f *fakeAgent) ListSessions(_ context.Context, _ string) ([]client.SessionInfo, error) {
+func (f *fakeAgent) noteCwd(cwd string) {
+	f.mu.Lock()
+	f.cwds = append(f.cwds, cwd)
+	f.mu.Unlock()
+}
+func (f *fakeAgent) ListSessions(_ context.Context, cwd string) ([]client.SessionInfo, error) {
+	f.noteCwd(cwd)
 	atomic.AddInt32(&f.listCalls, 1)
 	return f.listResult, f.listErr
 }
-func (f *fakeAgent) ResumeSession(_ context.Context, _ string, sid acp.SessionId, sink client.SessionUpdateSink) error {
+func (f *fakeAgent) ResumeSession(_ context.Context, cwd string, sid acp.SessionId, sink client.SessionUpdateSink) error {
+	f.noteCwd(cwd)
 	atomic.AddInt32(&f.resumeCalls, 1)
 	if f.resumeErr != nil {
 		return f.resumeErr
@@ -92,7 +100,8 @@ func (f *fakeAgent) ResumeSession(_ context.Context, _ string, sid acp.SessionId
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeAgent) NewSessionWithMeta(_ context.Context, _ string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock, extraMeta map[string]any) (acp.SessionId, error) {
+func (f *fakeAgent) NewSessionWithMeta(_ context.Context, cwd string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock, extraMeta map[string]any) (acp.SessionId, error) {
+	f.noteCwd(cwd)
 	n := atomic.AddInt32(&f.newSessCalls, 1)
 	if f.newSessErr != nil {
 		return "", f.newSessErr
