@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.81.0] - 2026-11-11
+
 ### Added
 - MCP files tools: inline `send_file` onto the live turn (`command.FilePoster`) and `list_attachments`/`fetch_attachment` over public Poe attachment URLs (`command.DownloadLinker`). No out-of-band uploads: Poe cannot post outside a turn.
 
