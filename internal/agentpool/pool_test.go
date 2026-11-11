@@ -79,13 +79,28 @@ func TestGet_EmptyPoolIsNotPooled(t *testing.T) {
 	p.Close() // no-op, but must not panic
 }
 
+// testLogf is t.Logf for a pool's start goroutines, which may log after
+// the test body returned; it goes quiet once the test's cleanup runs.
+func testLogf(t *testing.T) func(string, ...any) {
+	var mu sync.Mutex
+	done := false
+	t.Cleanup(func() { mu.Lock(); done = true; mu.Unlock() })
+	return func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !done {
+			t.Logf(format, args...)
+		}
+	}
+}
+
 func newTestPool(t *testing.T, start func(Spec) (*stubAgent, error), hosts ...string) *Pool[*stubAgent] {
 	t.Helper()
 	specs := make(map[string]Spec, len(hosts))
 	for _, h := range hosts {
 		specs[h] = Spec{Argv: []string{"fir", "--mode", "acp"}}
 	}
-	p, err := New(Config[*stubAgent]{Specs: specs, Start: start, Logf: t.Logf})
+	p, err := New(Config[*stubAgent]{Specs: specs, Start: start, Logf: testLogf(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +303,7 @@ func TestClose_ShutsDownLiveAndLateAgents(t *testing.T) {
 			}
 			return &stubAgent{}, nil
 		},
-		Logf: t.Logf,
+		Logf: testLogf(t),
 	})
 	if err != nil {
 		t.Fatal(err)

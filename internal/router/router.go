@@ -411,6 +411,8 @@ type Router struct {
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
+	// dirs maps convDirName(key) back to the router key; see ConvForDir.
+	dirs sync.Map
 	// convo is acp-kit's shared conversation core: the sticky !model
 	// overrides, the command.Controller and the command Dispatch.
 	convo *convo.Manager
@@ -441,6 +443,10 @@ type sessionState struct {
 	// agentCwd is the cwd sent on the wire: cwd, or the opaque
 	// placeholder when Config.AgentCwd is set.
 	agentCwd string
+
+	// inbound is the conversation's attachments as of the latest
+	// query, newest first; guarded by Router.mu. See files.go.
+	inbound []Attachment
 
 	// queue holds pending turnReqs. A single runTurns goroutine
 	// (spawned in getOrCreate) consumes from it and owns all
@@ -1292,6 +1298,7 @@ func (r *Router) buildPromptBlocks(ctx context.Context, st *sessionState, query 
 		promptText = flattenTranscript(query)
 	}
 	blocks := []acp.ContentBlock{acp.TextBlock(promptText)}
+	r.recordInbound(st, query)
 	embedded := st.agent().Caps().EmbeddedContext
 	// latestTurn is non-zero here: latestText is only non-empty when
 	// the query had a user turn, and the caller short-circuited otherwise.
@@ -1564,6 +1571,7 @@ func (r *Router) evictSession(convID string, st *sessionState) {
 	deleted := ok && cur == st
 	if deleted {
 		delete(r.sessions, convID)
+		r.dirs.Delete(convDirName(convID))
 	}
 	r.mu.Unlock()
 	if !deleted {
@@ -3077,6 +3085,7 @@ func (r *Router) resetSession(convID string) error {
 	close(st.drainStop)
 	close(st.runStop)
 	delete(r.sessions, convID)
+	r.dirs.Delete(convDirName(convID))
 	return nil
 }
 
@@ -3180,6 +3189,7 @@ func (r *Router) getOrCreate(ctx context.Context, convID, userID string, query [
 	}
 
 	cwd := filepath.Join(r.cfg.StateDir, "convs", convDirName(convID))
+	r.dirs.Store(convDirName(convID), convID)
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		return nil, false, fmt.Errorf("mkdir conv dir: %w", err)
 	}
@@ -3446,6 +3456,7 @@ func (r *Router) gcOnce() {
 			evicted = append(evicted, evictee{sid: st.sessionID, agent: st.agent()})
 		}
 		delete(r.sessions, id)
+		r.dirs.Delete(convDirName(id))
 	}
 	r.mu.Unlock()
 

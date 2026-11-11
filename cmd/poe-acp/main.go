@@ -233,12 +233,18 @@ func main() {
 			statusline.ExtensionID: map[string]any{"version": 1},
 		},
 	})
+	// Assigned below; the startup model probe runs before it.
+	var rtr *router.Router
 	if mcpEnabled {
 		clientCfg.MCPServersForSession = func(cwd string) []acp.McpServer {
 			// Mint a fresh per-session token bound to this conversation.
 			// The conv is derived server-side from the token; it is never
 			// sent by the client, so it cannot be spoofed.
-			return mcpHost.ServerConfigForSession(filepath.Base(cwd))
+			key := filepath.Base(cwd)
+			if rtr != nil { // nil only for a startup probe session
+				key = rtr.ConvForDir(key)
+			}
+			return mcpHost.ServerConfigForSession(key)
 		}
 	}
 	// Per-host agent processes. A host that declares its own
@@ -350,7 +356,7 @@ func main() {
 	// hook, so the cycle is broken by capturing tools — assigned below
 	// before any turn can run.
 	var tools *relaytool.Tools
-	rtr, err := router.New(router.Config{
+	rtr, err = router.New(router.Config{
 		Provisioner:          provisioner,
 		Agent:                agent,
 		AgentFor:             agentTargetFunc(pool),
@@ -393,6 +399,14 @@ func main() {
 		// answers one HTTP request per turn, so it implements neither
 		// command.Poster nor command.Scheduler, and relaytool leaves
 		// out what the relay cannot do.
+		// MCP files capabilities: inline send_file onto the live turn,
+		// and list/fetch of the conversation's public Poe attachment
+		// URLs. No UploadTargeter: Poe has no third-party upload URL
+		// and can only post during a turn (see internal/router/files.go).
+		if rtr.CanUpload() {
+			broker.SetFilePoster(rtr)
+		}
+		broker.SetDownloadLinker(rtr)
 		tools, err = relaytool.New(relaytool.Config{Broker: broker, Logf: log.Printf})
 		if err != nil {
 			log.Fatalf("relay tools: %v", err)

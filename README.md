@@ -621,6 +621,16 @@ the config file.
   (`show_tools`), their bounded content/result detail
   (`show_tool_details`) and the transient plan checklist
   (`show_plans`).
+- **MCP files tools.** With the self-hosted MCP server on, the relay
+  offers acp-kit's files tools. `send_file` takes inline bytes (up to the
+  agent client's `maxInlineBytes`), uploads them to Poe and attaches them
+  to the in-flight reply; it needs an access key and fails outside a
+  turn. There are no out-of-band (`upload_required`) uploads: Poe has no
+  third-party upload URL and no out-of-turn posting.
+  `list_attachments` / `fetch_attachment` expose the conversation's
+  inbound attachments (latest query, newest first, up to 50) as their
+  public Poe URLs, sized by a HEAD request. No relay credential is ever
+  in a target, and no extra config or public endpoint is needed.
 
 ## Tests
 

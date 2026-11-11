@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+- MCP files tools: inline `send_file` onto the live turn (`command.FilePoster`) and `list_attachments`/`fetch_attachment` over public Poe attachment URLs (`command.DownloadLinker`). No out-of-band uploads: Poe cannot post outside a turn.
+
+### Fixed
+- MCP tools (`attach`, relay controls, files) find the conversation under `session_scope: thread_user`: tokens were minted for the hashed cwd name instead of the router key.
+
+### Changed
+- acp-kit bumped to v0.45.0.
+
 ## [0.80.0] - 2026-10-29
 
 ### Added
