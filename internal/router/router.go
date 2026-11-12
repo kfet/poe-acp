@@ -801,7 +801,9 @@ func New(cfg Config) (*Router, error) {
 	r := &Router{cfg: cfg, sessions: make(map[string]*sessionState), active: convo.NewActive(),
 		evictDrainGrace: defaultEvictDrainGrace, endTurnAckTimeout: defaultEndTurnAckTimeout}
 	r.active.OnCancel = r.cancelSession
-	r.ij = interject.New(agentDispatch{}, cfg.Interject)
+	ijCfg := cfg.Interject
+	ijCfg.Logf = log.Printf
+	r.ij = interject.New(agentDispatch{}, ijCfg)
 	r.interjectTimeout = interjectTimeout
 	r.convo = mustConvo(r.newConvo())
 	if cfg.AccessKey != "" {
