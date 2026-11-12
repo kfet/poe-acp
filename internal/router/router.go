@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -30,6 +31,7 @@ import (
 	"github.com/kfet/acp-kit/client"
 	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/acp-kit/convo"
+	"github.com/kfet/acp-kit/interject"
 	kitlog "github.com/kfet/acp-kit/log"
 	"github.com/kfet/acp-kit/remotefs"
 	"github.com/kfet/poe-acp/internal/config"
@@ -222,6 +224,10 @@ type AgentTarget struct {
 
 // Config configures a Router.
 type Config struct {
+	// Interject enables mid-turn quick replies (acp-kit/interject).
+	// Zero value: disabled.
+	Interject interject.Config
+
 	// Agent drives sessions on the DEFAULT target: the relay's own
 	// `--agent-cmd` child. *client.AgentProc satisfies this. It also
 	// backs every relay-wide surface that is not a conversation — the
@@ -409,6 +415,10 @@ type Router struct {
 	// Agent.Prompt, cleared when the turn ends.
 	active *convo.Active
 
+	// ij answers messages that arrive mid-turn; nil when disabled.
+	ij               *interject.Interjector
+	interjectTimeout time.Duration
+
 	mu       sync.Mutex
 	sessions map[string]*sessionState
 	// dirs maps convDirName(key) back to the router key; see ConvForDir.
@@ -452,6 +462,9 @@ type sessionState struct {
 	// (spawned in getOrCreate) consumes from it and owns all
 	// Agent.Prompt calls for this session, serialising turns FIFO.
 	queue *sessionQueue
+	// liveUserMsg is the Poe message_id of the latest user turn run, so
+	// a redrive of a running turn is not mistaken for a new message.
+	liveUserMsg atomic.Value
 	// runStop is closed by gcOnce when the session is evicted; the
 	// runTurns goroutine exits on its next wait iteration.
 	runStop chan struct{}
@@ -788,6 +801,8 @@ func New(cfg Config) (*Router, error) {
 	r := &Router{cfg: cfg, sessions: make(map[string]*sessionState), active: convo.NewActive(),
 		evictDrainGrace: defaultEvictDrainGrace, endTurnAckTimeout: defaultEndTurnAckTimeout}
 	r.active.OnCancel = r.cancelSession
+	r.ij = interject.New(agentDispatch{}, cfg.Interject)
+	r.interjectTimeout = interjectTimeout
 	r.convo = mustConvo(r.newConvo())
 	if cfg.AccessKey != "" {
 		r.uploader = poeupload.New(cfg.AccessKey, cfg.UploadEndpoint, cfg.HTTPClient)
@@ -1282,6 +1297,18 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	// command. Skip transcript flattening / inline injection so the "/" stays first.
 	isCommand := strings.HasPrefix(strings.TrimSpace(latestText), "/")
 
+	var ij interjectOutcome
+	if !isCommand {
+		ij = r.interjectTurn(ctx, st, latestTurn.MessageID, latestText, sink)
+		if ij == ijHandled {
+			return nil
+		}
+	}
+
+	if ij == ijQueuedTurn {
+		// The message itself is carried by the queued prefix.
+		latestText = ""
+	}
 	blocks := r.buildPromptBlocks(ctx, st, query, latestTurn, latestText, freshSeed, isCommand)
 
 	return r.submitTurn(ctx, convID, userID, query, latestTurn, latestText, opts, sink, st, blocks, isCommand, false)
@@ -1818,6 +1845,9 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 	}
 
 	blocks := req.blocks
+	if !req.isCommand {
+		blocks = r.withSidePrefix(st.convID, blocks)
+	}
 	if req.kind == turnUser && !req.isCommand && st.pendingSystemPromptInline && st.systemPrompt != "" {
 		// Fallback path: agent didn't advertise session.systemPrompt
 		// (or this is a resume). Prepend the catalog inline so the
@@ -1856,6 +1886,9 @@ func (r *Router) runOneTurn(st *sessionState, req *turnReq) {
 
 	// Bind this turn's identity to the sink BEFORE it goes live, so the
 	// sink's owner can cancel exactly this turn (and nothing after it).
+	if req.kind == turnUser {
+		st.liveUserMsg.Store(req.userMsgID)
+	}
 	live := r.setActiveTurn(st.convID, sink, st)
 	defer r.active.End(live)
 	if tt, ok := sink.(TurnTokener); ok {

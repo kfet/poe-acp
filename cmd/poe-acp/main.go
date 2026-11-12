@@ -357,6 +357,7 @@ func main() {
 	// before any turn can run.
 	var tools *relaytool.Tools
 	rtr, err = router.New(router.Config{
+		Interject:            cfg.Interject,
 		Provisioner:          provisioner,
 		Agent:                agent,
 		AgentFor:             agentTargetFunc(pool),

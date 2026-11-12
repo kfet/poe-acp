@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kfet/acp-kit/client"
+	"github.com/kfet/acp-kit/interject"
 	"github.com/kfet/acp-kit/remotefs"
 )
 
@@ -82,6 +83,13 @@ type Config struct {
 	// speak on afterwards, so the Router implements neither
 	// command.Poster nor command.Scheduler.
 	PoeMCP bool `json:"poe_mcp,omitempty"`
+
+	// Interject enables mid-turn quick replies: a message that arrives
+	// while the conversation's turn is running is answered by a fork of
+	// the session, whose verdict decides whether the running turn
+	// continues, is redirected, or stops. Off by default; on any fork
+	// failure the message queues behind the running turn as before.
+	Interject interject.Config `json:"interject,omitempty"`
 
 	// Hosts is the CURATED list of ssh targets a conversation may run
 	// its agent session on, in the order they appear in the Poe `Host`

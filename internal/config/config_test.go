@@ -160,6 +160,18 @@ func TestLoad_PoeMCP(t *testing.T) {
 	}
 }
 
+func TestLoad_Interject(t *testing.T) {
+	t.Parallel()
+	p := writeFile(t, `{"interject": {"enabled": true, "min_conf": 5}}`)
+	cfg, ok, err := Load(p)
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	if !cfg.Interject.Enabled || cfg.Interject.MinConf != 5 {
+		t.Errorf("interject: %+v", cfg.Interject)
+	}
+}
+
 // TestDefaults_Stream pins the nil-means-default resolution of the
 // stream-shaping knobs. A zero Defaults MUST resolve to the
 // mobile-friendly shape — 3s grid coalescing, static spinner — and an

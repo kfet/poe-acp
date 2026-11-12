@@ -518,6 +518,15 @@ keep working.
   typically from the origin `_meta`. In this mode `!login` and friends go
   to the sender's own agent session as `/login` rather than the
   relay-wide auth broker.
+- **`interject`** — `{"enabled": true, "min_conf": 7}` turns on mid-turn
+  quick replies (default off). A message sent while the conversation's
+  turn is running is asked of a fork of the session (same model); the
+  fork's short answer is the message's reply, tagged `*(quick reply · …)*`,
+  and its verdict either leaves the running turn alone, queues the
+  message for its next prompt, redirects it (cancel + re-prompt), or
+  stops it. Verdicts below `min_conf` (0-9, default 7) only answer. If
+  the agent cannot fork, or the fork fails or exceeds 60s, the message
+  queues behind the running turn as before.
 - Every `session/new`, `session/load`, `session/resume`, `session/fork`
   and `session/prompt` carries the triggering message's origin in
   `_meta["dev.acp-kit.origin/v1"]` (`platform: "poe"`, `user_id`,

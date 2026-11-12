@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- Opt-in mid-turn quick replies (`interject: {enabled, min_conf}`, acp-kit v0.48.0 `interject`): a message sent while a turn runs is answered by a session fork whose verdict answers, queues, steers or stops the running turn; falls back to queueing on any fork error.
+
+### Changed
+- acp-kit bumped to v0.48.0.
+
 ## [0.81.0] - 2026-11-11
 
 ### Added

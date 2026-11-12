@@ -1,10 +1,10 @@
 module github.com/kfet/poe-acp
 
-go 1.25
+go 1.25.0
 
 require (
 	github.com/coder/acp-go-sdk v0.13.5
-	github.com/kfet/acp-kit v0.45.0
+	github.com/kfet/acp-kit v0.48.0
 	github.com/kfet/distkit v0.1.10
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 )
