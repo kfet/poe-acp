@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.82.1] - 2026-11-12
+
 ### Changed
 - acp-kit v0.49.0 `interject`: verdicts are answer / inform / stop. On fir ≥ 1.53 answer-only is recorded out of the model's view and inform steers the running turn (optional fork note) without cancelling it; other agents keep the next-prompt digest and cancel + re-prompt on inform. The queue verdict is gone.
 
