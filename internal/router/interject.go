@@ -10,6 +10,8 @@ package router
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log"
 	"time"
 
@@ -29,8 +31,17 @@ type agentCtxKey struct{}
 // the Agent carried in ctx (set by interjectTurn).
 type agentDispatch struct{}
 
-func ctxForkAgent(ctx context.Context) (interject.Agent, error) {
-	if a, ok := ctx.Value(agentCtxKey{}).(interject.Agent); ok {
+// forker is the part of interject.Agent every forking agent has;
+// ExtMethod is probed separately.
+type forker interface {
+	ForkSession(ctx context.Context, cwd string, parent acp.SessionId, at string, sink client.SessionUpdateSink) (acp.SessionId, error)
+	Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error)
+	CloseSession(ctx context.Context, sid acp.SessionId) error
+	Caps() client.Caps
+}
+
+func ctxForkAgent(ctx context.Context) (forker, error) {
+	if a, ok := ctx.Value(agentCtxKey{}).(forker); ok {
 		return a, nil
 	}
 	return nil, client.ErrForkUnsupported
@@ -56,13 +67,32 @@ func (agentDispatch) CloseSession(ctx context.Context, sid acp.SessionId) error 
 	return a.CloseSession(ctx, sid)
 }
 
+// Caps has no ctx to route by, so it advertises the steer extension
+// and ExtMethod checks the routed agent's real caps: a refusal there is
+// "not delivered" to the Interjector, which then takes the old path.
+func (agentDispatch) Caps() client.Caps {
+	return client.Caps{Extensions: map[string]json.RawMessage{interject.SteerCap: nil}}
+}
+
+func (agentDispatch) ExtMethod(ctx context.Context, sid acp.SessionId, method string, p map[string]any) (json.RawMessage, error) {
+	a, _ := ctxForkAgent(ctx)
+	x, ok := a.(interface {
+		ExtMethod(context.Context, acp.SessionId, string, map[string]any) (json.RawMessage, error)
+	})
+	if _, adv := a.Caps().Extensions[interject.SteerCap]; !ok || !adv {
+		return nil, errNoSteer
+	}
+	return x.ExtMethod(ctx, sid, method, p)
+}
+
+var errNoSteer = errors.New("interject: agent does not advertise " + interject.SteerCap)
+
 // interjectOutcome tells Prompt how to continue after interjectTurn.
 type interjectOutcome int
 
 const (
-	ijFallback   interjectOutcome = iota // not handled: ordinary turn
-	ijHandled                            // reply posted, sink finalised
-	ijQueuedTurn                         // run a turn carrying only the queued prefix
+	ijFallback interjectOutcome = iota // not handled: ordinary turn
+	ijHandled                          // reply posted, sink finalised
 )
 
 // interjectTurn handles a message that arrived during a running main
@@ -86,23 +116,20 @@ func (r *Router) interjectTurn(ctx context.Context, st *sessionState, msgID, tex
 		_ = sink.Text(rep.Text + "\n\n")
 	}
 	_ = sink.Text(rep.Tag() + "\n\n")
-	switch rep.Action {
-	case interject.Steer:
+	switch {
+	case rep.Action == interject.Inform && !rep.Delivered:
+		// The agent could not take it mid-turn: supersede, as before.
 		_ = r.Cancel(ctx, st.convID)
 		return ijFallback
-	case interject.Abort:
+	case rep.Action == interject.Abort:
 		_ = r.Cancel(ctx, st.convID)
-	case interject.Queue:
-		if _, live := r.active.Get(st.convID); !live && r.ij.Queued(st.convID) {
-			return ijQueuedTurn
-		}
 	}
 	_ = sink.Done()
 	return ijHandled
 }
 
-// withSidePrefix prepends the interjector's pending side Q&A and queued
-// messages to a main prompt.
+// withSidePrefix prepends the side Q&A the agent could not take
+// mid-turn to a main prompt.
 func (r *Router) withSidePrefix(convID string, blocks []acp.ContentBlock) []acp.ContentBlock {
 	prefix := r.ij.Take(convID)
 	if prefix == "" {

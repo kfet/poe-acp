@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -28,6 +29,18 @@ type ijAgent struct {
 
 	mu    sync.Mutex
 	mains []string
+	ext   []map[string]any
+}
+
+func (a *ijAgent) ExtMethod(_ context.Context, _ acp.SessionId, _ string, p map[string]any) (json.RawMessage, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ext = append(a.ext, p)
+	return json.RawMessage(`{}`), nil
+}
+
+func steerCaps() client.Caps {
+	return client.Caps{Extensions: map[string]json.RawMessage{interject.SteerCap: nil}}
 }
 
 func (a *ijAgent) Cancel(ctx context.Context, sid acp.SessionId) error {
@@ -144,7 +157,7 @@ func TestInterject_EmptyAnswerPostsTagOnly(t *testing.T) {
 }
 
 func TestInterject_AbortCancelsMain(t *testing.T) {
-	a := newIJAgent("stopping\n4 9")
+	a := newIJAgent("stopping\n3 9")
 	r := ijRouter(t, a)
 	done := startMain(t, r, a)
 	s := &captureSink{}
@@ -158,8 +171,8 @@ func TestInterject_AbortCancelsMain(t *testing.T) {
 	<-done
 }
 
-func TestInterject_SteerCancelsAndReprompts(t *testing.T) {
-	a := newIJAgent("ok, redirecting\n3 9")
+func TestInterject_InformFallbackCancelsAndReprompts(t *testing.T) {
+	a := newIJAgent("ok, redirecting\n2 9")
 	r := ijRouter(t, a)
 	a.cancelled = make(chan struct{}, 1)
 	done := startMain(t, r, a)
@@ -186,44 +199,50 @@ func TestInterject_SteerCancelsAndReprompts(t *testing.T) {
 	}
 }
 
-func TestInterject_QueueWhileMainRuns(t *testing.T) {
-	a := newIJAgent("noted\n2 9")
+func TestInterject_NativeInformSteersMain(t *testing.T) {
+	a := newIJAgent("noted\nNOTE: add Z\n2 9")
+	a.caps = steerCaps()
 	r := ijRouter(t, a)
 	done := startMain(t, r, a)
 	s := &captureSink{}
 	if err := r.Prompt(context.Background(), "c", "u", q("also Z"), Options{}, s); err != nil {
 		t.Fatal(err)
 	}
-	if !s.done || !r.ij.Queued("c") {
-		t.Fatal("queued reply not finalised / message not queued")
+	if !s.done || atomic.LoadInt32(&a.cancelCalls) != 0 || len(a.ext) != 1 || a.ext[0]["mode"] != "steer" {
+		t.Fatalf("done=%v cancel=%d ext=%v", s.done, a.cancelCalls, a.ext)
+	}
+	a.release <- struct{}{}
+	<-done
+	if r.ij.Take("c") != "" {
+		t.Fatal("delivered exchange left in digest")
+	}
+}
+
+func TestInterject_NativeNoneRecords(t *testing.T) {
+	a := newIJAgent("it is 4\n1 9")
+	a.caps = steerCaps()
+	r := ijRouter(t, a)
+	done := startMain(t, r, a)
+	if err := r.Prompt(context.Background(), "c", "u", q("2+2?"), Options{}, &captureSink{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.ext) != 1 || a.ext[0]["mode"] != "record" || a.ext[0]["answer"] != "it is 4" {
+		t.Fatalf("ext=%v", a.ext)
 	}
 	a.release <- struct{}{}
 	<-done
 }
 
-func TestInterject_QueueAfterMainEndedStartsTurn(t *testing.T) {
-	a := newIJAgent("noted\n2 9")
-	r := ijRouter(t, a)
-	done := startMain(t, r, a)
-	a.onFork = func() {
-		a.release <- struct{}{}
-		<-done
+func TestAgentDispatch_ExtMethodNeedsSteer(t *testing.T) {
+	ctx := context.WithValue(context.Background(), agentCtxKey{}, Agent(newIJAgent("")))
+	if _, err := (agentDispatch{}).ExtMethod(ctx, "s", interject.SteerMethod, nil); !errors.Is(err, errNoSteer) {
+		t.Fatalf("err=%v", err)
 	}
-	s := &captureSink{}
-	res := make(chan error, 1)
-	go func() { res <- r.Prompt(context.Background(), "c", "u", q("also Z"), Options{}, s) }()
-	<-a.started
-	a.release <- struct{}{}
-	if err := <-res; err != nil {
-		t.Fatal(err)
-	}
-	m := a.mainTexts()
-	last := m[len(m)-1]
-	if strings.Count(last, "also Z") != 2 || !strings.Contains(last, "[queued messages from the user]\nalso Z") {
-		t.Fatalf("queued turn prompt=%q", last)
-	}
-	if r.ij.Queued("c") {
-		t.Fatal("queue not drained")
+	fa := newForkAgent()
+	fa.caps = steerCaps()
+	ctx = context.WithValue(context.Background(), agentCtxKey{}, Agent(noExtAgent{fa}))
+	if _, err := (agentDispatch{}).ExtMethod(ctx, "s", interject.SteerMethod, nil); !errors.Is(err, errNoSteer) {
+		t.Fatalf("no ExtMethod: err=%v", err)
 	}
 }
 
@@ -254,6 +273,11 @@ func TestInterject_FallbacksQueueBehindMain(t *testing.T) {
 		})
 	}
 }
+
+// noExtAgent forks but has no ExtMethod.
+type noExtAgent struct{ *forkAgent }
+
+func (noExtAgent) CloseSession(context.Context, acp.SessionId) error { return nil }
 
 // noForkAgent hides ForkSession.
 type noForkAgent struct{ *fakeAgent }

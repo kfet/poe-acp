@@ -1297,18 +1297,10 @@ func (r *Router) Prompt(ctx context.Context, convID, userID string, query []Turn
 	// command. Skip transcript flattening / inline injection so the "/" stays first.
 	isCommand := strings.HasPrefix(strings.TrimSpace(latestText), "/")
 
-	var ij interjectOutcome
-	if !isCommand {
-		ij = r.interjectTurn(ctx, st, latestTurn.MessageID, latestText, sink)
-		if ij == ijHandled {
-			return nil
-		}
+	if !isCommand && r.interjectTurn(ctx, st, latestTurn.MessageID, latestText, sink) == ijHandled {
+		return nil
 	}
 
-	if ij == ijQueuedTurn {
-		// The message itself is carried by the queued prefix.
-		latestText = ""
-	}
 	blocks := r.buildPromptBlocks(ctx, st, query, latestTurn, latestText, freshSeed, isCommand)
 
 	return r.submitTurn(ctx, convID, userID, query, latestTurn, latestText, opts, sink, st, blocks, isCommand, false)

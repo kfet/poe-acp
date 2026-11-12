@@ -522,9 +522,12 @@ keep working.
   quick replies (default off). A message sent while the conversation's
   turn is running is asked of a fork of the session (same model); the
   fork's short answer is the message's reply, tagged `*(quick reply · …)*`,
-  and its verdict either leaves the running turn alone, queues the
-  message for its next prompt, redirects it (cancel + re-prompt), or
-  stops it. Verdicts below `min_conf` (0-9, default 7) only answer. If
+  and its verdict either just answers, informs the running turn, or
+  stops it. With fir's `_fir/session/steer` an answer-only exchange is
+  recorded where the model never sees it, and inform injects the Q&A
+  (plus an optional note from the fork) into the running turn; other
+  agents get the Q&A before the next prompt, and inform cancels and
+  re-prompts. Verdicts below `min_conf` (0-9, default 7) only answer. If
   the agent cannot fork, or the fork fails or exceeds 60s, the message
   queues behind the running turn as before.
 - Every `session/new`, `session/load`, `session/resume`, `session/fork`
